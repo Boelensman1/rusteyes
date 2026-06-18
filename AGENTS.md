@@ -37,6 +37,10 @@
   `x11-screen-blanking`.
 - Use step notes to record decisions, tradeoffs, commands run, open questions,
   and follow-up work that should not be lost between sessions.
+- Fold cleanup, refinement work, and fixes into the existing step note when
+  they clarify, simplify, or correct that step, instead of creating a separate
+  cleanup note. Create a new step note only for a distinct reviewable
+  increment.
 - Keep notes factual and concise; update them as implementation details change.
 - When something is done, update the progress file in ./build-notes/progress.md
 - Commit each completed step as its own focused git commit.
