@@ -1,5 +1,4 @@
-use serde::Deserialize;
-use serde::de::{self, Visitor};
+use serde::{Deserialize, de};
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
@@ -10,7 +9,8 @@ use std::time::Duration;
 const ENV_CONFIG: &str = "RESTEYES_CONFIG";
 const XDG_CONFIG_HOME: &str = "XDG_CONFIG_HOME";
 const HOME: &str = "HOME";
-const CONFIG_PATH_SUFFIX: [&str; 2] = ["resteyes", "config.yaml"];
+const CONFIG_DIR: &str = "resteyes";
+const CONFIG_FILE: &str = "config.yaml";
 
 pub const DEFAULT_SHORT_BREAK_AFTER_ACTIVE: Duration = Duration::from_secs(20 * 60);
 pub const DEFAULT_SHORT_BREAK_DURATION: Duration = Duration::from_secs(20);
@@ -78,15 +78,13 @@ impl Config {
             return Self::load_from_path(path, ConfigPathMode::Required);
         }
 
-        if let Some(path) = non_empty_os(xdg_config_home)
-            .map(PathBuf::from)
-            .map(|base| config_path_from_base(&base))
-            .or_else(|| {
-                non_empty_os(home)
-                    .map(PathBuf::from)
-                    .map(|home| config_path_from_base(&home.join(".config")))
-            })
-        {
+        if let Some(base) = non_empty_os(xdg_config_home).map(PathBuf::from) {
+            let path = config_path_from_base(&base);
+            return Self::load_from_path(path, ConfigPathMode::Optional);
+        }
+
+        if let Some(home) = non_empty_os(home).map(PathBuf::from) {
+            let path = config_path_from_base(&home.join(".config"));
             return Self::load_from_path(path, ConfigPathMode::Optional);
         }
 
@@ -119,10 +117,9 @@ impl Config {
             }
         })?;
         let mut config = Self::default();
+        let partial = partial.unwrap_or_default();
 
-        if let Some(partial) = partial {
-            partial.apply_to(&mut config);
-        }
+        partial.apply_to(&mut config);
 
         config
             .validate()
@@ -424,83 +421,12 @@ impl<'de> Deserialize<'de> for ConfigDuration {
     where
         D: serde::Deserializer<'de>,
     {
-        deserializer.deserialize_any(ConfigDurationVisitor)
-    }
-}
+        let value = String::deserialize(deserializer)?;
 
-struct ConfigDurationVisitor;
-
-impl Visitor<'_> for ConfigDurationVisitor {
-    type Value = ConfigDuration;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("integer seconds or a humantime duration string")
-    }
-
-    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(ConfigDuration(Duration::from_secs(value)))
-    }
-
-    fn visit_u128<E>(self, value: u128) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        duration_from_unsigned(value)
-    }
-
-    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        duration_from_signed(i128::from(value))
-    }
-
-    fn visit_i128<E>(self, value: i128) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        duration_from_signed(value)
-    }
-
-    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        humantime::parse_duration(value)
+        humantime::parse_duration(&value)
             .map(ConfigDuration)
-            .map_err(E::custom)
+            .map_err(de::Error::custom)
     }
-
-    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        self.visit_str(&value)
-    }
-}
-
-fn duration_from_unsigned<E>(seconds: u128) -> Result<ConfigDuration, E>
-where
-    E: de::Error,
-{
-    let seconds = u64::try_from(seconds)
-        .map_err(|_| E::custom("duration seconds exceed the supported range"))?;
-
-    Ok(ConfigDuration(Duration::from_secs(seconds)))
-}
-
-fn duration_from_signed<E>(seconds: i128) -> Result<ConfigDuration, E>
-where
-    E: de::Error,
-{
-    if seconds < 0 {
-        return Err(E::custom("duration seconds must not be negative"));
-    }
-
-    duration_from_unsigned(u128::try_from(seconds).map_err(E::custom)?)
 }
 
 fn validate_disable_presets(disable_presets: &[Duration]) -> Result<(), ConfigError> {
@@ -526,7 +452,7 @@ fn non_empty_os(value: Option<OsString>) -> Option<OsString> {
 }
 
 fn config_path_from_base(base: &Path) -> PathBuf {
-    base.join(CONFIG_PATH_SUFFIX[0]).join(CONFIG_PATH_SUFFIX[1])
+    base.join(CONFIG_DIR).join(CONFIG_FILE)
 }
 
 fn config_location(path: Option<&Path>) -> String {
@@ -704,7 +630,7 @@ mod tests {
             r"
 breaks:
   short:
-    duration: 31s
+    duration: '31s'
 ",
         )?;
         write_file(
@@ -712,7 +638,7 @@ breaks:
             r"
 breaks:
   short:
-    duration: 41s
+    duration: '41s'
 ",
         )?;
 
@@ -732,7 +658,7 @@ breaks:
             r"
 breaks:
   short:
-    duration: 45s
+    duration: '45s'
     messages:
       - Blink slowly
 ",
@@ -761,17 +687,25 @@ breaks:
     }
 
     #[test]
-    fn yaml_accepts_integer_seconds_and_humantime_durations() -> Result<(), Box<dyn Error>> {
+    fn empty_yaml_uses_defaults() -> Result<(), Box<dyn Error>> {
+        let config = Config::from_yaml_str("")?;
+
+        assert_eq!(config, Config::default());
+        Ok(())
+    }
+
+    #[test]
+    fn yaml_accepts_humantime_duration_strings() -> Result<(), Box<dyn Error>> {
         let config = Config::from_yaml_str(
             r"
 breaks:
   short:
-    after_active: 1200
-    duration: 20s
+    after_active: '20m'
+    duration: '20s'
   long:
-    after_active: 1h
-    duration: 5m
-disable_presets: [30m, 3600, 2h, 3h]
+    after_active: '1h'
+    duration: '5m'
+disable_presets: ['30m', '1h', '2h', '3h']
 ",
         )?;
 
@@ -900,7 +834,20 @@ lock:
             r"
 breaks:
   short:
-    duration: soon
+    duration: 'soon'
+",
+        ));
+
+        assert!(matches!(error, ConfigLoadError::Parse { .. }));
+    }
+
+    #[test]
+    fn yaml_rejects_integer_duration_values() {
+        let error = expected_config_error(Config::from_yaml_str(
+            r"
+breaks:
+  short:
+    duration: 20
 ",
         ));
 
@@ -913,7 +860,7 @@ breaks:
             r"
 breaks:
   short:
-    duration: 0s
+    duration: '0s'
 ",
         ));
 

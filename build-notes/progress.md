@@ -9,7 +9,8 @@
   exist without changing runtime behavior.
 - Completed `yaml-config-loading`: YAML config files are loaded from
   `RESTEYES_CONFIG` or the XDG config path, partially overlaid onto defaults,
-  parsed with human-readable durations, and validated.
+  parsed with string-only human-readable durations, and validated. Follow-up
+  cleanup made path resolution more explicit and simplified empty YAML handling.
 - The app currently prints `hello world` when no config error is present.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
