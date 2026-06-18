@@ -1,5 +1,6 @@
+use crate::backend::{Backend, BackendEvent, NoopBackend};
 use crate::config::{Config, ConfigError};
-use crate::scheduler::{BreakSchedule, BreakScheduler, ScheduledBreak, SchedulerAction};
+use crate::scheduler::{BreakSchedule, BreakScheduler, SchedulerAction};
 use std::time::Duration;
 
 pub(crate) fn run() -> Result<(), crate::Error> {
@@ -12,7 +13,7 @@ pub(crate) fn run() -> Result<(), crate::Error> {
 
 fn run_with_backend<B>(config: Config, backend: &mut B) -> Result<(), ConfigError>
 where
-    B: DaemonBackend,
+    B: Backend,
 {
     let schedule = BreakSchedule::try_from(config.breaks)?;
     let scheduler = BreakScheduler::new(schedule);
@@ -26,24 +27,6 @@ where
     Ok(())
 }
 
-trait DaemonBackend {
-    fn next_event(&mut self) -> RuntimeEvent;
-
-    fn start_break(&mut self, scheduled_break: ScheduledBreak);
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-enum RuntimeEvent {
-    Active(Duration),
-    WallClock(Duration),
-    BreakFinished,
-    DisableFor(Duration),
-    DisableUntilRestart,
-    Enable,
-    Shutdown,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DisableMode {
     Enabled,
@@ -53,7 +36,7 @@ enum DisableMode {
 
 struct DaemonRuntime<'a, B>
 where
-    B: DaemonBackend,
+    B: Backend,
 {
     scheduler: BreakScheduler,
     backend: &'a mut B,
@@ -62,7 +45,7 @@ where
 
 impl<B> DaemonRuntime<'_, B>
 where
-    B: DaemonBackend,
+    B: Backend,
 {
     fn run(&mut self) {
         loop {
@@ -73,15 +56,15 @@ where
         }
     }
 
-    fn handle_event(&mut self, event: RuntimeEvent) -> bool {
+    fn handle_event(&mut self, event: BackendEvent) -> bool {
         match event {
-            RuntimeEvent::Active(elapsed) => self.advance_active(elapsed),
-            RuntimeEvent::WallClock(elapsed) => self.advance_wall_clock(elapsed),
-            RuntimeEvent::BreakFinished => self.scheduler.finish_break(),
-            RuntimeEvent::DisableFor(duration) => self.disable_for(duration),
-            RuntimeEvent::DisableUntilRestart => self.disable_until_restart(),
-            RuntimeEvent::Enable => self.enable(),
-            RuntimeEvent::Shutdown => return false,
+            BackendEvent::Active(elapsed) => self.advance_active(elapsed),
+            BackendEvent::WallClock(elapsed) => self.advance_wall_clock(elapsed),
+            BackendEvent::BreakFinished => self.finish_break(),
+            BackendEvent::DisableFor(duration) => self.disable_for(duration),
+            BackendEvent::DisableUntilRestart => self.disable_until_restart(),
+            BackendEvent::Enable => self.enable(),
+            BackendEvent::Shutdown => return false,
         }
 
         true
@@ -91,6 +74,19 @@ where
         if let SchedulerAction::StartBreak(scheduled_break) = self.scheduler.advance_active(elapsed)
         {
             self.backend.start_break(scheduled_break);
+        }
+    }
+
+    fn finish_break(&mut self) {
+        let pending_break = self.scheduler.pending_break().cloned();
+        self.scheduler.finish_break();
+
+        if let Some(scheduled_break) = pending_break {
+            self.backend.clear_break();
+
+            if scheduled_break.autolock {
+                self.backend.request_lock();
+            }
         }
     }
 
@@ -105,11 +101,13 @@ where
     }
 
     fn disable_for(&mut self, duration: Duration) {
+        self.clear_pending_break();
         self.scheduler.disable();
         self.disable_mode = DisableMode::Timed(duration);
     }
 
     fn disable_until_restart(&mut self) {
+        self.clear_pending_break();
         self.scheduler.disable();
         self.disable_mode = DisableMode::UntilRestart;
     }
@@ -118,16 +116,12 @@ where
         self.scheduler.enable();
         self.disable_mode = DisableMode::Enabled;
     }
-}
 
-struct NoopBackend;
-
-impl DaemonBackend for NoopBackend {
-    fn next_event(&mut self) -> RuntimeEvent {
-        RuntimeEvent::Shutdown
+    fn clear_pending_break(&mut self) {
+        if self.scheduler.pending_break().is_some() {
+            self.backend.clear_break();
+        }
     }
-
-    fn start_break(&mut self, _scheduled_break: ScheduledBreak) {}
 }
 
 #[cfg(test)]

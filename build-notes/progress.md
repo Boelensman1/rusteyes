@@ -28,6 +28,9 @@
 - Completed `daemon-runtime-noop`: the runtime now loads config, initializes a
   scheduler from the validated break schedule, runs a private daemon event loop,
   and exits cleanly through a no-op backend.
+- Completed `backend-trait`: the no-op runtime now uses a crate-internal backend
+  boundary with events for activity/control input and operations for break
+  start, break clear, and local lock requests.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -43,6 +46,6 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next increment should be `backend-trait`.
+- The next increment should be `x11-activity`.
 - Step-specific notes belong in `build-notes/$step.md`.
 - Update this file whenever a step is completed or the project state changes.
