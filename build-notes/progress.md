@@ -5,6 +5,8 @@
 - Initialized the repository and created the initial Rust binary scaffold.
 - Completed `core-layout`: the binary entry point now calls into the internal
   library/runtime layout.
+- Completed `config-schema`: typed configuration defaults and validation now
+  exist without changing runtime behavior.
 - The app currently prints `hello world`.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
