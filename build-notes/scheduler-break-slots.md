@@ -37,4 +37,4 @@
 
 ## Follow-up
 
-- Continue with `scheduler-idle-disable`.
+- Continue with `scheduler-disable-state`.

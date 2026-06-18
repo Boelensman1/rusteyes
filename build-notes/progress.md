@@ -33,6 +33,6 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next scheduler increment should be `scheduler-idle-disable`.
+- The next scheduler increment should be `scheduler-disable-state`.
 - Step-specific notes belong in `build-notes/$step.md`.
 - Update this file whenever a step is completed or the project state changes.

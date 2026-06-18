@@ -19,8 +19,10 @@ RestEyes is an as-simple-as-possible SafeEyes replacement focused on reliable br
 - Treat break type intervals as multiples of the shared active-time duration;
   when multiple break types are due for the same slot, run the due break with
   the largest interval.
-- Track keyboard and mouse activity to decide when a break is due.
-- Treat idle time as rest: it delays or satisfies break accumulation rather than forcing wall-clock breaks.
+- Track keyboard and mouse activity to decide when active time should advance.
+- Treat idle time as the absence of active-time advancement: idle time does not
+  advance break slots, satisfy a due break, or reset accumulated active time
+  until explicit idle-reset behavior is added later.
 - Optionally autolock screens after configured break types.
 
 ## Network sync
@@ -34,6 +36,14 @@ RestEyes is an as-simple-as-possible SafeEyes replacement focused on reliable br
 ## Architecture
 
 - Rust daemon owns configuration, scheduling, network sync, and shared runtime state.
+- The scheduler consumes active-time increments and explicit control commands;
+  platform and runtime code decide when observed activity becomes active time.
+- Idle is initially represented by not advancing active time, not by a
+  scheduler-level idle input.
+- Local disable state is controlled separately from idle handling. The runtime
+  converts finite disable presets into monotonic elapsed-time deadlines, then
+  sends explicit disable and enable commands to the scheduler.
+  Disable-until-restart remains explicit daemon state.
 - Most platform backends are written in Rust.
 - X11 backend is implemented first because it gives the core blanking, input capture, and activity behavior quickly.
 - macOS uses a small Swift/AppKit/CoreGraphics helper for macOS-specific APIs, controlled by the Rust daemon over local IPC.
@@ -71,9 +81,9 @@ step note when implementation begins.
 3. `yaml-config-loading`: load YAML from `RESTEYES_CONFIG` or the XDG config
    path, with clear parse and validation errors.
 4. `scheduler-break-slots`: implement deterministic generic break slot
-   scheduling with injected time and activity inputs.
-5. `scheduler-idle-disable`: add idle-as-rest behavior and local disable-until
-   handling.
+   scheduling with injected active-time durations.
+5. `scheduler-disable-state`: add explicit local scheduler disable and enable
+   state while keeping idle as the absence of active-time advancement.
 6. `daemon-runtime-noop`: wire config and scheduler into a daemon loop using a
    no-op backend so behavior is testable before X11.
 7. `backend-trait`: define the internal platform interface for activity, break
@@ -98,6 +108,6 @@ Deferred later work:
 
 1. macOS Swift helper and launchd integration.
 2. Wayland investigation.
-3. Idle reset behavior: in a future increment, add both the idle timeout logic
-   that resets accumulated active time after enough idle time, and a config key
-   such as `breaks.reset_after_idle` to control that timeout.
+3. Idle reset behavior: in a future increment, add idle-duration tracking that
+   resets accumulated active time after enough idle time, plus a config key such
+   as `breaks.reset_after_idle` to control that timeout.
