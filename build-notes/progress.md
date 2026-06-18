@@ -11,10 +11,12 @@
   `RESTEYES_CONFIG` or the XDG config path, partially overlaid onto defaults,
   parsed with string-only human-readable durations, and validated. Follow-up
   cleanup made path resolution more explicit and simplified empty YAML handling.
+- Completed `scheduler-break-slots`: an internal deterministic scheduler now
+  consumes active-time durations, advances break slots, picks the due break type
+  with the largest interval, and holds a pending break until it is finished.
 - Generalized break config to one shared `breaks.after_active` duration plus an
   arbitrary `breaks.types` map. Each break type has an integer slot interval,
-  duration, messages, and per-type autolock flag; when multiple break types are
-  due, the scheduler should pick the due type with the largest interval.
+  duration, messages, and per-type autolock flag.
 - The app currently prints `hello world` when no config error is present.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
@@ -31,7 +33,6 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next scheduler increment should be `scheduler-break-slots`, not the older
-  fixed short-break scheduler.
+- The next scheduler increment should be `scheduler-idle-disable`.
 - Step-specific notes belong in `build-notes/$step.md`.
 - Update this file whenever a step is completed or the project state changes.
