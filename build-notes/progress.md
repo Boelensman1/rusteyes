@@ -14,6 +14,10 @@
 - Completed `scheduler-break-slots`: an internal deterministic scheduler now
   consumes active-time durations, advances break slots, picks the due break type
   with the largest interval, and holds a pending break until it is finished.
+- Completed `scheduler-disable-state`: the scheduler can be explicitly disabled
+  and enabled; disabled state suppresses active-time accumulation, resets
+  accumulated active time and pending breaks on disable, and preserves completed
+  slot progression.
 - Generalized break config to one shared `breaks.after_active` duration plus an
   arbitrary `breaks.types` map. Each break type has an integer slot interval,
   duration, messages, and per-type autolock flag.
@@ -33,6 +37,6 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next scheduler increment should be `scheduler-disable-state`.
+- The next increment should be `daemon-runtime-noop`.
 - Step-specific notes belong in `build-notes/$step.md`.
 - Update this file whenever a step is completed or the project state changes.

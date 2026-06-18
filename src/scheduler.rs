@@ -8,6 +8,7 @@ pub(crate) struct BreakScheduler {
     active_elapsed: Duration,
     slot: usize,
     pending_break: Option<ScheduledBreak>,
+    disabled: bool,
 }
 
 impl BreakScheduler {
@@ -18,11 +19,12 @@ impl BreakScheduler {
             active_elapsed: Duration::ZERO,
             slot: 0,
             pending_break: None,
+            disabled: false,
         }
     }
 
     pub(crate) fn advance_active(&mut self, elapsed: Duration) -> SchedulerAction {
-        if self.pending_break.is_some() {
+        if self.disabled || self.pending_break.is_some() {
             return SchedulerAction::None;
         }
 
@@ -45,6 +47,21 @@ impl BreakScheduler {
     pub(crate) fn finish_break(&mut self) {
         self.pending_break = None;
         self.active_elapsed = Duration::ZERO;
+    }
+
+    pub(crate) fn disable(&mut self) {
+        self.disabled = true;
+        self.pending_break = None;
+        self.active_elapsed = Duration::ZERO;
+    }
+
+    pub(crate) fn enable(&mut self) {
+        self.disabled = false;
+    }
+
+    #[must_use]
+    pub(crate) const fn is_disabled(&self) -> bool {
+        self.disabled
     }
 
     #[must_use]
@@ -228,6 +245,113 @@ mod tests {
 
         let second = started_break(scheduler.advance_active(Duration::from_secs(1)));
         assert_eq!(second.slot, 2);
+    }
+
+    #[test]
+    fn disabled_scheduler_ignores_active_time() {
+        let mut scheduler = BreakScheduler::new(custom_breaks(10, &[("short", 1, 20)]));
+
+        scheduler.disable();
+
+        assert!(scheduler.is_disabled());
+        assert_eq!(
+            scheduler.advance_active(Duration::from_secs(100)),
+            SchedulerAction::None
+        );
+
+        scheduler.enable();
+
+        assert!(!scheduler.is_disabled());
+        assert_eq!(
+            scheduler.advance_active(Duration::from_secs(9)),
+            SchedulerAction::None
+        );
+
+        let first = started_break(scheduler.advance_active(Duration::from_secs(1)));
+        assert_eq!(first.slot, 1);
+    }
+
+    #[test]
+    fn disable_resets_partial_active_time() {
+        let mut scheduler = BreakScheduler::new(custom_breaks(10, &[("short", 1, 20)]));
+
+        assert_eq!(
+            scheduler.advance_active(Duration::from_secs(9)),
+            SchedulerAction::None
+        );
+
+        scheduler.disable();
+        scheduler.enable();
+
+        assert_eq!(
+            scheduler.advance_active(Duration::from_secs(1)),
+            SchedulerAction::None
+        );
+
+        let first = started_break(scheduler.advance_active(Duration::from_secs(9)));
+        assert_eq!(first.slot, 1);
+    }
+
+    #[test]
+    fn enable_requires_fresh_active_interval_before_break() {
+        let mut scheduler = BreakScheduler::new(custom_breaks(10, &[("short", 1, 20)]));
+
+        scheduler.disable();
+        scheduler.enable();
+
+        assert_eq!(
+            scheduler.advance_active(Duration::from_secs(9)),
+            SchedulerAction::None
+        );
+
+        let first = started_break(scheduler.advance_active(Duration::from_secs(1)));
+        assert_eq!(first.slot, 1);
+    }
+
+    #[test]
+    fn disable_clears_pending_break_without_rewinding_slots() {
+        let mut scheduler = BreakScheduler::new(Config::default().breaks);
+
+        let first = started_break(scheduler.advance_active(DEFAULT_BREAK_AFTER_ACTIVE));
+        assert_eq!(first.name, "short");
+        assert_eq!(first.slot, 1);
+        assert_eq!(scheduler.pending_break(), Some(&first));
+
+        scheduler.disable();
+
+        assert!(scheduler.is_disabled());
+        assert_eq!(scheduler.pending_break(), None);
+        assert_eq!(
+            scheduler.advance_active(DEFAULT_BREAK_AFTER_ACTIVE),
+            SchedulerAction::None
+        );
+
+        scheduler.enable();
+
+        let second = started_break(scheduler.advance_active(DEFAULT_BREAK_AFTER_ACTIVE));
+        assert_eq!(second.name, "long");
+        assert_eq!(second.slot, 2);
+    }
+
+    #[test]
+    fn disable_and_enable_are_idempotent() {
+        let mut scheduler = BreakScheduler::new(custom_breaks(10, &[("short", 1, 20)]));
+
+        scheduler.disable();
+        scheduler.disable();
+
+        assert!(scheduler.is_disabled());
+        assert_eq!(
+            scheduler.advance_active(Duration::from_secs(10)),
+            SchedulerAction::None
+        );
+
+        scheduler.enable();
+        scheduler.enable();
+
+        assert!(!scheduler.is_disabled());
+        let first = started_break(scheduler.advance_active(Duration::from_secs(10)));
+        assert_eq!(first.slot, 1);
     }
 
     fn started_break(action: SchedulerAction) -> ScheduledBreak {
