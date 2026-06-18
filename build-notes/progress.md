@@ -3,8 +3,9 @@
 ## Current State
 
 - Initialized the repository and created the initial Rust binary scaffold.
-- The app currently has a single entry point in `src/main.rs` and prints
-  `hello world`.
+- Completed `core-layout`: the binary entry point now calls into the internal
+  library/runtime layout.
+- The app currently prints `hello world`.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
