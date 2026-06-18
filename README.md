@@ -13,11 +13,9 @@ nix develop
 make run
 ```
 
-The first runnable program prints:
-
-```text
-hello world
-```
+The current no-op daemon loads configuration, initializes the scheduler, and
+exits successfully. Platform activity and break backends are added in later
+increments.
 
 ## Common Commands
 

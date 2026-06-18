@@ -25,14 +25,16 @@
 - Generalized break config to one shared `breaks.after_active` duration plus an
   arbitrary `breaks.types` map. Each break type has an integer slot interval,
   duration, messages, and per-type autolock flag.
-- The app currently prints `hello world` when no config error is present.
+- Completed `daemon-runtime-noop`: the runtime now loads config, initializes a
+  scheduler from the validated break schedule, runs a private daemon event loop,
+  and exits cleanly through a no-op backend.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
 
 ## Verified
 
-- `make run` prints `hello world`.
+- `make run` starts the no-op daemon and exits successfully.
 - `make check` passes formatting, Clippy, and tests.
 - `make build` passes.
 - `nix build` passes.
@@ -41,6 +43,6 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next increment should be `daemon-runtime-noop`.
+- The next increment should be `backend-trait`.
 - Step-specific notes belong in `build-notes/$step.md`.
 - Update this file whenever a step is completed or the project state changes.

@@ -142,11 +142,13 @@ impl BreakScheduler {
     }
 
     #[must_use]
+    #[allow(dead_code)]
     pub(crate) fn is_disabled(&self) -> bool {
         self.state == SchedulerState::Disabled
     }
 
     #[must_use]
+    #[allow(dead_code)]
     pub(crate) fn pending_break(&self) -> Option<&ScheduledBreak> {
         match &self.state {
             SchedulerState::Pending(scheduled_break) => Some(scheduled_break),
