@@ -11,6 +11,9 @@
   `RESTEYES_CONFIG` or the XDG config path, partially overlaid onto defaults,
   parsed with string-only human-readable durations, and validated. Follow-up
   cleanup made path resolution more explicit and simplified empty YAML handling.
+- Corrected the break config plan so short breaks define the active cadence and
+  long breaks occur after a configurable number of completed short breaks;
+  automatic long breaks can be disabled with `after_short_breaks: null`.
 - The app currently prints `hello world` when no config error is present.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.

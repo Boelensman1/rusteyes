@@ -14,8 +14,11 @@ RestEyes is an as-simple-as-possible SafeEyes replacement focused on reliable br
 - Strictly block normal keyboard and mouse input during a break.
 - Release display overlays and input grabs if the daemon or backend exits unexpectedly.
 - Support short and long breaks.
-- Configure break duration and message text lists separately for short and long
-  breaks.
+- Configure short break cadence plus duration and message text lists separately
+  for short and long breaks.
+- Run a long break after a configured number of completed short breaks; a long
+  break replaces the next short break slot, and automatic long breaks can be
+  disabled.
 - Track keyboard and mouse activity to decide when a break is due.
 - Treat idle time as rest: it delays or satisfies break accumulation rather than forcing wall-clock breaks.
 - Optionally autolock screens after a break.
@@ -64,13 +67,14 @@ step note when implementation begins.
 1. `core-layout`: introduce internal modules/library structure while keeping
    `make run` working.
 2. `config-schema`: add typed config defaults and validation for break
-   durations, messages, disable presets, and autolock settings.
+   cadence, durations, messages, disable presets, and autolock settings.
 3. `yaml-config-loading`: load YAML from `RESTEYES_CONFIG` or the XDG config
    path, with clear parse and validation errors.
-4. `scheduler-short-breaks`: implement deterministic short-break scheduling
-   with injected time and activity inputs.
-5. `scheduler-long-idle-disable`: add long breaks, idle-as-rest behavior, and
-   local disable-until handling.
+4. `scheduler-short-breaks`: implement deterministic short-break slot
+   scheduling with injected time and activity inputs.
+5. `scheduler-long-idle-disable`: add long-break replacement after the
+   configured number of completed short breaks, idle-as-rest behavior, and local
+   disable-until handling.
 6. `daemon-runtime-noop`: wire config and scheduler into a daemon loop using a
    no-op backend so behavior is testable before X11.
 7. `backend-trait`: define the internal platform interface for activity, break

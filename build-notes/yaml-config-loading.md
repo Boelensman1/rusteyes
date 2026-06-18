@@ -21,6 +21,8 @@
 - Later cleanup made config path resolution more explicit, replaced indexed
   path suffixes with named constants, and simplified empty YAML handling by
   applying a default partial config.
+- Later long-break config correction replaced `breaks.long.after_active` with
+  `breaks.long.after_short_breaks`; `null` disables automatic long breaks.
 
 ## Decisions
 
@@ -29,6 +31,8 @@
   config file.
 - Unknown YAML fields are rejected.
 - Duration values are string-only to keep the YAML shape simple and explicit.
+- Long-break cadence is count-based rather than duration-based so long breaks
+  replace a short-break slot instead of running on an independent timer.
 - Random message selection is deferred to a later runtime/scheduler step.
 
 ## Commands
@@ -36,6 +40,8 @@
 - `make check`
 - `make run`
 - `make check` after config cleanup
+- `cargo test` after long-break config correction
+- `make check` after long-break config correction
 
 ## Follow-up
 
