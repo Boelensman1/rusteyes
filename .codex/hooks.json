@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "^(apply_patch|Edit|Write)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'dir=\"$PWD\"; while [ \"$dir\" != / ]; do if [ -f \"$dir/.codex/hooks/rustfmt.sh\" ]; then exec sh \"$dir/.codex/hooks/rustfmt.sh\"; fi; dir=$(dirname \"$dir\"); done; echo \"resteyes Codex rustfmt hook not found\" >&2; exit 0'",
+            "timeout": 120,
+            "statusMessage": "Formatting Rust code"
+          }
+        ]
+      }
+    ]
+  }
+}

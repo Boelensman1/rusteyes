@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'dir=\"$CLAUDE_PROJECT_DIR\"; [ -n \"$dir\" ] || dir=\"$PWD\"; while [ \"$dir\" != / ]; do if [ -f \"$dir/.codex/hooks/rustfmt.sh\" ]; then exec sh \"$dir/.codex/hooks/rustfmt.sh\"; fi; dir=$(dirname \"$dir\"); done; echo \"resteyes rustfmt hook not found\" >&2; exit 0'",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}
