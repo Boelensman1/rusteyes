@@ -98,3 +98,6 @@ Deferred later work:
 
 1. macOS Swift helper and launchd integration.
 2. Wayland investigation.
+3. Idle reset behavior: in a future increment, add both the idle timeout logic
+   that resets accumulated active time after enough idle time, and a config key
+   such as `breaks.reset_after_idle` to control that timeout.
