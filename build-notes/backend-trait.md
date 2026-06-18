@@ -7,18 +7,23 @@
 
 ## Changes
 
-- Added `src/backend.rs` with the internal `Backend` trait, `BackendEvent`
-  input enum, and `NoopBackend` implementation.
+- Added `src/backend.rs` with the internal `Backend` trait, `RuntimeEvent`
+  input enum, backend command enum, and `NoopBackend` implementation.
 - Moved runtime input events out of `runtime.rs` and into the backend module.
 - Kept `resteyes::run()` wired to `NoopBackend`, which still shuts down
   immediately.
-- Added backend operations to start a break, clear a break, and request local
-  lock.
+- Added backend commands to start a break, clear a break, and request local
+  lock through one command handler.
 - Runtime now clears backend break state when a pending break finishes or is
   cleared by disable.
 - Runtime requests local lock after an autolock break finishes.
-- Updated runtime tests to use a scripted backend that records start, clear,
-  and lock requests.
+- Later cleanup grouped finite and until-restart disable inputs under one
+  `DisableRequest` event payload.
+- Later cleanup made scheduler break completion and disable transitions return
+  the affected pending break, so runtime no longer peeks at scheduler pending
+  state before clearing backend break state.
+- Updated runtime tests to use a scripted backend that records ordered backend
+  commands.
 
 ## Decisions
 

@@ -1,6 +1,6 @@
-use crate::backend::{Backend, BackendEvent, NoopBackend};
+use crate::backend::{Backend, BackendCommand, DisableRequest, NoopBackend, RuntimeEvent};
 use crate::config::{Config, ConfigError};
-use crate::scheduler::{BreakSchedule, BreakScheduler, SchedulerAction};
+use crate::scheduler::{BreakSchedule, BreakScheduler};
 use std::time::Duration;
 
 pub(crate) fn run() -> Result<(), crate::Error> {
@@ -56,36 +56,32 @@ where
         }
     }
 
-    fn handle_event(&mut self, event: BackendEvent) -> bool {
+    fn handle_event(&mut self, event: RuntimeEvent) -> bool {
         match event {
-            BackendEvent::Active(elapsed) => self.advance_active(elapsed),
-            BackendEvent::WallClock(elapsed) => self.advance_wall_clock(elapsed),
-            BackendEvent::BreakFinished => self.finish_break(),
-            BackendEvent::DisableFor(duration) => self.disable_for(duration),
-            BackendEvent::DisableUntilRestart => self.disable_until_restart(),
-            BackendEvent::Enable => self.enable(),
-            BackendEvent::Shutdown => return false,
+            RuntimeEvent::ActiveTimeElapsed(elapsed) => self.advance_active(elapsed),
+            RuntimeEvent::WallClockElapsed(elapsed) => self.advance_wall_clock(elapsed),
+            RuntimeEvent::BreakFinished => self.finish_break(),
+            RuntimeEvent::Disable(DisableRequest::For(duration)) => self.disable_for(duration),
+            RuntimeEvent::Disable(DisableRequest::UntilRestart) => self.disable_until_restart(),
+            RuntimeEvent::Enable => self.enable(),
+            RuntimeEvent::Shutdown => return false,
         }
 
         true
     }
 
     fn advance_active(&mut self, elapsed: Duration) {
-        if let SchedulerAction::StartBreak(scheduled_break) = self.scheduler.advance_active(elapsed)
-        {
-            self.backend.start_break(scheduled_break);
+        if let Some(scheduled_break) = self.scheduler.advance_active(elapsed) {
+            self.handle_command(BackendCommand::StartBreak(scheduled_break));
         }
     }
 
     fn finish_break(&mut self) {
-        let pending_break = self.scheduler.pending_break().cloned();
-        self.scheduler.finish_break();
-
-        if let Some(scheduled_break) = pending_break {
-            self.backend.clear_break();
+        if let Some(scheduled_break) = self.scheduler.finish_break() {
+            self.handle_command(BackendCommand::ClearBreak);
 
             if scheduled_break.autolock {
-                self.backend.request_lock();
+                self.handle_command(BackendCommand::RequestLock);
             }
         }
     }
@@ -101,14 +97,12 @@ where
     }
 
     fn disable_for(&mut self, duration: Duration) {
-        self.clear_pending_break();
-        self.scheduler.disable();
+        self.disable_scheduler();
         self.disable_mode = DisableMode::Timed(duration);
     }
 
     fn disable_until_restart(&mut self) {
-        self.clear_pending_break();
-        self.scheduler.disable();
+        self.disable_scheduler();
         self.disable_mode = DisableMode::UntilRestart;
     }
 
@@ -117,10 +111,14 @@ where
         self.disable_mode = DisableMode::Enabled;
     }
 
-    fn clear_pending_break(&mut self) {
-        if self.scheduler.pending_break().is_some() {
-            self.backend.clear_break();
+    fn disable_scheduler(&mut self) {
+        if self.scheduler.disable().is_some() {
+            self.handle_command(BackendCommand::ClearBreak);
         }
+    }
+
+    fn handle_command(&mut self, command: BackendCommand) {
+        self.backend.handle_command(command);
     }
 }
 

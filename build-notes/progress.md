@@ -29,8 +29,10 @@
   scheduler from the validated break schedule, runs a private daemon event loop,
   and exits cleanly through a no-op backend.
 - Completed `backend-trait`: the no-op runtime now uses a crate-internal backend
-  boundary with events for activity/control input and operations for break
-  start, break clear, and local lock requests.
+  boundary with runtime events for activity/control input and backend commands
+  for break start, break clear, and local lock requests. Follow-up cleanup made
+  scheduler transitions return affected pending breaks so runtime does not
+  inspect scheduler pending state to drive backend cleanup.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.

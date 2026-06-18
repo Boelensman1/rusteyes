@@ -102,9 +102,9 @@ impl BreakScheduler {
         }
     }
 
-    pub(crate) fn advance_active(&mut self, elapsed: Duration) -> SchedulerAction {
+    pub(crate) fn advance_active(&mut self, elapsed: Duration) -> Option<ScheduledBreak> {
         if self.state != SchedulerState::Active {
-            return SchedulerAction::None;
+            return None;
         }
 
         self.active_elapsed = self.active_elapsed.saturating_add(elapsed);
@@ -116,23 +116,35 @@ impl BreakScheduler {
             if let Some(scheduled_break) = self.schedule.due_break(self.slot) {
                 self.active_elapsed = Duration::ZERO;
                 self.state = SchedulerState::Pending(scheduled_break.clone());
-                return SchedulerAction::StartBreak(scheduled_break);
+                return Some(scheduled_break);
             }
         }
 
-        SchedulerAction::None
+        None
     }
 
-    pub(crate) fn finish_break(&mut self) {
-        if self.state != SchedulerState::Disabled {
-            self.state = SchedulerState::Active;
+    pub(crate) fn finish_break(&mut self) -> Option<ScheduledBreak> {
+        let previous = std::mem::replace(&mut self.state, SchedulerState::Active);
+        self.active_elapsed = Duration::ZERO;
+
+        match previous {
+            SchedulerState::Pending(scheduled_break) => Some(scheduled_break),
+            SchedulerState::Disabled => {
+                self.state = SchedulerState::Disabled;
+                None
+            }
+            SchedulerState::Active => None,
         }
-        self.active_elapsed = Duration::ZERO;
     }
 
-    pub(crate) fn disable(&mut self) {
-        self.state = SchedulerState::Disabled;
+    pub(crate) fn disable(&mut self) -> Option<ScheduledBreak> {
+        let previous = std::mem::replace(&mut self.state, SchedulerState::Disabled);
         self.active_elapsed = Duration::ZERO;
+
+        match previous {
+            SchedulerState::Pending(scheduled_break) => Some(scheduled_break),
+            SchedulerState::Active | SchedulerState::Disabled => None,
+        }
     }
 
     pub(crate) fn enable(&mut self) {
@@ -162,13 +174,6 @@ enum SchedulerState {
     Active,
     Pending(ScheduledBreak),
     Disabled,
-}
-
-#[allow(clippy::module_name_repetitions)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SchedulerAction {
-    None,
-    StartBreak(ScheduledBreak),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

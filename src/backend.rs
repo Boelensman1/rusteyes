@@ -2,37 +2,43 @@ use crate::scheduler::ScheduledBreak;
 use std::time::Duration;
 
 pub(crate) trait Backend {
-    fn next_event(&mut self) -> BackendEvent;
+    fn next_event(&mut self) -> RuntimeEvent;
 
-    fn start_break(&mut self, scheduled_break: ScheduledBreak);
-
-    fn clear_break(&mut self);
-
-    fn request_lock(&mut self);
+    fn handle_command(&mut self, command: BackendCommand);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
-pub(crate) enum BackendEvent {
-    Active(Duration),
-    WallClock(Duration),
+pub(crate) enum RuntimeEvent {
+    ActiveTimeElapsed(Duration),
+    WallClockElapsed(Duration),
     BreakFinished,
-    DisableFor(Duration),
-    DisableUntilRestart,
+    Disable(DisableRequest),
     Enable,
     Shutdown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum DisableRequest {
+    For(Duration),
+    UntilRestart,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum BackendCommand {
+    StartBreak(ScheduledBreak),
+    ClearBreak,
+    RequestLock,
 }
 
 pub(crate) struct NoopBackend;
 
 impl Backend for NoopBackend {
-    fn next_event(&mut self) -> BackendEvent {
-        BackendEvent::Shutdown
+    fn next_event(&mut self) -> RuntimeEvent {
+        RuntimeEvent::Shutdown
     }
 
-    fn start_break(&mut self, _scheduled_break: ScheduledBreak) {}
-
-    fn clear_break(&mut self) {}
-
-    fn request_lock(&mut self) {}
+    fn handle_command(&mut self, _command: BackendCommand) {}
 }
