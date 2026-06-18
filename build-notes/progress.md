@@ -7,7 +7,10 @@
   library/runtime layout.
 - Completed `config-schema`: typed configuration defaults and validation now
   exist without changing runtime behavior.
-- The app currently prints `hello world`.
+- Completed `yaml-config-loading`: YAML config files are loaded from
+  `RESTEYES_CONFIG` or the XDG config path, partially overlaid onto defaults,
+  parsed with human-readable durations, and validated.
+- The app currently prints `hello world` when no config error is present.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.

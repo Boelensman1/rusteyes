@@ -1,3 +1,6 @@
 fn main() {
-    resteyes::run();
+    if let Err(error) = resteyes::run() {
+        eprintln!("resteyes: {error}");
+        std::process::exit(1);
+    }
 }

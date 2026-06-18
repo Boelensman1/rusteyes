@@ -9,14 +9,16 @@ RestEyes is an as-simple-as-possible SafeEyes replacement focused on reliable br
 
 ## Core behavior
 
-- Blank all connected displays during a break and show the configured break message.
+- Blank all connected displays during a break and show one configured break
+  message.
 - Strictly block normal keyboard and mouse input during a break.
 - Release display overlays and input grabs if the daemon or backend exits unexpectedly.
 - Support short and long breaks.
-- Configure break duration and message text separately for short and long breaks.
+- Configure break duration and message text lists separately for short and long
+  breaks.
 - Track keyboard and mouse activity to decide when a break is due.
 - Treat idle time as rest: it delays or satisfies break accumulation rather than forcing wall-clock breaks.
-- Optionally lock screens after a break.
+- Optionally autolock screens after a break.
 
 ## Network sync
 
@@ -39,7 +41,7 @@ RestEyes is an as-simple-as-possible SafeEyes replacement focused on reliable br
 
 - Settings live in a YAML config file.
 - UI is limited to:
-  - break overlay with the configured message
+  - break overlay with a configured break message
   - pre-break notification
   - system tray/menu-bar icon showing that the daemon is running
 - Tray/menu actions:
@@ -62,7 +64,7 @@ step note when implementation begins.
 1. `core-layout`: introduce internal modules/library structure while keeping
    `make run` working.
 2. `config-schema`: add typed config defaults and validation for break
-   durations, messages, disable presets, and lock settings.
+   durations, messages, disable presets, and autolock settings.
 3. `yaml-config-loading`: load YAML from `RESTEYES_CONFIG` or the XDG config
    path, with clear parse and validation errors.
 4. `scheduler-short-breaks`: implement deterministic short-break scheduling

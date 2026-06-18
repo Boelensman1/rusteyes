@@ -7,18 +7,18 @@
 ## Changes
 
 - Added a public `config` module with typed defaults for break scheduling,
-  break duration, break messages, disable presets, and lock-after-break flags.
+  break duration, break messages, disable presets, and autolock flags.
 - Added validation for zero active durations, zero break durations, empty break
-  messages, empty disable presets, zero disable presets, and duplicate disable
-  presets.
+  message lists, blank break messages, empty disable presets, zero disable
+  presets, and duplicate disable presets.
 - Kept startup behavior unchanged; the runtime still prints `hello world`.
 
 ## Decisions
 
 - No production dependencies were added.
 - YAML loading is deferred to `yaml-config-loading`.
-- Lock settings are typed as per-break booleans for now; platform-specific lock
-  commands remain out of scope.
+- Autolock settings are typed as per-break booleans for now;
+  platform-specific lock commands remain out of scope.
 - Break configs include an `after_active` duration so the scheduler can use the
   same schema in the next step.
 
@@ -29,4 +29,4 @@
 
 ## Follow-up
 
-- Continue with `yaml-config-loading`.
+- Continue with `scheduler-short-breaks`.
