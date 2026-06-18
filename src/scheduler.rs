@@ -1,42 +1,121 @@
-use crate::config::{BreakTypeConfig, Breaks};
+use crate::config::{BreakTypeConfig, Breaks, ConfigError};
 use std::time::Duration;
 
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BreakSchedule {
+    after_active: Duration,
+    rules: Vec<BreakRule>,
+}
+
+impl BreakSchedule {
+    #[must_use]
+    const fn after_active(&self) -> Duration {
+        self.after_active
+    }
+
+    fn due_break(&self, slot: usize) -> Option<ScheduledBreak> {
+        self.rules
+            .iter()
+            .find(|rule| slot % rule.interval == 0)
+            .map(|rule| rule.scheduled_break(slot))
+    }
+}
+
+impl TryFrom<Breaks> for BreakSchedule {
+    type Error = ConfigError;
+
+    fn try_from(breaks: Breaks) -> Result<Self, Self::Error> {
+        breaks.validate()?;
+
+        let Breaks {
+            after_active,
+            types,
+        } = breaks;
+        let mut rules = types
+            .into_iter()
+            .map(|(name, break_type)| BreakRule::from_config(name, break_type))
+            .collect::<Vec<_>>();
+
+        rules.sort_by(|left, right| {
+            right
+                .interval
+                .cmp(&left.interval)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+
+        Ok(Self {
+            after_active,
+            rules,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BreakRule {
+    name: String,
+    interval: usize,
+    duration: Duration,
+    messages: Vec<String>,
+    autolock: bool,
+}
+
+impl BreakRule {
+    fn from_config(name: String, break_type: BreakTypeConfig) -> Self {
+        Self {
+            name,
+            interval: break_type.interval,
+            duration: break_type.duration,
+            messages: break_type.messages,
+            autolock: break_type.autolock,
+        }
+    }
+
+    fn scheduled_break(&self, slot: usize) -> ScheduledBreak {
+        ScheduledBreak {
+            name: self.name.clone(),
+            slot,
+            duration: self.duration,
+            messages: self.messages.clone(),
+            autolock: self.autolock,
+        }
+    }
+}
+
+#[allow(clippy::module_name_repetitions)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BreakScheduler {
-    breaks: Breaks,
+    schedule: BreakSchedule,
     active_elapsed: Duration,
     slot: usize,
-    pending_break: Option<ScheduledBreak>,
-    disabled: bool,
+    state: SchedulerState,
 }
 
 impl BreakScheduler {
     #[must_use]
-    pub(crate) const fn new(breaks: Breaks) -> Self {
+    pub(crate) fn new(schedule: BreakSchedule) -> Self {
         Self {
-            breaks,
+            schedule,
             active_elapsed: Duration::ZERO,
             slot: 0,
-            pending_break: None,
-            disabled: false,
+            state: SchedulerState::Active,
         }
     }
 
     pub(crate) fn advance_active(&mut self, elapsed: Duration) -> SchedulerAction {
-        if self.disabled || self.pending_break.is_some() {
+        if self.state != SchedulerState::Active {
             return SchedulerAction::None;
         }
 
         self.active_elapsed = self.active_elapsed.saturating_add(elapsed);
 
-        while self.active_elapsed >= self.breaks.after_active {
-            self.active_elapsed -= self.breaks.after_active;
+        while self.active_elapsed >= self.schedule.after_active() {
+            self.active_elapsed -= self.schedule.after_active();
             self.slot += 1;
 
-            if let Some(scheduled_break) = self.due_break() {
+            if let Some(scheduled_break) = self.schedule.due_break(self.slot) {
                 self.active_elapsed = Duration::ZERO;
-                self.pending_break = Some(scheduled_break.clone());
+                self.state = SchedulerState::Pending(scheduled_break.clone());
                 return SchedulerAction::StartBreak(scheduled_break);
             }
         }
@@ -45,38 +124,42 @@ impl BreakScheduler {
     }
 
     pub(crate) fn finish_break(&mut self) {
-        self.pending_break = None;
+        if self.state != SchedulerState::Disabled {
+            self.state = SchedulerState::Active;
+        }
         self.active_elapsed = Duration::ZERO;
     }
 
     pub(crate) fn disable(&mut self) {
-        self.disabled = true;
-        self.pending_break = None;
+        self.state = SchedulerState::Disabled;
         self.active_elapsed = Duration::ZERO;
     }
 
     pub(crate) fn enable(&mut self) {
-        self.disabled = false;
+        if self.state == SchedulerState::Disabled {
+            self.state = SchedulerState::Active;
+        }
     }
 
     #[must_use]
-    pub(crate) const fn is_disabled(&self) -> bool {
-        self.disabled
+    pub(crate) fn is_disabled(&self) -> bool {
+        self.state == SchedulerState::Disabled
     }
 
     #[must_use]
-    pub(crate) const fn pending_break(&self) -> Option<&ScheduledBreak> {
-        self.pending_break.as_ref()
+    pub(crate) fn pending_break(&self) -> Option<&ScheduledBreak> {
+        match &self.state {
+            SchedulerState::Pending(scheduled_break) => Some(scheduled_break),
+            SchedulerState::Active | SchedulerState::Disabled => None,
+        }
     }
+}
 
-    fn due_break(&self) -> Option<ScheduledBreak> {
-        self.breaks
-            .types
-            .iter()
-            .filter(|(_, break_type)| self.slot % break_type.interval == 0)
-            .max_by_key(|(_, break_type)| break_type.interval)
-            .map(|(name, break_type)| ScheduledBreak::new(name, self.slot, break_type))
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SchedulerState {
+    Active,
+    Pending(ScheduledBreak),
+    Disabled,
 }
 
 #[allow(clippy::module_name_repetitions)]
@@ -95,28 +178,16 @@ pub(crate) struct ScheduledBreak {
     pub(crate) autolock: bool,
 }
 
-impl ScheduledBreak {
-    fn new(name: &str, slot: usize, break_type: &BreakTypeConfig) -> Self {
-        Self {
-            name: name.to_owned(),
-            slot,
-            duration: break_type.duration,
-            messages: break_type.messages.clone(),
-            autolock: break_type.autolock,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{BreakScheduler, ScheduledBreak, SchedulerAction};
-    use crate::config::{BreakTypeConfig, Breaks, Config, DEFAULT_BREAK_AFTER_ACTIVE};
+    use super::{BreakSchedule, BreakScheduler, ScheduledBreak, SchedulerAction};
+    use crate::config::{BreakTypeConfig, Breaks, Config, ConfigError, DEFAULT_BREAK_AFTER_ACTIVE};
     use std::collections::BTreeMap;
     use std::time::Duration;
 
     #[test]
     fn default_config_schedules_short_and_long_break_slots() {
-        let mut scheduler = BreakScheduler::new(Config::default().breaks);
+        let mut scheduler = scheduler(Config::default().breaks);
 
         let first = started_break(scheduler.advance_active(DEFAULT_BREAK_AFTER_ACTIVE));
         assert_eq!(first.name, "short");
@@ -143,7 +214,7 @@ mod tests {
 
     #[test]
     fn largest_due_interval_wins_for_the_slot() {
-        let mut scheduler = BreakScheduler::new(custom_breaks(
+        let mut scheduler = scheduler(custom_breaks(
             10,
             &[("blink", 1, 1), ("short", 2, 20), ("long", 4, 300)],
         ));
@@ -174,8 +245,7 @@ mod tests {
 
     #[test]
     fn empty_slots_are_skipped_until_a_break_type_is_due() {
-        let mut scheduler =
-            BreakScheduler::new(custom_breaks(10, &[("short", 3, 20), ("long", 5, 300)]));
+        let mut scheduler = scheduler(custom_breaks(10, &[("short", 3, 20), ("long", 5, 300)]));
 
         assert_eq!(
             scheduler.advance_active(Duration::from_secs(20)),
@@ -190,7 +260,7 @@ mod tests {
 
     #[test]
     fn large_active_delta_starts_only_the_first_due_break() {
-        let mut scheduler = BreakScheduler::new(Config::default().breaks);
+        let mut scheduler = scheduler(Config::default().breaks);
 
         let first = started_break(scheduler.advance_active(DEFAULT_BREAK_AFTER_ACTIVE * 3));
         assert_eq!(first.name, "short");
@@ -210,7 +280,7 @@ mod tests {
 
     #[test]
     fn pending_break_blocks_active_time_accumulation() {
-        let mut scheduler = BreakScheduler::new(Config::default().breaks);
+        let mut scheduler = scheduler(Config::default().breaks);
 
         let first = started_break(scheduler.advance_active(DEFAULT_BREAK_AFTER_ACTIVE));
         assert_eq!(first.name, "short");
@@ -231,7 +301,7 @@ mod tests {
 
     #[test]
     fn finish_break_restarts_active_accumulation_from_zero() {
-        let mut scheduler = BreakScheduler::new(custom_breaks(10, &[("short", 1, 20)]));
+        let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20)]));
 
         let first = started_break(scheduler.advance_active(Duration::from_secs(10)));
         assert_eq!(first.slot, 1);
@@ -249,7 +319,7 @@ mod tests {
 
     #[test]
     fn disabled_scheduler_ignores_active_time() {
-        let mut scheduler = BreakScheduler::new(custom_breaks(10, &[("short", 1, 20)]));
+        let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20)]));
 
         scheduler.disable();
 
@@ -273,7 +343,7 @@ mod tests {
 
     #[test]
     fn disable_resets_partial_active_time() {
-        let mut scheduler = BreakScheduler::new(custom_breaks(10, &[("short", 1, 20)]));
+        let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20)]));
 
         assert_eq!(
             scheduler.advance_active(Duration::from_secs(9)),
@@ -294,7 +364,7 @@ mod tests {
 
     #[test]
     fn enable_requires_fresh_active_interval_before_break() {
-        let mut scheduler = BreakScheduler::new(custom_breaks(10, &[("short", 1, 20)]));
+        let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20)]));
 
         scheduler.disable();
         scheduler.enable();
@@ -310,7 +380,7 @@ mod tests {
 
     #[test]
     fn disable_clears_pending_break_without_rewinding_slots() {
-        let mut scheduler = BreakScheduler::new(Config::default().breaks);
+        let mut scheduler = scheduler(Config::default().breaks);
 
         let first = started_break(scheduler.advance_active(DEFAULT_BREAK_AFTER_ACTIVE));
         assert_eq!(first.name, "short");
@@ -335,7 +405,7 @@ mod tests {
 
     #[test]
     fn disable_and_enable_are_idempotent() {
-        let mut scheduler = BreakScheduler::new(custom_breaks(10, &[("short", 1, 20)]));
+        let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20)]));
 
         scheduler.disable();
         scheduler.disable();
@@ -352,6 +422,50 @@ mod tests {
         assert!(!scheduler.is_disabled());
         let first = started_break(scheduler.advance_active(Duration::from_secs(10)));
         assert_eq!(first.slot, 1);
+    }
+
+    #[test]
+    fn schedule_rejects_empty_break_types() {
+        let mut breaks = custom_breaks(10, &[("short", 1, 20)]);
+        breaks.types.clear();
+
+        assert_eq!(
+            BreakSchedule::try_from(breaks),
+            Err(ConfigError::EmptyBreakTypes)
+        );
+    }
+
+    #[test]
+    fn schedule_rejects_zero_break_interval() {
+        let breaks = custom_breaks(10, &[("short", 0, 20)]);
+
+        assert_eq!(
+            BreakSchedule::try_from(breaks),
+            Err(ConfigError::ZeroBreakInterval {
+                name: String::from("short")
+            })
+        );
+    }
+
+    #[test]
+    fn schedule_rejects_duplicate_break_intervals() {
+        let breaks = custom_breaks(10, &[("short", 1, 20), ("long", 1, 300)]);
+
+        assert_eq!(
+            BreakSchedule::try_from(breaks),
+            Err(ConfigError::DuplicateBreakInterval {
+                interval: 1,
+                first_name: String::from("long"),
+                duplicate_name: String::from("short")
+            })
+        );
+    }
+
+    fn scheduler(breaks: Breaks) -> BreakScheduler {
+        match BreakSchedule::try_from(breaks) {
+            Ok(schedule) => BreakScheduler::new(schedule),
+            Err(error) => panic!("test breaks should be valid: {error}"),
+        }
     }
 
     fn started_break(action: SchedulerAction) -> ScheduledBreak {

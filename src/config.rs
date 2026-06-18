@@ -50,15 +50,8 @@ impl Config {
         )
     }
 
-    /// Parses YAML config and applies it over the built-in defaults.
-    ///
-    /// Scalar values overlay defaults. When `breaks.types` is present, it
-    /// replaces the default break type map.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when YAML parsing or config validation fails.
-    pub fn from_yaml_str(input: &str) -> Result<Self, ConfigLoadError> {
+    #[cfg(test)]
+    fn from_yaml_str(input: &str) -> Result<Self, ConfigLoadError> {
         Self::from_yaml_str_with_path(input, None)
     }
 
@@ -201,7 +194,7 @@ pub struct Breaks {
 }
 
 impl Breaks {
-    fn validate(&self) -> Result<(), ConfigError> {
+    pub(crate) fn validate(&self) -> Result<(), ConfigError> {
         if self.after_active.is_zero() {
             return Err(ConfigError::ZeroBreakAfterActiveDuration);
         }

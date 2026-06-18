@@ -12,6 +12,8 @@
 - Disabled schedulers ignore active-time increments and never start breaks.
 - Disabling clears any pending break and resets accumulated active time while
   preserving the completed slot count.
+- Later cleanup represented active, pending-break, and disabled modes as one
+  scheduler state enum instead of separate disabled and pending fields.
 - Kept runtime behavior unchanged; the app still prints `hello world`.
 
 ## Decisions
@@ -26,6 +28,7 @@
 ## Commands
 
 - `make check`
+- `make check` after scheduler state cleanup
 
 ## Follow-up
 

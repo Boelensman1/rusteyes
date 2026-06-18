@@ -18,6 +18,10 @@
   and enabled; disabled state suppresses active-time accumulation, resets
   accumulated active time and pending breaks on disable, and preserves completed
   slot progression.
+- Completed internal API cleanup before daemon wiring: crate public API now
+  exposes `run` and an application error wrapper, config remains crate-internal,
+  and scheduler construction uses a validated `BreakSchedule` instead of raw
+  config storage.
 - Generalized break config to one shared `breaks.after_active` duration plus an
   arbitrary `breaks.types` map. Each break type has an integer slot interval,
   duration, messages, and per-type autolock flag.
