@@ -26,7 +26,6 @@ pub(crate) enum DisableRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum BackendCommand {
     StartBreak(ScheduledBreak),
     ClearBreak,

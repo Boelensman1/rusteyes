@@ -30,8 +30,8 @@
   interval wins.
 - If a large active-time delta crosses several slots, scheduling stops at the
   first due break and any remainder is discarded while the break is pending.
-- A scoped `dead_code` allow remains on the internal scheduler module until the
-  later daemon runtime step wires it to activity.
+- Later cleanup removed scheduler dead-code allowances after daemon runtime
+  wiring started using scheduler state transitions directly.
 
 ## Commands
 

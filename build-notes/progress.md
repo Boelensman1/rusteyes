@@ -14,6 +14,8 @@
 - Completed `scheduler-break-slots`: an internal deterministic scheduler now
   consumes active-time durations, advances break slots, picks the due break type
   with the largest interval, and holds a pending break until it is finished.
+  Follow-up cleanup removed scheduler-only inspection helpers from production
+  builds and simplified rule ordering.
 - Completed `scheduler-disable-state`: the scheduler can be explicitly disabled
   and enabled; disabled state suppresses active-time accumulation, resets
   accumulated active time and pending breaks on disable, and preserves completed

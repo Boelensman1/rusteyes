@@ -37,12 +37,7 @@ impl TryFrom<Breaks> for BreakSchedule {
             .map(|(name, break_type)| BreakRule::from_config(name, break_type))
             .collect::<Vec<_>>();
 
-        rules.sort_by(|left, right| {
-            right
-                .interval
-                .cmp(&left.interval)
-                .then_with(|| left.name.cmp(&right.name))
-        });
+        rules.sort_by_key(|rule| std::cmp::Reverse(rule.interval));
 
         Ok(Self {
             after_active,
@@ -153,14 +148,14 @@ impl BreakScheduler {
         }
     }
 
+    #[cfg(test)]
     #[must_use]
-    #[allow(dead_code)]
     pub(crate) fn is_disabled(&self) -> bool {
         self.state == SchedulerState::Disabled
     }
 
+    #[cfg(test)]
     #[must_use]
-    #[allow(dead_code)]
     pub(crate) fn pending_break(&self) -> Option<&ScheduledBreak> {
         match &self.state {
             SchedulerState::Pending(scheduled_break) => Some(scheduled_break),
