@@ -13,15 +13,15 @@ RestEyes is an as-simple-as-possible SafeEyes replacement focused on reliable br
   message.
 - Strictly block normal keyboard and mouse input during a break.
 - Release display overlays and input grabs if the daemon or backend exits unexpectedly.
-- Support short and long breaks.
-- Configure short break cadence plus duration and message text lists separately
-  for short and long breaks.
-- Run a long break after a configured number of completed short breaks; a long
-  break replaces the next short break slot, and automatic long breaks can be
-  disabled.
+- Support arbitrary named break types.
+- Configure one active-time duration before break slots, plus each break
+  type's interval, duration, message text lists, and autolock behavior.
+- Treat break type intervals as multiples of the shared active-time duration;
+  when multiple break types are due for the same slot, run the due break with
+  the largest interval.
 - Track keyboard and mouse activity to decide when a break is due.
 - Treat idle time as rest: it delays or satisfies break accumulation rather than forcing wall-clock breaks.
-- Optionally autolock screens after a break.
+- Optionally autolock screens after configured break types.
 
 ## Network sync
 
@@ -49,8 +49,7 @@ RestEyes is an as-simple-as-possible SafeEyes replacement focused on reliable br
   - system tray/menu-bar icon showing that the daemon is running
 - Tray/menu actions:
   - quit
-  - start a short break now
-  - start a long break now
+  - start a configured break type now
   - disable breaks for 30 minutes
   - disable breaks for 1 hour
   - disable breaks for 2 hours
@@ -66,15 +65,15 @@ step note when implementation begins.
 
 1. `core-layout`: introduce internal modules/library structure while keeping
    `make run` working.
-2. `config-schema`: add typed config defaults and validation for break
-   cadence, durations, messages, disable presets, and autolock settings.
+2. `config-schema`: add typed config defaults and validation for shared break
+   cadence, named break types, durations, messages, disable presets, and
+   autolock settings.
 3. `yaml-config-loading`: load YAML from `RESTEYES_CONFIG` or the XDG config
    path, with clear parse and validation errors.
-4. `scheduler-short-breaks`: implement deterministic short-break slot
+4. `scheduler-break-slots`: implement deterministic generic break slot
    scheduling with injected time and activity inputs.
-5. `scheduler-long-idle-disable`: add long-break replacement after the
-   configured number of completed short breaks, idle-as-rest behavior, and local
-   disable-until handling.
+5. `scheduler-idle-disable`: add idle-as-rest behavior and local disable-until
+   handling.
 6. `daemon-runtime-noop`: wire config and scheduler into a daemon loop using a
    no-op backend so behavior is testable before X11.
 7. `backend-trait`: define the internal platform interface for activity, break
@@ -85,7 +84,7 @@ step note when implementation begins.
 10. `x11-input-blocking`: grab/block normal input during breaks and release
     cleanly on break end or backend exit.
 11. `x11-break-integration`: connect scheduler and X11 backend for scheduled
-    and manual short/long breaks.
+    and manual named breaks.
 12. `sync-protocol`: define authenticated sync events for break start, disable
     periods, and lock-after-break decisions.
 13. `lan-discovery`: discover authenticated peers on the LAN.

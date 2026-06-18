@@ -6,34 +6,38 @@
 
 ## Changes
 
-- Added a public `config` module with typed defaults for break scheduling,
-  break duration, break messages, disable presets, and autolock flags.
-- Added validation for zero active durations, zero break durations, empty break
-  message lists, blank break messages, empty disable presets, zero disable
-  presets, and duplicate disable presets.
-- Later corrected long-break scheduling config so long breaks are expressed as
-  `after_short_breaks`, can be disabled with `null`, and do not have an
-  independent `after_active` duration.
-- Long breaks now autolock by default; short breaks do not.
+- Added a public `config` module with typed defaults for shared break
+  scheduling, named break types, break durations, break messages, disable
+  presets, and per-break-type autolock flags.
+- Added validation for zero active durations, empty break type maps, empty break
+  type names, whitespace-padded break type names, zero break intervals,
+  duplicate break intervals, zero break durations, empty break message lists,
+  blank break messages, empty disable presets, zero disable presets, and
+  duplicate disable presets.
+- Represented breaks as `breaks.after_active` plus arbitrary named
+  `breaks.types`. Default `short` and `long` break types preserve the previous
+  defaults.
+- The default `long` break type autolocks; the default `short` break type does
+  not.
 - Kept startup behavior unchanged; the runtime still prints `hello world`.
 
 ## Decisions
 
 - No production dependencies were added.
 - YAML loading is deferred to `yaml-config-loading`.
-- Autolock settings remain typed as per-short/long booleans for now;
-  platform-specific lock commands remain out of scope.
-- Short breaks define the active-time cadence. Long breaks replace a short-break
-  slot after the configured number of completed short breaks, avoiding separate
-  timer/coalescing policy.
+- Autolock is stored per break type; platform-specific lock commands remain out
+  of scope.
+- A shared active-time duration defines break slots. Each break type has an
+  integer interval in slots, and the due break with the largest interval wins.
+- Duplicate intervals are rejected so future scheduling has one unambiguous
+  winner per slot.
 
 ## Commands
 
 - `make check`
 - `make run`
-- `cargo test` after long-break config correction
-- `make check` after long-break config correction
+- `make check` after generic break type correction
 
 ## Follow-up
 
-- Continue with `scheduler-short-breaks`.
+- Continue with `scheduler-break-slots`.

@@ -14,15 +14,18 @@
   `1h`, and `1h 30m`; bare integer seconds are rejected.
 - Changed break text from a single `message` to `messages`, allowing multiple
   messages for future random selection.
-- Renamed lock-after-break config to `autolock` to make clear that it only
-  controls automatic locking.
+- Moved `autolock` onto each break type to make automatic locking part of the
+  generic break definition.
 - Wired runtime startup through config loading while preserving the no-config
   `hello world` output.
 - Later cleanup made config path resolution more explicit, replaced indexed
   path suffixes with named constants, and simplified empty YAML handling by
   applying a default partial config.
-- Later long-break config correction replaced `breaks.long.after_active` with
-  `breaks.long.after_short_breaks`; `null` disables automatic long breaks.
+- Replaced fixed break keys with `breaks.after_active` plus a `breaks.types`
+  map keyed by arbitrary break type names. Each break type defines `interval`,
+  `duration`, `messages`, and optional `autolock`.
+- When `breaks.types` is present in YAML, it replaces the default break type
+  map so users can define the exact break type set they want.
 
 ## Decisions
 
@@ -31,8 +34,8 @@
   config file.
 - Unknown YAML fields are rejected.
 - Duration values are string-only to keep the YAML shape simple and explicit.
-- Long-break cadence is count-based rather than duration-based so long breaks
-  replace a short-break slot instead of running on an independent timer.
+- Break cadence is slot-based rather than separate per-break timers: one shared
+  active duration defines slots, and each break type has an integer interval.
 - Random message selection is deferred to a later runtime/scheduler step.
 
 ## Commands
@@ -40,9 +43,8 @@
 - `make check`
 - `make run`
 - `make check` after config cleanup
-- `cargo test` after long-break config correction
-- `make check` after long-break config correction
+- `make check` after generic break type correction
 
 ## Follow-up
 
-- Continue with `scheduler-short-breaks`.
+- Continue with `scheduler-break-slots`.

@@ -1,4 +1,5 @@
 use serde::{Deserialize, de};
+use std::collections::{BTreeMap, btree_map::Entry};
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
@@ -12,9 +13,10 @@ const HOME: &str = "HOME";
 const CONFIG_DIR: &str = "resteyes";
 const CONFIG_FILE: &str = "config.yaml";
 
-pub const DEFAULT_SHORT_BREAK_AFTER_ACTIVE: Duration = Duration::from_secs(20 * 60);
+pub const DEFAULT_BREAK_AFTER_ACTIVE: Duration = Duration::from_secs(20 * 60);
+pub const DEFAULT_SHORT_BREAK_INTERVAL: usize = 1;
 pub const DEFAULT_SHORT_BREAK_DURATION: Duration = Duration::from_secs(20);
-pub const DEFAULT_LONG_BREAK_AFTER_SHORT_BREAKS: usize = 2;
+pub const DEFAULT_LONG_BREAK_INTERVAL: usize = 2;
 pub const DEFAULT_LONG_BREAK_DURATION: Duration = Duration::from_secs(5 * 60);
 pub const DEFAULT_DISABLE_PRESETS: [Duration; 4] = [
     Duration::from_secs(30 * 60),
@@ -28,7 +30,6 @@ pub const DEFAULT_DISABLE_PRESETS: [Duration; 4] = [
 pub struct Config {
     pub breaks: Breaks,
     pub disable_presets: Vec<Duration>,
-    pub autolock: AutolockConfig,
 }
 
 impl Config {
@@ -51,6 +52,9 @@ impl Config {
 
     /// Parses YAML config and applies it over the built-in defaults.
     ///
+    /// Scalar values overlay defaults. When `breaks.types` is present, it
+    /// replaces the default break type map.
+    ///
     /// # Errors
     ///
     /// Returns an error when YAML parsing or config validation fails.
@@ -64,8 +68,7 @@ impl Config {
     ///
     /// Returns the first invalid value found.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        self.breaks.short.validate()?;
-        self.breaks.long.validate()?;
+        self.breaks.validate()?;
         validate_disable_presets(&self.disable_presets)
     }
 
@@ -134,7 +137,6 @@ impl Default for Config {
         Self {
             breaks: Breaks::default(),
             disable_presets: DEFAULT_DISABLE_PRESETS.to_vec(),
-            autolock: AutolockConfig::default(),
         }
     }
 }
@@ -194,73 +196,110 @@ impl std::error::Error for ConfigLoadError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Breaks {
-    pub short: ShortBreakConfig,
-    pub long: LongBreakConfig,
+    pub after_active: Duration,
+    pub types: BTreeMap<String, BreakTypeConfig>,
+}
+
+impl Breaks {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.after_active.is_zero() {
+            return Err(ConfigError::ZeroBreakAfterActiveDuration);
+        }
+
+        if self.types.is_empty() {
+            return Err(ConfigError::EmptyBreakTypes);
+        }
+
+        let mut intervals = BTreeMap::new();
+        for (name, break_type) in &self.types {
+            validate_break_type_name(name)?;
+            break_type.validate(name)?;
+
+            match intervals.entry(break_type.interval) {
+                Entry::Vacant(entry) => {
+                    entry.insert(name.as_str());
+                }
+                Entry::Occupied(entry) => {
+                    return Err(ConfigError::DuplicateBreakInterval {
+                        interval: break_type.interval,
+                        first_name: (*entry.get()).to_owned(),
+                        duplicate_name: name.to_owned(),
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for Breaks {
     fn default() -> Self {
-        Self {
-            short: ShortBreakConfig {
-                after_active: DEFAULT_SHORT_BREAK_AFTER_ACTIVE,
+        let mut types = BTreeMap::new();
+        types.insert(
+            String::from("short"),
+            BreakTypeConfig {
+                interval: DEFAULT_SHORT_BREAK_INTERVAL,
                 duration: DEFAULT_SHORT_BREAK_DURATION,
                 messages: vec![String::from("Rest your eyes")],
+                autolock: false,
             },
-            long: LongBreakConfig {
-                after_short_breaks: Some(DEFAULT_LONG_BREAK_AFTER_SHORT_BREAKS),
+        );
+        types.insert(
+            String::from("long"),
+            BreakTypeConfig {
+                interval: DEFAULT_LONG_BREAK_INTERVAL,
                 duration: DEFAULT_LONG_BREAK_DURATION,
                 messages: vec![String::from("Take a longer break")],
+                autolock: true,
             },
-        }
-    }
-}
+        );
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShortBreakConfig {
-    pub after_active: Duration,
-    pub duration: Duration,
-    pub messages: Vec<String>,
-}
-
-impl ShortBreakConfig {
-    fn validate(&self) -> Result<(), ConfigError> {
-        if self.after_active.is_zero() {
-            return Err(ConfigError::ZeroShortBreakActiveDuration);
-        }
-
-        validate_break_body(BreakKind::Short, self.duration, &self.messages)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LongBreakConfig {
-    pub after_short_breaks: Option<usize>,
-    pub duration: Duration,
-    pub messages: Vec<String>,
-}
-
-impl LongBreakConfig {
-    fn validate(&self) -> Result<(), ConfigError> {
-        if self.after_short_breaks == Some(0) {
-            return Err(ConfigError::ZeroLongBreakAfterShortBreaks);
-        }
-
-        validate_break_body(BreakKind::Long, self.duration, &self.messages)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AutolockConfig {
-    pub after_short_break: bool,
-    pub after_long_break: bool,
-}
-
-impl Default for AutolockConfig {
-    fn default() -> Self {
         Self {
-            after_short_break: false,
-            after_long_break: true,
+            after_active: DEFAULT_BREAK_AFTER_ACTIVE,
+            types,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BreakTypeConfig {
+    pub interval: usize,
+    pub duration: Duration,
+    pub messages: Vec<String>,
+    pub autolock: bool,
+}
+
+impl BreakTypeConfig {
+    fn validate(&self, name: &str) -> Result<(), ConfigError> {
+        if self.interval == 0 {
+            return Err(ConfigError::ZeroBreakInterval {
+                name: name.to_owned(),
+            });
+        }
+
+        if self.duration.is_zero() {
+            return Err(ConfigError::ZeroBreakDuration {
+                name: name.to_owned(),
+            });
+        }
+
+        if self.messages.is_empty() {
+            return Err(ConfigError::EmptyBreakMessages {
+                name: name.to_owned(),
+            });
+        }
+
+        for (index, message) in self.messages.iter().enumerate() {
+            if message.trim().is_empty() {
+                return Err(ConfigError::EmptyBreakMessage {
+                    name: name.to_owned(),
+                    index,
+                });
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -270,49 +309,83 @@ enum ConfigPathMode {
     Optional,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BreakKind {
-    Short,
-    Long,
-}
-
-impl fmt::Display for BreakKind {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Short => formatter.write_str("short"),
-            Self::Long => formatter.write_str("long"),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigError {
-    ZeroShortBreakActiveDuration,
-    ZeroLongBreakAfterShortBreaks,
-    ZeroBreakDuration { kind: BreakKind },
-    EmptyBreakMessages { kind: BreakKind },
-    EmptyBreakMessage { kind: BreakKind, index: usize },
+    ZeroBreakAfterActiveDuration,
+    EmptyBreakTypes,
+    InvalidBreakTypeName {
+        name: String,
+    },
+    ZeroBreakInterval {
+        name: String,
+    },
+    DuplicateBreakInterval {
+        interval: usize,
+        first_name: String,
+        duplicate_name: String,
+    },
+    ZeroBreakDuration {
+        name: String,
+    },
+    EmptyBreakMessages {
+        name: String,
+    },
+    EmptyBreakMessage {
+        name: String,
+        index: usize,
+    },
     EmptyDisablePresets,
-    ZeroDisablePreset { index: usize },
-    DuplicateDisablePreset { duration: Duration },
+    ZeroDisablePreset {
+        index: usize,
+    },
+    DuplicateDisablePreset {
+        duration: Duration,
+    },
 }
 
 impl fmt::Display for ConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ZeroShortBreakActiveDuration => {
-                formatter.write_str("short break active duration must be greater than zero")
+            Self::ZeroBreakAfterActiveDuration => {
+                formatter.write_str("break active duration must be greater than zero")
             }
-            Self::ZeroLongBreakAfterShortBreaks => formatter
-                .write_str("long break after_short_breaks must be greater than zero or null"),
-            Self::ZeroBreakDuration { kind } => {
-                write!(formatter, "{kind} break duration must be greater than zero")
+            Self::EmptyBreakTypes => formatter.write_str("at least one break type must be defined"),
+            Self::InvalidBreakTypeName { name } => {
+                write!(
+                    formatter,
+                    "break type name {name:?} must not be empty or contain surrounding whitespace"
+                )
             }
-            Self::EmptyBreakMessages { kind } => {
-                write!(formatter, "{kind} break messages must not be empty")
+            Self::ZeroBreakInterval { name } => {
+                write!(
+                    formatter,
+                    "break type {name} interval must be greater than zero"
+                )
             }
-            Self::EmptyBreakMessage { kind, index } => {
-                write!(formatter, "{kind} break message {index} must not be empty")
+            Self::DuplicateBreakInterval {
+                interval,
+                first_name,
+                duplicate_name,
+            } => {
+                write!(
+                    formatter,
+                    "break interval {interval} is duplicated by {first_name} and {duplicate_name}"
+                )
+            }
+            Self::ZeroBreakDuration { name } => {
+                write!(
+                    formatter,
+                    "break type {name} duration must be greater than zero"
+                )
+            }
+            Self::EmptyBreakMessages { name } => {
+                write!(formatter, "break type {name} messages must not be empty")
+            }
+            Self::EmptyBreakMessage { name, index } => {
+                write!(
+                    formatter,
+                    "break type {name} message {index} must not be empty"
+                )
             }
             Self::EmptyDisablePresets => formatter.write_str("disable presets must not be empty"),
             Self::ZeroDisablePreset { index } => {
@@ -335,7 +408,6 @@ impl std::error::Error for ConfigError {}
 struct PartialConfig {
     breaks: Option<PartialBreaks>,
     disable_presets: Option<Vec<ConfigDuration>>,
-    autolock: Option<PartialAutolockConfig>,
 }
 
 impl PartialConfig {
@@ -350,96 +422,48 @@ impl PartialConfig {
                 .map(ConfigDuration::into_duration)
                 .collect();
         }
-
-        if let Some(autolock) = self.autolock {
-            autolock.apply_to(&mut config.autolock);
-        }
     }
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PartialBreaks {
-    short: Option<PartialShortBreakConfig>,
-    long: Option<PartialLongBreakConfig>,
+    after_active: Option<ConfigDuration>,
+    types: Option<BTreeMap<String, YamlBreakTypeConfig>>,
 }
 
 impl PartialBreaks {
     fn apply_to(self, breaks: &mut Breaks) {
-        if let Some(short) = self.short {
-            short.apply_to(&mut breaks.short);
-        }
-
-        if let Some(long) = self.long {
-            long.apply_to(&mut breaks.long);
-        }
-    }
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PartialShortBreakConfig {
-    after_active: Option<ConfigDuration>,
-    duration: Option<ConfigDuration>,
-    messages: Option<Vec<String>>,
-}
-
-impl PartialShortBreakConfig {
-    fn apply_to(self, break_config: &mut ShortBreakConfig) {
         if let Some(after_active) = self.after_active {
-            break_config.after_active = after_active.into_duration();
+            breaks.after_active = after_active.into_duration();
         }
 
-        if let Some(duration) = self.duration {
-            break_config.duration = duration.into_duration();
-        }
-
-        if let Some(messages) = self.messages {
-            break_config.messages = messages;
-        }
-    }
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PartialLongBreakConfig {
-    #[serde(default, deserialize_with = "deserialize_optional_field")]
-    after_short_breaks: OptionalField<Option<usize>>,
-    duration: Option<ConfigDuration>,
-    messages: Option<Vec<String>>,
-}
-
-impl PartialLongBreakConfig {
-    fn apply_to(self, break_config: &mut LongBreakConfig) {
-        if let OptionalField::Present(after_short_breaks) = self.after_short_breaks {
-            break_config.after_short_breaks = after_short_breaks;
-        }
-
-        if let Some(duration) = self.duration {
-            break_config.duration = duration.into_duration();
-        }
-
-        if let Some(messages) = self.messages {
-            break_config.messages = messages;
+        if let Some(types) = self.types {
+            breaks.types = types
+                .into_iter()
+                .map(|(name, break_type)| (name, break_type.into_config()))
+                .collect();
         }
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PartialAutolockConfig {
-    after_short_break: Option<bool>,
-    after_long_break: Option<bool>,
+struct YamlBreakTypeConfig {
+    interval: usize,
+    duration: ConfigDuration,
+    messages: Vec<String>,
+    #[serde(default)]
+    autolock: bool,
 }
 
-impl PartialAutolockConfig {
-    fn apply_to(self, autolock: &mut AutolockConfig) {
-        if let Some(after_short_break) = self.after_short_break {
-            autolock.after_short_break = after_short_break;
-        }
-
-        if let Some(after_long_break) = self.after_long_break {
-            autolock.after_long_break = after_long_break;
+impl YamlBreakTypeConfig {
+    fn into_config(self) -> BreakTypeConfig {
+        BreakTypeConfig {
+            interval: self.interval,
+            duration: self.duration.into_duration(),
+            messages: self.messages,
+            autolock: self.autolock,
         }
     }
 }
@@ -466,38 +490,11 @@ impl<'de> Deserialize<'de> for ConfigDuration {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum OptionalField<T> {
-    #[default]
-    Missing,
-    Present(T),
-}
-
-fn deserialize_optional_field<'de, D, T>(deserializer: D) -> Result<OptionalField<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    T::deserialize(deserializer).map(OptionalField::Present)
-}
-
-fn validate_break_body(
-    kind: BreakKind,
-    duration: Duration,
-    messages: &[String],
-) -> Result<(), ConfigError> {
-    if duration.is_zero() {
-        return Err(ConfigError::ZeroBreakDuration { kind });
-    }
-
-    if messages.is_empty() {
-        return Err(ConfigError::EmptyBreakMessages { kind });
-    }
-
-    for (index, message) in messages.iter().enumerate() {
-        if message.trim().is_empty() {
-            return Err(ConfigError::EmptyBreakMessage { kind, index });
-        }
+fn validate_break_type_name(name: &str) -> Result<(), ConfigError> {
+    if name.is_empty() || name.trim() != name {
+        return Err(ConfigError::InvalidBreakTypeName {
+            name: name.to_owned(),
+        });
     }
 
     Ok(())
@@ -539,9 +536,9 @@ fn config_location(path: Option<&Path>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AutolockConfig, BreakKind, Config, ConfigError, ConfigLoadError, DEFAULT_DISABLE_PRESETS,
-        DEFAULT_LONG_BREAK_AFTER_SHORT_BREAKS, DEFAULT_LONG_BREAK_DURATION,
-        DEFAULT_SHORT_BREAK_AFTER_ACTIVE, DEFAULT_SHORT_BREAK_DURATION,
+        BreakTypeConfig, Config, ConfigError, ConfigLoadError, DEFAULT_BREAK_AFTER_ACTIVE,
+        DEFAULT_DISABLE_PRESETS, DEFAULT_LONG_BREAK_DURATION, DEFAULT_LONG_BREAK_INTERVAL,
+        DEFAULT_SHORT_BREAK_DURATION, DEFAULT_SHORT_BREAK_INTERVAL,
     };
     use std::error::Error;
     use std::fs;
@@ -561,24 +558,20 @@ mod tests {
     fn default_config_uses_expected_break_settings() {
         let config = Config::default();
 
-        assert_eq!(
-            config.breaks.short.after_active,
-            DEFAULT_SHORT_BREAK_AFTER_ACTIVE
-        );
-        assert_eq!(config.breaks.short.duration, DEFAULT_SHORT_BREAK_DURATION);
-        assert_eq!(
-            config.breaks.short.messages,
-            vec![String::from("Rest your eyes")]
-        );
-        assert_eq!(
-            config.breaks.long.after_short_breaks,
-            Some(DEFAULT_LONG_BREAK_AFTER_SHORT_BREAKS)
-        );
-        assert_eq!(config.breaks.long.duration, DEFAULT_LONG_BREAK_DURATION);
-        assert_eq!(
-            config.breaks.long.messages,
-            vec![String::from("Take a longer break")]
-        );
+        assert_eq!(config.breaks.after_active, DEFAULT_BREAK_AFTER_ACTIVE);
+        assert_eq!(config.breaks.types.len(), 2);
+
+        let short = &config.breaks.types["short"];
+        assert_eq!(short.interval, DEFAULT_SHORT_BREAK_INTERVAL);
+        assert_eq!(short.duration, DEFAULT_SHORT_BREAK_DURATION);
+        assert_eq!(short.messages, vec![String::from("Rest your eyes")]);
+        assert!(!short.autolock);
+
+        let long = &config.breaks.types["long"];
+        assert_eq!(long.interval, DEFAULT_LONG_BREAK_INTERVAL);
+        assert_eq!(long.duration, DEFAULT_LONG_BREAK_DURATION);
+        assert_eq!(long.messages, vec![String::from("Take a longer break")]);
+        assert!(long.autolock);
     }
 
     #[test]
@@ -589,62 +582,150 @@ mod tests {
     }
 
     #[test]
-    fn default_config_autolocks_after_long_breaks() {
-        let config = Config::default();
+    fn rejects_zero_active_duration() {
+        let mut config = Config::default();
+        config.breaks.after_active = Duration::ZERO;
 
         assert_eq!(
-            config.autolock,
-            AutolockConfig {
-                after_short_break: false,
-                after_long_break: true
-            }
+            config.validate(),
+            Err(ConfigError::ZeroBreakAfterActiveDuration)
         );
     }
 
     #[test]
-    fn rejects_zero_active_duration() {
+    fn rejects_empty_break_types() {
         let mut config = Config::default();
-        config.breaks.short.after_active = Duration::ZERO;
+        config.breaks.types.clear();
+
+        assert_eq!(config.validate(), Err(ConfigError::EmptyBreakTypes));
+    }
+
+    #[test]
+    fn rejects_empty_break_type_name() {
+        let mut config = Config::default();
+        config.breaks.types.clear();
+        config.breaks.types.insert(
+            String::new(),
+            BreakTypeConfig {
+                interval: 1,
+                duration: Duration::from_secs(1),
+                messages: vec![String::from("Rest")],
+                autolock: false,
+            },
+        );
 
         assert_eq!(
             config.validate(),
-            Err(ConfigError::ZeroShortBreakActiveDuration)
+            Err(ConfigError::InvalidBreakTypeName {
+                name: String::new()
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_whitespace_padded_break_type_name() {
+        let mut config = Config::default();
+        config.breaks.types.clear();
+        config.breaks.types.insert(
+            String::from(" short"),
+            BreakTypeConfig {
+                interval: 1,
+                duration: Duration::from_secs(1),
+                messages: vec![String::from("Rest")],
+                autolock: false,
+            },
+        );
+
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::InvalidBreakTypeName {
+                name: String::from(" short")
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_zero_break_interval() {
+        let mut config = Config::default();
+        config.breaks.types.insert(
+            String::from("short"),
+            BreakTypeConfig {
+                interval: 0,
+                duration: Duration::from_secs(1),
+                messages: vec![String::from("Rest")],
+                autolock: false,
+            },
+        );
+
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::ZeroBreakInterval {
+                name: String::from("short")
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_break_interval() {
+        let mut config = Config::default();
+        config.breaks.types.insert(
+            String::from("long"),
+            BreakTypeConfig {
+                interval: 1,
+                duration: Duration::from_secs(1),
+                messages: vec![String::from("Rest longer")],
+                autolock: true,
+            },
+        );
+
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::DuplicateBreakInterval {
+                interval: 1,
+                first_name: String::from("long"),
+                duplicate_name: String::from("short")
+            })
         );
     }
 
     #[test]
     fn rejects_zero_break_duration() {
         let mut config = Config::default();
-        config.breaks.long.duration = Duration::ZERO;
+        config.breaks.types.insert(
+            String::from("long"),
+            BreakTypeConfig {
+                interval: DEFAULT_LONG_BREAK_INTERVAL,
+                duration: Duration::ZERO,
+                messages: vec![String::from("Rest longer")],
+                autolock: true,
+            },
+        );
 
         assert_eq!(
             config.validate(),
             Err(ConfigError::ZeroBreakDuration {
-                kind: BreakKind::Long
+                name: String::from("long")
             })
-        );
-    }
-
-    #[test]
-    fn rejects_zero_long_break_after_short_breaks() {
-        let mut config = Config::default();
-        config.breaks.long.after_short_breaks = Some(0);
-
-        assert_eq!(
-            config.validate(),
-            Err(ConfigError::ZeroLongBreakAfterShortBreaks)
         );
     }
 
     #[test]
     fn rejects_empty_break_messages() {
         let mut config = Config::default();
-        config.breaks.short.messages.clear();
+        config.breaks.types.insert(
+            String::from("short"),
+            BreakTypeConfig {
+                interval: DEFAULT_SHORT_BREAK_INTERVAL,
+                duration: DEFAULT_SHORT_BREAK_DURATION,
+                messages: Vec::new(),
+                autolock: false,
+            },
+        );
 
         assert_eq!(
             config.validate(),
             Err(ConfigError::EmptyBreakMessages {
-                kind: BreakKind::Short
+                name: String::from("short")
             })
         );
     }
@@ -652,12 +733,20 @@ mod tests {
     #[test]
     fn rejects_blank_break_message() {
         let mut config = Config::default();
-        config.breaks.short.messages = vec![String::from("Look away"), String::from("   ")];
+        config.breaks.types.insert(
+            String::from("short"),
+            BreakTypeConfig {
+                interval: DEFAULT_SHORT_BREAK_INTERVAL,
+                duration: DEFAULT_SHORT_BREAK_DURATION,
+                messages: vec![String::from("Look away"), String::from("   ")],
+                autolock: false,
+            },
+        );
 
         assert_eq!(
             config.validate(),
             Err(ConfigError::EmptyBreakMessage {
-                kind: BreakKind::Short,
+                name: String::from("short"),
                 index: 1
             })
         );
@@ -718,16 +807,14 @@ mod tests {
             &explicit_path,
             r"
 breaks:
-  short:
-    duration: '31s'
+  after_active: '10m'
 ",
         )?;
         write_file(
             &xdg_path,
             r"
 breaks:
-  short:
-    duration: '41s'
+  after_active: '30m'
 ",
         )?;
 
@@ -737,7 +824,7 @@ breaks:
             None,
         )?;
 
-        assert_eq!(config.breaks.short.duration, Duration::from_secs(31));
+        assert_eq!(config.breaks.after_active, Duration::from_secs(10 * 60));
         Ok(())
     }
 
@@ -746,38 +833,13 @@ breaks:
         let config = Config::from_yaml_str(
             r"
 breaks:
-  short:
-    duration: '45s'
-    messages:
-      - Blink slowly
+  after_active: '30m'
 ",
         )?;
 
-        assert_eq!(
-            config.breaks.short.after_active,
-            DEFAULT_SHORT_BREAK_AFTER_ACTIVE
-        );
-        assert_eq!(config.breaks.short.duration, Duration::from_secs(45));
-        assert_eq!(
-            config.breaks.short.messages,
-            vec![String::from("Blink slowly")]
-        );
-        assert_eq!(
-            config.breaks.long.after_short_breaks,
-            Some(DEFAULT_LONG_BREAK_AFTER_SHORT_BREAKS)
-        );
-        assert_eq!(
-            config.breaks.long.messages,
-            vec![String::from("Take a longer break")]
-        );
+        assert_eq!(config.breaks.after_active, Duration::from_secs(30 * 60));
+        assert_eq!(config.breaks.types, Config::default().breaks.types);
         assert_eq!(config.disable_presets, DEFAULT_DISABLE_PRESETS);
-        assert_eq!(
-            config.autolock,
-            AutolockConfig {
-                after_short_break: false,
-                after_long_break: true
-            }
-        );
         Ok(())
     }
 
@@ -794,20 +856,34 @@ breaks:
         let config = Config::from_yaml_str(
             r"
 breaks:
-  short:
-    after_active: '20m'
-    duration: '20s'
-  long:
-    after_short_breaks: 4
-    duration: '5m'
+  after_active: '20m'
+  types:
+    short:
+      interval: 1
+      duration: '20s'
+      messages:
+        - Rest your eyes
+    long:
+      interval: 4
+      duration: '5m'
+      messages:
+        - Take a longer break
+      autolock: true
 disable_presets: ['30m', '1h', '2h', '3h']
 ",
         )?;
 
-        assert_eq!(config.breaks.short.after_active, Duration::from_secs(1200));
-        assert_eq!(config.breaks.short.duration, Duration::from_secs(20));
-        assert_eq!(config.breaks.long.after_short_breaks, Some(4));
-        assert_eq!(config.breaks.long.duration, Duration::from_secs(5 * 60));
+        assert_eq!(config.breaks.after_active, Duration::from_secs(1200));
+        assert_eq!(
+            config.breaks.types["short"].duration,
+            Duration::from_secs(20)
+        );
+        assert_eq!(config.breaks.types["long"].interval, 4);
+        assert_eq!(
+            config.breaks.types["long"].duration,
+            Duration::from_secs(5 * 60)
+        );
+        assert!(config.breaks.types["long"].autolock);
         assert_eq!(
             config.disable_presets,
             vec![
@@ -821,16 +897,48 @@ disable_presets: ['30m', '1h', '2h', '3h']
     }
 
     #[test]
-    fn yaml_allows_disabling_long_breaks() -> Result<(), Box<dyn Error>> {
+    fn yaml_replaces_default_break_types() -> Result<(), Box<dyn Error>> {
         let config = Config::from_yaml_str(
             r"
 breaks:
-  long:
-    after_short_breaks: null
+  types:
+    blink:
+      interval: 1
+      duration: '6s'
+      messages:
+        - Blink slowly
+    short:
+      interval: 50
+      duration: '5m'
+      messages:
+        - Stand up
+    long:
+      interval: 1000
+      duration: '1h'
+      messages:
+        - Leave the computer
+      autolock: true
 ",
         )?;
 
-        assert_eq!(config.breaks.long.after_short_breaks, None);
+        assert_eq!(
+            config
+                .breaks
+                .types
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["blink", "long", "short"]
+        );
+        assert_eq!(config.breaks.types["blink"].interval, 1);
+        assert_eq!(
+            config.breaks.types["blink"].duration,
+            Duration::from_secs(6)
+        );
+        assert!(!config.breaks.types["blink"].autolock);
+        assert_eq!(config.breaks.types["short"].interval, 50);
+        assert_eq!(config.breaks.types["long"].interval, 1000);
+        assert!(config.breaks.types["long"].autolock);
         Ok(())
     }
 
@@ -839,17 +947,20 @@ breaks:
         let config = Config::from_yaml_str(
             r"
 breaks:
-  long:
-    messages:
-      - Take a longer break
-      - Stretch and look away
+  types:
+    stretch:
+      interval: 1
+      duration: '1m'
+      messages:
+        - Take a break
+        - Stretch and look away
 ",
         )?;
 
         assert_eq!(
-            config.breaks.long.messages,
+            config.breaks.types["stretch"].messages,
             vec![
-                String::from("Take a longer break"),
+                String::from("Take a break"),
                 String::from("Stretch and look away")
             ]
         );
@@ -857,18 +968,141 @@ breaks:
     }
 
     #[test]
-    fn yaml_maps_autolock_config() -> Result<(), Box<dyn Error>> {
+    fn yaml_maps_break_type_autolock_config() -> Result<(), Box<dyn Error>> {
         let config = Config::from_yaml_str(
             r"
-autolock:
-  after_short_break: true
-  after_long_break: true
+breaks:
+  types:
+    lock-screen:
+      interval: 1
+      duration: '5m'
+      messages:
+        - Time to lock
+      autolock: true
 ",
         )?;
 
-        assert!(config.autolock.after_short_break);
-        assert!(config.autolock.after_long_break);
+        assert!(config.breaks.types["lock-screen"].autolock);
         Ok(())
+    }
+
+    #[test]
+    fn yaml_rejects_empty_break_types() {
+        let error = expected_config_error(Config::from_yaml_str(
+            r"
+breaks:
+  types: {}
+",
+        ));
+
+        assert!(matches!(
+            error,
+            ConfigLoadError::Invalid {
+                error: ConfigError::EmptyBreakTypes,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn yaml_rejects_empty_break_type_name() {
+        let error = expected_config_error(Config::from_yaml_str(
+            r#"
+breaks:
+  types:
+    "":
+      interval: 1
+      duration: "20s"
+      messages:
+        - Rest
+"#,
+        ));
+
+        assert!(matches!(
+            error,
+            ConfigLoadError::Invalid {
+                error: ConfigError::InvalidBreakTypeName { name },
+                ..
+            } if name.is_empty()
+        ));
+    }
+
+    #[test]
+    fn yaml_rejects_whitespace_padded_break_type_name() {
+        let error = expected_config_error(Config::from_yaml_str(
+            r#"
+breaks:
+  types:
+    "short ":
+      interval: 1
+      duration: "20s"
+      messages:
+        - Rest
+"#,
+        ));
+
+        assert!(matches!(
+            error,
+            ConfigLoadError::Invalid {
+                error: ConfigError::InvalidBreakTypeName { name },
+                ..
+            } if name == "short "
+        ));
+    }
+
+    #[test]
+    fn yaml_rejects_zero_break_interval() {
+        let error = expected_config_error(Config::from_yaml_str(
+            r"
+breaks:
+  types:
+    short:
+      interval: 0
+      duration: '20s'
+      messages:
+        - Rest
+",
+        ));
+
+        assert!(matches!(
+            error,
+            ConfigLoadError::Invalid {
+                error: ConfigError::ZeroBreakInterval { name },
+                ..
+            } if name == "short"
+        ));
+    }
+
+    #[test]
+    fn yaml_rejects_duplicate_break_interval() {
+        let error = expected_config_error(Config::from_yaml_str(
+            r"
+breaks:
+  types:
+    short:
+      interval: 1
+      duration: '20s'
+      messages:
+        - Rest
+    long:
+      interval: 1
+      duration: '5m'
+      messages:
+        - Rest longer
+",
+        ));
+
+        assert!(matches!(
+            error,
+            ConfigLoadError::Invalid {
+                error: ConfigError::DuplicateBreakInterval {
+                    interval: 1,
+                    first_name,
+                    duplicate_name
+                },
+                ..
+            } if first_name == "long" && duplicate_name == "short"
+        ));
     }
 
     #[test]
@@ -876,19 +1110,20 @@ autolock:
         let error = expected_config_error(Config::from_yaml_str(
             r"
 breaks:
-  short:
-    messages: []
+  types:
+    short:
+      interval: 1
+      duration: '20s'
+      messages: []
 ",
         ));
 
         assert!(matches!(
             error,
             ConfigLoadError::Invalid {
-                error: ConfigError::EmptyBreakMessages {
-                    kind: BreakKind::Short
-                },
+                error: ConfigError::EmptyBreakMessages { name },
                 ..
-            }
+            } if name == "short"
         ));
     }
 
@@ -897,21 +1132,21 @@ breaks:
         let error = expected_config_error(Config::from_yaml_str(
             r#"
 breaks:
-  short:
-    messages:
-      - " "
+  types:
+    short:
+      interval: 1
+      duration: "20s"
+      messages:
+        - " "
 "#,
         ));
 
         assert!(matches!(
             error,
             ConfigLoadError::Invalid {
-                error: ConfigError::EmptyBreakMessage {
-                    kind: BreakKind::Short,
-                    index: 0
-                },
+                error: ConfigError::EmptyBreakMessage { name, index: 0 },
                 ..
-            }
+            } if name == "short"
         ));
     }
 
@@ -926,8 +1161,7 @@ breaks:
     fn yaml_rejects_unknown_fields() {
         let error = expected_config_error(Config::from_yaml_str(
             r"
-lock:
-  after_short_break: true
+unsupported: true
 ",
         ));
 
@@ -935,12 +1169,28 @@ lock:
     }
 
     #[test]
-    fn yaml_rejects_long_break_active_duration() {
+    fn yaml_rejects_old_short_break_shape() {
         let error = expected_config_error(Config::from_yaml_str(
             r"
 breaks:
-  long:
-    after_active: '1h'
+  short:
+    duration: '20s'
+",
+        ));
+
+        assert!(matches!(error, ConfigLoadError::Parse { .. }));
+    }
+
+    #[test]
+    fn yaml_rejects_missing_break_type_fields() {
+        let error = expected_config_error(Config::from_yaml_str(
+            r"
+breaks:
+  types:
+    short:
+      duration: '20s'
+      messages:
+        - Rest
 ",
         ));
 
@@ -952,8 +1202,12 @@ breaks:
         let error = expected_config_error(Config::from_yaml_str(
             r"
 breaks:
-  short:
-    duration: 'soon'
+  types:
+    short:
+      interval: 1
+      duration: 'soon'
+      messages:
+        - Rest
 ",
         ));
 
@@ -965,8 +1219,12 @@ breaks:
         let error = expected_config_error(Config::from_yaml_str(
             r"
 breaks:
-  short:
-    duration: 20
+  types:
+    short:
+      interval: 1
+      duration: 20
+      messages:
+        - Rest
 ",
         ));
 
@@ -978,38 +1236,21 @@ breaks:
         let error = expected_config_error(Config::from_yaml_str(
             r"
 breaks:
-  short:
-    duration: '0s'
+  types:
+    short:
+      interval: 1
+      duration: '0s'
+      messages:
+        - Rest
 ",
         ));
 
         assert!(matches!(
             error,
             ConfigLoadError::Invalid {
-                error: ConfigError::ZeroBreakDuration {
-                    kind: BreakKind::Short
-                },
+                error: ConfigError::ZeroBreakDuration { name },
                 ..
-            }
-        ));
-    }
-
-    #[test]
-    fn yaml_rejects_zero_long_break_after_short_breaks() {
-        let error = expected_config_error(Config::from_yaml_str(
-            r"
-breaks:
-  long:
-    after_short_breaks: 0
-",
-        ));
-
-        assert!(matches!(
-            error,
-            ConfigLoadError::Invalid {
-                error: ConfigError::ZeroLongBreakAfterShortBreaks,
-                ..
-            }
+            } if name == "short"
         ));
     }
 
