@@ -101,6 +101,11 @@
   message, suppress active-time events while visible, advance break duration
   only on idle helper samples, and clear overlays on finish, clear, shutdown,
   or helper EOF.
+- Completed `macos-input-blocking`: macOS break startup now creates a
+  helper-owned Quartz session event tap before showing overlay windows, drops
+  normal keyboard and pointer input while the overlay is visible, disables the
+  tap on overlay cleanup, and reports a structured helper error instead of
+  showing an unblocked overlay when macOS refuses event tap creation.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -126,6 +131,10 @@
   `shutdownComplete` on stdout for `hello`, `startBreak`, `clearBreak`, and
   `shutdown`; AppKit emitted system diagnostics to stderr when overlay creation
   was exercised.
+- A macOS helper input-blocking smoke test returned `ready`, a structured
+  event-tap permission error for `startBreak`, and `shutdownComplete`,
+  confirming the helper does not show an unblocked overlay when required macOS
+  permissions are unavailable.
 - A bounded `timeout 3s make run` on macOS stays alive until terminated by
   `timeout` and no longer emits helper stderr during startup after AppKit setup
   was made lazy.
@@ -136,11 +145,13 @@
 - Manual X11 overlay, input-blocking, overlay UI, and trace-output verification
   is still pending because this environment does not provide usable X server
   access.
+- Manual macOS input-blocking verification with Accessibility/Input Monitoring
+  permissions granted is still pending.
 
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next planned increment is `macos-input-blocking`.
+- The next planned increment is `macos-lock-after-break`.
 - The later build order now brings macOS backend parity before sync protocol,
   then separates sync protocol, LAN discovery, authenticated peer transport,
   synced break/disable behavior, tray UI, and synced lock-after-break behavior.

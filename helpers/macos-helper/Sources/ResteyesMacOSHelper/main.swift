@@ -15,6 +15,7 @@ private enum ProtocolError: Error, CustomStringConvertible {
     case invalidMessage
     case incompatibleVersion(Int)
     case invalidActivitySample
+    case inputBlockingUnavailable
     case outputEncodingFailed
 
     var description: String {
@@ -27,19 +28,83 @@ private enum ProtocolError: Error, CustomStringConvertible {
             return "incompatible protocol version \(version)"
         case .invalidActivitySample:
             return "invalid activity sample"
+        case .inputBlockingUnavailable:
+            return "failed to create macOS input event tap; grant Accessibility and Input Monitoring permissions to Resteyes"
         case .outputEncodingFailed:
             return "failed to encode helper output"
         }
     }
 }
 
+private final class InputBlocker {
+    private var eventTap: CFMachPort?
+    private var runLoopSource: CFRunLoopSource?
+
+    func enable() throws {
+        guard eventTap == nil else {
+            return
+        }
+
+        let userInfo = Unmanaged.passUnretained(self).toOpaque()
+        guard let eventTap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: inputBlockingEventMask(),
+            callback: inputBlockingEventCallback,
+            userInfo: userInfo
+        ) else {
+            throw ProtocolError.inputBlockingUnavailable
+        }
+
+        guard let runLoopSource = CFMachPortCreateRunLoopSource(
+            kCFAllocatorDefault,
+            eventTap,
+            0
+        ) else {
+            CGEvent.tapEnable(tap: eventTap, enable: false)
+            throw ProtocolError.inputBlockingUnavailable
+        }
+
+        self.eventTap = eventTap
+        self.runLoopSource = runLoopSource
+
+        CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+        CGEvent.tapEnable(tap: eventTap, enable: true)
+    }
+
+    func disable() {
+        guard let eventTap else {
+            return
+        }
+
+        CGEvent.tapEnable(tap: eventTap, enable: false)
+        if let runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+        }
+
+        self.eventTap = nil
+        self.runLoopSource = nil
+    }
+
+    func reenableIfActive() {
+        guard let eventTap else {
+            return
+        }
+
+        CGEvent.tapEnable(tap: eventTap, enable: true)
+    }
+}
+
 private final class BreakOverlayController {
     private var windows: [NSWindow] = []
+    private let inputBlocker = InputBlocker()
     private var applicationPrepared = false
 
-    func show(message: String) {
+    func show(message: String) throws {
         prepareApplication()
         clear()
+        try inputBlocker.enable()
 
         for screen in NSScreen.screens {
             let window = overlayWindow(for: screen, message: message)
@@ -54,6 +119,7 @@ private final class BreakOverlayController {
             window.close()
         }
         windows.removeAll()
+        inputBlocker.disable()
     }
 
     private func overlayWindow(for screen: NSScreen, message: String) -> NSWindow {
@@ -170,6 +236,53 @@ private final class BreakOverlayView: NSView {
     }
 }
 
+private func inputBlockingEventMask() -> CGEventMask {
+    inputBlockingEventTypes().reduce(CGEventMask(0)) { eventMask, eventType in
+        eventMask | (CGEventMask(1) << eventType.rawValue)
+    }
+}
+
+private func inputBlockingEventTypes() -> [CGEventType] {
+    [
+        .leftMouseDown,
+        .leftMouseUp,
+        .rightMouseDown,
+        .rightMouseUp,
+        .mouseMoved,
+        .leftMouseDragged,
+        .rightMouseDragged,
+        .keyDown,
+        .keyUp,
+        .flagsChanged,
+        .scrollWheel,
+        .tabletPointer,
+        .tabletProximity,
+        .otherMouseDown,
+        .otherMouseUp,
+        .otherMouseDragged,
+    ]
+}
+
+private func inputBlockingEventCallback(
+    _: CGEventTapProxy,
+    type: CGEventType,
+    event: CGEvent,
+    userInfo: UnsafeMutableRawPointer?
+) -> Unmanaged<CGEvent>? {
+    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        if let userInfo {
+            let inputBlocker = Unmanaged<InputBlocker>
+                .fromOpaque(userInfo)
+                .takeUnretainedValue()
+            inputBlocker.reenableIfActive()
+        }
+
+        return Unmanaged.passUnretained(event)
+    }
+
+    return nil
+}
+
 private func parseMessage(_ line: String) throws -> [String: Any] {
     guard let data = line.data(using: .utf8),
           let message = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -223,8 +336,8 @@ private func handleHello(_ message: [String: Any]) throws {
 
 private func handleStartBreak(_ message: [String: Any], overlay: BreakOverlayController) throws {
     let message = try selectedBreakMessage(from: message)
-    runOnMain {
-        overlay.show(message: message)
+    try runThrowingOnMain {
+        try overlay.show(message: message)
     }
 }
 
@@ -265,6 +378,24 @@ private func runOnMain(_ body: @escaping () -> Void) {
         body()
     } else {
         DispatchQueue.main.sync(execute: body)
+    }
+}
+
+private func runThrowingOnMain(_ body: @escaping () throws -> Void) throws {
+    if Thread.isMainThread {
+        try body()
+    } else {
+        var thrownError: Error?
+        DispatchQueue.main.sync {
+            do {
+                try body()
+            } catch {
+                thrownError = error
+            }
+        }
+        if let thrownError {
+            throw thrownError
+        }
     }
 }
 
