@@ -8,7 +8,7 @@
 ## Changes
 
 - Added `src/backend.rs` with the internal `Backend` trait, `RuntimeEvent`
-  input enum, backend command enum, and `NoopBackend` implementation.
+  input enum, backend command enum, and initial `NoopBackend` implementation.
 - Moved runtime input events out of `runtime.rs` and into the backend module.
 - Kept `resteyes::run()` wired to `NoopBackend`, which still shuts down
   immediately.
@@ -19,7 +19,7 @@
 - Runtime requests local lock after an autolock break finishes.
 - Follow-up fix removed the no-op backend from production unsupported-target
   startup. Unsupported targets now return a clear missing-backend error, and the
-  no-op backend remains test-only.
+  no-op backend became test-only.
 - Later cleanup grouped finite and until-restart disable inputs under one
   `DisableRequest` event payload.
 - Later cleanup made scheduler break completion and disable transitions return
@@ -29,6 +29,8 @@
   so backends only override it when they handle commands.
 - Updated runtime tests to use a scripted backend that records ordered backend
   commands.
+- Later cleanup removed the unused test-only `NoopBackend` after scripted
+  runtime tests and platform backends made it redundant.
 
 ## Decisions
 

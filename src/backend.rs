@@ -34,14 +34,3 @@ pub(crate) enum BackendCommand {
     FinishBreak { lock_after: bool },
     ClearBreak,
 }
-
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) struct NoopBackend;
-
-#[cfg(test)]
-impl Backend for NoopBackend {
-    fn next_event(&mut self) -> RuntimeEvent {
-        RuntimeEvent::Shutdown
-    }
-}

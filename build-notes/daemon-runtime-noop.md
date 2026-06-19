@@ -26,8 +26,9 @@
   remain out of scope for this increment.
 - Runtime finite disable state is tracked outside the scheduler as remaining
   wall-clock duration.
-- The no-op backend intentionally produces no app output and is now test-only;
-  production unsupported targets report a missing backend instead.
+- The no-op backend intentionally produced no app output during this increment.
+  It was later removed after scripted runtime tests and platform backends made it
+  redundant; production unsupported targets report a missing backend instead.
 
 ## Commands
 

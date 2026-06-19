@@ -30,13 +30,14 @@
   duration, messages, and per-type autolock flag.
 - Completed `daemon-runtime-noop`: the runtime now loads config, initializes a
   scheduler from the validated break schedule, runs a private daemon event loop,
-  and exits cleanly through a no-op backend.
-- Completed `backend-trait`: the no-op runtime now uses a crate-internal backend
+  and originally exited cleanly through a no-op backend.
+- Completed `backend-trait`: the runtime now uses a crate-internal backend
   boundary with runtime events for activity/control input and backend commands
   for break start, break clear, and local lock requests. Follow-up cleanup made
   scheduler transitions return affected pending breaks so runtime does not
-  inspect scheduler pending state to drive backend cleanup, and made backend
-  command handling default to no-op for backends that do not handle commands.
+  inspect scheduler pending state to drive backend cleanup, made backend
+  command handling default to no-op for backends that do not handle commands,
+  and removed the unused test-only no-op backend.
 - Completed `x11-activity`: Linux production runs now use a permanent
   crate-internal X11 activity backend backed by XScreenSaver idle time. It emits
   wall-clock ticks and active-time increments into the runtime. This step
