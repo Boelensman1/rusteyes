@@ -74,5 +74,8 @@
 - Build work should proceed one step at a time.
 - The next planned increment is `x11-lock-after-break`, followed by
   `x11-ui-improvements`.
+- The later build order now separates manual break control, sync
+  configuration/authentication, sync protocol, LAN discovery, authenticated
+  peer transport, and synced break/disable behavior.
 - Step-specific notes belong in `build-notes/$step.md`.
 - Update this file whenever a step is completed or the project state changes.

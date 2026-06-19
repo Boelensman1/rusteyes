@@ -97,15 +97,19 @@ step note when implementation begins.
     it after configured autolock break types finish.
 12. `x11-ui-improvements`: improve the X11 break overlay with remaining break
     time and a control to lock automatically after the current break ends.
-13. `x11-break-integration`: connect scheduler and X11 backend for scheduled
-    and manual named breaks.
-14. `sync-protocol`: define authenticated sync events for break start, disable
+13. `manual-break-control`: add runtime control flow for starting configured
+    named breaks on demand, reusing the existing X11 break backend.
+14. `sync-config-auth`: add configuration and validation for sync enablement,
+    peer identity, and the shared secret used to authenticate peers.
+15. `sync-protocol`: define authenticated sync events for break start, disable
     periods, and lock-after-break decisions.
-15. `lan-discovery`: discover authenticated peers on the LAN.
-16. `break-disable-sync`: broadcast and apply break starts and disable periods
+16. `lan-discovery`: discover authenticated peers on the LAN.
+17. `authenticated-peer-transport`: exchange authenticated sync messages with
+    discovered peers.
+18. `break-disable-sync`: broadcast and apply break starts and disable periods
     across peers.
-17. `notification-tray-ui`: add pre-break notifications and tray/menu actions.
-18. `synced-lock-after-break`: apply synced lock-after-break decisions using
+19. `notification-tray-ui`: add pre-break notifications and tray/menu actions.
+20. `synced-lock-after-break`: apply synced lock-after-break decisions using
     the local Linux/X11 lock hook.
 
 Deferred later work:
