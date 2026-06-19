@@ -3,7 +3,7 @@ RestEyes is an as-simple-as-possible SafeEyes replacement focused on reliable br
 ## Goal and MVP
 
 - v1 targets NixOS running X11.
-- macOS Tahoe support comes after the X11 implementation.
+- macOS Tahoe backend support comes before network sync implementation.
 - Wayland support is deferred until the X11 and macOS designs are stable.
 - The project should stay small: a core daemon, platform backends, local configuration, minimal UI, and authenticated peer sync.
 
@@ -48,7 +48,7 @@ RestEyes is an as-simple-as-possible SafeEyes replacement focused on reliable br
   sends explicit disable and enable commands to the scheduler.
   Disable-until-restart remains explicit daemon state.
 - Most platform backends are written in Rust.
-- X11 backend is implemented first because it gives the core blanking, input capture, and activity behavior quickly.
+- X11 backend is the first backend because it gives the core blanking, input capture, and activity behavior quickly.
 - macOS uses a small Swift/AppKit/CoreGraphics helper for macOS-specific APIs, controlled by the Rust daemon over local IPC.
 - Tray and notification UI should try a cross-platform Rust crate first, with platform-specific fallback if needed.
 - Run as a per-user service: systemd user service on Linux and launchd agent on macOS.
@@ -104,20 +104,34 @@ step note when implementation begins.
     named breaks on demand, reusing the existing X11 break backend.
 14. `sync-config-auth`: add configuration and validation for sync enablement
     and the shared secret used to authenticate peers.
-15. `sync-protocol`: define authenticated sync events for break start, disable
+15. `macos-helper-scaffold`: add the Swift/AppKit helper scaffold and build
+    wiring without changing runtime behavior.
+16. `macos-helper-ipc`: define local IPC between the Rust daemon and helper for
+    startup, shutdown, and command/event framing.
+17. `macos-activity`: report keyboard/mouse activity and wall-clock ticks from
+    macOS into the existing backend event model.
+18. `macos-overlay`: blank all connected displays and show the configured break
+    message on macOS.
+19. `macos-input-blocking`: block normal keyboard/mouse input while the macOS
+    break overlay is visible.
+20. `macos-lock-after-break`: invoke the local macOS lock mechanism after
+    autolock or user-requested lock-after-break.
+21. `macos-ui-improvements`: add remaining-time display and lock-after-break
+    control parity with the X11 overlay.
+22. `sync-protocol`: define authenticated sync events for break start, disable
     periods, lock-after-break decisions, and transient sender identity.
-16. `lan-discovery`: discover authenticated peers on the LAN.
-17. `authenticated-peer-transport`: exchange authenticated sync messages with
+23. `lan-discovery`: discover authenticated peers on the LAN.
+24. `authenticated-peer-transport`: exchange authenticated sync messages with
     discovered peers.
-18. `break-disable-sync`: broadcast and apply break starts and disable periods
+25. `break-disable-sync`: broadcast and apply break starts and disable periods
     across peers.
-19. `notification-tray-ui`: add pre-break notifications and tray/menu actions.
-20. `synced-lock-after-break`: apply synced lock-after-break decisions using
-    the local Linux/X11 lock hook.
+26. `notification-tray-ui`: add pre-break notifications and tray/menu actions.
+27. `synced-lock-after-break`: apply synced lock-after-break decisions using
+    the local platform lock hook.
 
 Deferred later work:
 
-1. macOS Swift helper and launchd integration.
+1. macOS launchd integration.
 2. Wayland investigation.
 3. Idle reset behavior: in a future increment, add idle-duration tracking that
    resets accumulated active time after enough idle time, plus a config key such

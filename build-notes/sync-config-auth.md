@@ -30,5 +30,5 @@
 
 ## Follow-up
 
-- Continue with `sync-protocol`, including authenticated event shape and the
-  transient sender identity.
+- Defer `sync-protocol`, including authenticated event shape and the transient
+  sender identity, until after macOS backend parity.

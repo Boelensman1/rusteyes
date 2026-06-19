@@ -96,9 +96,9 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next planned increment is `sync-protocol`.
-- The later build order now separates manual break control, sync
-  configuration/authentication, sync protocol, LAN discovery, authenticated
-  peer transport, and synced break/disable behavior.
+- The next planned increment is `macos-helper-scaffold`.
+- The later build order now brings macOS backend parity before sync protocol,
+  then separates sync protocol, LAN discovery, authenticated peer transport,
+  synced break/disable behavior, tray UI, and synced lock-after-break behavior.
 - Step-specific notes belong in `build-notes/$step.md`.
 - Update this file whenever a step is completed or the project state changes.
