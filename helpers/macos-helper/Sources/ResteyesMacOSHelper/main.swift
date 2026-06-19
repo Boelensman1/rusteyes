@@ -1,12 +1,14 @@
+import AppKit
+import CoreGraphics
 import Darwin
 import Foundation
-import CoreGraphics
 
 private let protocolVersion = 2
 private let directInvocationExitCode: Int32 = 2
 private let directInvocationMessage =
     "resteyes-macos-helper is an internal Resteyes helper. Start Resteyes with the main resteyes binary; do not run this helper directly."
 private let anyInputEventType = CGEventType(rawValue: UInt32.max)!
+private let defaultBreakMessage = "Take a break"
 
 private enum ProtocolError: Error, CustomStringConvertible {
     case invalidJSON
@@ -28,6 +30,143 @@ private enum ProtocolError: Error, CustomStringConvertible {
         case .outputEncodingFailed:
             return "failed to encode helper output"
         }
+    }
+}
+
+private final class BreakOverlayController {
+    private var windows: [NSWindow] = []
+    private var applicationPrepared = false
+
+    func show(message: String) {
+        prepareApplication()
+        clear()
+
+        for screen in NSScreen.screens {
+            let window = overlayWindow(for: screen, message: message)
+            windows.append(window)
+            window.orderFrontRegardless()
+        }
+    }
+
+    func clear() {
+        for window in windows {
+            window.orderOut(nil)
+            window.close()
+        }
+        windows.removeAll()
+    }
+
+    private func overlayWindow(for screen: NSScreen, message: String) -> NSWindow {
+        let frame = screen.frame
+        let window = NSWindow(
+            contentRect: frame,
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false,
+            screen: screen
+        )
+        window.backgroundColor = .black
+        window.collectionBehavior = [
+            .canJoinAllSpaces,
+            .fullScreenAuxiliary,
+            .ignoresCycle,
+            .stationary,
+        ]
+        window.contentView = BreakOverlayView(
+            frame: NSRect(origin: .zero, size: frame.size),
+            message: message
+        )
+        window.hasShadow = false
+        window.ignoresMouseEvents = false
+        window.isOpaque = true
+        window.isReleasedWhenClosed = false
+        window.level = .screenSaver
+        return window
+    }
+
+    private func prepareApplication() {
+        guard !applicationPrepared else {
+            return
+        }
+
+        let application = NSApplication.shared
+        application.setActivationPolicy(.accessory)
+        application.finishLaunching()
+        applicationPrepared = true
+    }
+}
+
+private final class BreakOverlayView: NSView {
+    private let message: String
+
+    init(frame frameRect: NSRect, message: String) {
+        self.message = message
+        super.init(frame: frameRect)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("BreakOverlayView does not support coder initialization")
+    }
+
+    override var isOpaque: Bool {
+        true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.black.setFill()
+        dirtyRect.fill()
+        drawMessage()
+    }
+
+    private func drawMessage() {
+        let availableWidth = max(bounds.width * 0.8, 1)
+        let availableHeight = max(bounds.height * 0.8, 1)
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = .center
+
+        var fontSize = min(max(min(bounds.width, bounds.height) / 12, 24), 72)
+        var renderedMessage = attributedMessage(fontSize: fontSize, paragraphStyle: paragraphStyle)
+        var textBounds = measuredBounds(for: renderedMessage, width: availableWidth)
+
+        while textBounds.height > availableHeight && fontSize > 18 {
+            fontSize -= 2
+            renderedMessage = attributedMessage(fontSize: fontSize, paragraphStyle: paragraphStyle)
+            textBounds = measuredBounds(for: renderedMessage, width: availableWidth)
+        }
+
+        let textHeight = min(textBounds.height.rounded(.up), availableHeight)
+        let textRect = NSRect(
+            x: bounds.midX - availableWidth / 2,
+            y: bounds.midY - textHeight / 2,
+            width: availableWidth,
+            height: textHeight
+        )
+        renderedMessage.draw(
+            with: textRect,
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        )
+    }
+
+    private func attributedMessage(
+        fontSize: CGFloat,
+        paragraphStyle: NSParagraphStyle
+    ) -> NSAttributedString {
+        NSAttributedString(
+            string: message,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: fontSize, weight: .medium),
+                .foregroundColor: NSColor.white,
+                .paragraphStyle: paragraphStyle,
+            ]
+        )
+    }
+
+    private func measuredBounds(for message: NSAttributedString, width: CGFloat) -> NSRect {
+        message.boundingRect(
+            with: NSSize(width: width, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        )
     }
 }
 
@@ -82,6 +221,13 @@ private func handleHello(_ message: [String: Any]) throws {
     try writeMessage(["type": "ready", "version": protocolVersion])
 }
 
+private func handleStartBreak(_ message: [String: Any], overlay: BreakOverlayController) throws {
+    let message = try selectedBreakMessage(from: message)
+    runOnMain {
+        overlay.show(message: message)
+    }
+}
+
 private func handlePollActivity() throws {
     let idleSeconds = CGEventSource.secondsSinceLastEventType(
         .combinedSessionState,
@@ -96,6 +242,30 @@ private func handlePollActivity() throws {
         "type": "activitySample",
         "idleMs": UInt64(idleMilliseconds),
     ])
+}
+
+private func selectedBreakMessage(from message: [String: Any]) throws -> String {
+    guard let breakInfo = message["break"] as? [String: Any] else {
+        throw ProtocolError.invalidMessage
+    }
+
+    let messages = breakInfo["messages"] as? [String] ?? []
+    return messages.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        ?? defaultBreakMessage
+}
+
+private func clearBreakOverlay(_ overlay: BreakOverlayController) {
+    runOnMain {
+        overlay.clear()
+    }
+}
+
+private func runOnMain(_ body: @escaping () -> Void) {
+    if Thread.isMainThread {
+        body()
+    } else {
+        DispatchQueue.main.sync(execute: body)
+    }
 }
 
 private func readInitialHelloMessage() -> [String: Any] {
@@ -120,7 +290,7 @@ private func readInitialHelloMessage() -> [String: Any] {
     }
 }
 
-private func runProtocolLoop() {
+private func runProtocolLoop(overlay: BreakOverlayController) {
     let firstMessage = readInitialHelloMessage()
 
     do {
@@ -130,15 +300,22 @@ private func runProtocolLoop() {
         return
     }
 
+    defer {
+        clearBreakOverlay(overlay)
+    }
+
     while let line = readLine() {
         do {
             let message = try parseMessage(line)
             switch try messageType(message) {
-            case "startBreak", "finishBreak", "clearBreak":
-                continue
+            case "startBreak":
+                try handleStartBreak(message, overlay: overlay)
+            case "finishBreak", "clearBreak":
+                clearBreakOverlay(overlay)
             case "pollActivity":
                 try handlePollActivity()
             case "shutdown":
+                clearBreakOverlay(overlay)
                 try writeMessage(["type": "shutdownComplete"])
                 return
             default:
@@ -150,4 +327,18 @@ private func runProtocolLoop() {
     }
 }
 
-runProtocolLoop()
+private func runHelper() {
+    let overlay = BreakOverlayController()
+    let protocolThread = Thread {
+        runProtocolLoop(overlay: overlay)
+        DispatchQueue.main.async {
+            exit(EXIT_SUCCESS)
+        }
+    }
+    protocolThread.name = "resteyes-macos-helper-protocol"
+    protocolThread.start()
+
+    RunLoop.main.run()
+}
+
+runHelper()

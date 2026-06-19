@@ -96,6 +96,11 @@
   per second through protocol version 2, and emit wall-clock and active-time
   runtime events with the same shared activity interpretation and regular
   activity trace output as X11.
+- Completed `macos-overlay`: macOS break commands now create helper-owned black
+  AppKit overlay windows on every `NSScreen`, render the first configured break
+  message, suppress active-time events while visible, advance break duration
+  only on idle helper samples, and clear overlays on finish, clear, shutdown,
+  or helper EOF.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -117,6 +122,13 @@
   `shutdownComplete` for a valid version 2 session, returned a structured error
   for an unknown message, and returned a structured error for an incompatible
   version.
+- A macOS helper overlay smoke test returned only `ready` and
+  `shutdownComplete` on stdout for `hello`, `startBreak`, `clearBreak`, and
+  `shutdown`; AppKit emitted system diagnostics to stderr when overlay creation
+  was exercised.
+- A bounded `timeout 3s make run` on macOS stays alive until terminated by
+  `timeout` and no longer emits helper stderr during startup after AppKit setup
+  was made lazy.
 - `nix build` passes.
 - `.codex/hooks/rustfmt.sh` runs successfully.
 - On unsupported targets, `make run` prints
@@ -128,7 +140,7 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next planned increment is `macos-overlay`.
+- The next planned increment is `macos-input-blocking`.
 - The later build order now brings macOS backend parity before sync protocol,
   then separates sync protocol, LAN discovery, authenticated peer transport,
   synced break/disable behavior, tray UI, and synced lock-after-break behavior.

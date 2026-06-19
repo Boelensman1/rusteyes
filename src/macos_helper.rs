@@ -1,4 +1,4 @@
-use crate::activity::{ActivityPoller, ActivitySample};
+use crate::activity::{ActivityPoller, ActivitySample, break_elapsed_for_sample};
 use crate::backend::{Backend, BackendCommand, RuntimeEvent};
 use crate::scheduler::{BreakOrigin, ScheduledBreak};
 use serde::{Deserialize, Serialize};
@@ -18,12 +18,14 @@ const DEVELOPMENT_HELPER_PATH: &str = "helpers/macos-helper/.build/debug/resteye
 const HELPER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const HELPER_SHUTDOWN_POLL: Duration = Duration::from_millis(20);
 const ACTIVITY_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const OVERLAY_TICK_INTERVAL: Duration = Duration::from_millis(500);
 
 #[allow(clippy::module_name_repetitions)]
 pub(crate) struct MacOSHelperBackend {
     child: Child,
     session: HelperSession<ChildStdout, ChildStdin>,
     poller: ActivityPoller,
+    active_break: Option<ActiveBreak>,
     shutdown_sent: bool,
 }
 
@@ -55,8 +57,82 @@ impl MacOSHelperBackend {
             child,
             session,
             poller: ActivityPoller::new(ACTIVITY_POLL_INTERVAL),
+            active_break: None,
             shutdown_sent: false,
         })
+    }
+
+    fn poll_once(&mut self) -> Result<(), MacOSHelperError> {
+        if self.active_break.is_some() {
+            self.poll_overlay_once()
+        } else {
+            self.poll_activity_once()
+        }
+    }
+
+    fn poll_activity_once(&mut self) -> Result<(), MacOSHelperError> {
+        thread::sleep(self.poller.poll_interval());
+
+        let sample = self.session.poll_activity()?;
+        self.poller.queue_sample(sample);
+
+        Ok(())
+    }
+
+    fn poll_overlay_once(&mut self) -> Result<(), MacOSHelperError> {
+        thread::sleep(OVERLAY_TICK_INTERVAL);
+
+        let sample = self.session.poll_activity()?;
+        let break_elapsed = break_elapsed_for_sample(sample, OVERLAY_TICK_INTERVAL);
+        trace!(
+            idle_for = ?sample.idle_for(),
+            state = ?sample.state_for(OVERLAY_TICK_INTERVAL),
+            ?break_elapsed,
+            break_time_advanced = !break_elapsed.is_zero(),
+            "sampled macOS activity during break overlay"
+        );
+
+        let finished = self
+            .active_break
+            .as_mut()
+            .is_some_and(|active_break| active_break.advance(break_elapsed));
+
+        self.poller
+            .queue_event(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL));
+
+        if finished {
+            self.poller.queue_event(RuntimeEvent::BreakFinished);
+        }
+
+        Ok(())
+    }
+
+    fn start_break(&mut self, scheduled_break: ScheduledBreak) {
+        let duration = scheduled_break.duration;
+        if self.send_backend_command(BackendCommand::StartBreak(scheduled_break)) {
+            self.active_break = Some(ActiveBreak::new(duration));
+        }
+    }
+
+    fn finish_break(&mut self, lock_after: bool) {
+        self.active_break = None;
+        _ = self.send_backend_command(BackendCommand::FinishBreak { lock_after });
+    }
+
+    fn clear_break(&mut self) {
+        self.active_break = None;
+        _ = self.send_backend_command(BackendCommand::ClearBreak);
+    }
+
+    fn send_backend_command(&mut self, command: BackendCommand) -> bool {
+        match self.session.send_command(command) {
+            Ok(()) => true,
+            Err(error) => {
+                warn!(%error, "failed to send command to macOS helper");
+                self.poller.queue_event(RuntimeEvent::Shutdown);
+                false
+            }
+        }
     }
 
     fn shutdown_helper(&mut self) -> Result<(), MacOSHelperError> {
@@ -128,12 +204,8 @@ impl Backend for MacOSHelperBackend {
                 return event;
             }
 
-            thread::sleep(self.poller.poll_interval());
-
-            match self.session.poll_activity() {
-                Ok(sample) => {
-                    self.poller.queue_sample(sample);
-                }
+            match self.poll_once() {
+                Ok(()) => {}
                 Err(error) => {
                     warn!(%error, "failed to poll macOS activity");
                     return RuntimeEvent::Shutdown;
@@ -143,8 +215,54 @@ impl Backend for MacOSHelperBackend {
     }
 
     fn handle_command(&mut self, command: BackendCommand) {
-        if let Err(error) = self.session.send_command(command) {
-            warn!(%error, "failed to send command to macOS helper");
+        match command {
+            BackendCommand::StartBreak(scheduled_break) => self.start_break(scheduled_break),
+            BackendCommand::FinishBreak { lock_after } => self.finish_break(lock_after),
+            BackendCommand::ClearBreak => self.clear_break(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActiveBreak {
+    timer: BreakTimer,
+}
+
+impl ActiveBreak {
+    const fn new(duration: Duration) -> Self {
+        Self {
+            timer: BreakTimer::new(duration),
+        }
+    }
+
+    fn advance(&mut self, elapsed: Duration) -> bool {
+        self.timer.advance(elapsed)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BreakTimer {
+    remaining: Duration,
+}
+
+impl BreakTimer {
+    const fn new(duration: Duration) -> Self {
+        Self {
+            remaining: duration,
+        }
+    }
+
+    fn advance(&mut self, elapsed: Duration) -> bool {
+        if self.remaining.is_zero() {
+            return false;
+        }
+
+        if elapsed >= self.remaining {
+            self.remaining = Duration::ZERO;
+            true
+        } else {
+            self.remaining -= elapsed;
+            false
         }
     }
 }
@@ -508,6 +626,23 @@ mod tests {
     }
 
     #[test]
+    fn active_break_finishes_once_idle_elapsed_reaches_duration() {
+        let mut active_break = ActiveBreak::new(Duration::from_secs(1));
+
+        assert!(!active_break.advance(Duration::from_millis(500)));
+        assert!(active_break.advance(Duration::from_millis(500)));
+        assert!(!active_break.advance(Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn active_break_finishes_when_idle_elapsed_overshoots_duration() {
+        let mut active_break = ActiveBreak::new(Duration::from_secs(1));
+
+        assert!(active_break.advance(Duration::from_secs(2)));
+        assert_eq!(active_break.timer.remaining, Duration::ZERO);
+    }
+
+    #[test]
     fn start_break_command_uses_millisecond_wire_duration() -> Result<(), Box<dyn std::error::Error>>
     {
         let mut output = Vec::new();
@@ -533,6 +668,31 @@ mod tests {
                 },
             }]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn finish_break_command_is_framed() -> Result<(), Box<dyn std::error::Error>> {
+        let mut output = Vec::new();
+        let mut session = HelperSession::new(Cursor::new(Vec::new()), &mut output);
+
+        session.send_command(BackendCommand::FinishBreak { lock_after: true })?;
+
+        assert_eq!(
+            daemon_messages(&output)?,
+            vec![DaemonMessage::FinishBreak { lock_after: true }]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn clear_break_command_is_framed() -> Result<(), Box<dyn std::error::Error>> {
+        let mut output = Vec::new();
+        let mut session = HelperSession::new(Cursor::new(Vec::new()), &mut output);
+
+        session.send_command(BackendCommand::ClearBreak)?;
+
+        assert_eq!(daemon_messages(&output)?, vec![DaemonMessage::ClearBreak]);
         Ok(())
     }
 

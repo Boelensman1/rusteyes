@@ -79,7 +79,6 @@ pub(crate) enum ActivityState {
     Idle,
 }
 
-#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn break_elapsed_for_sample(
     sample: ActivitySample,
     poll_interval: Duration,
