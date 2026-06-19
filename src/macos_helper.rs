@@ -103,7 +103,7 @@ impl MacOSHelperBackend {
         if let Some(update) = self
             .active_break
             .as_mut()
-            .map(|active_break| active_break.apply_sample(sample, OVERLAY_TICK_INTERVAL))
+            .map(|active_break| active_break.apply_sample(sample, break_elapsed))
         {
             self.session
                 .update_break(update.remaining, update.lock_after_break)?;
@@ -243,14 +243,13 @@ impl ActiveBreak {
     fn apply_sample(
         &mut self,
         sample: HelperActivitySample,
-        poll_interval: Duration,
+        elapsed: Duration,
     ) -> ActiveBreakUpdate {
         if sample.lock_after_break_requested {
             self.request_lock_after_break();
         }
 
-        let break_elapsed = break_elapsed_for_sample(sample.activity, poll_interval);
-        let finished = self.advance(break_elapsed);
+        let finished = self.advance(elapsed);
 
         ActiveBreakUpdate {
             remaining: self.remaining(),
@@ -286,11 +285,11 @@ struct ActiveBreakUpdate {
 }
 
 fn queue_overlay_runtime_events(poller: &mut ActivityPoller, update: ActiveBreakUpdate) {
+    poller.queue_event(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL));
+
     if update.lock_after_break_requested {
         poller.queue_event(RuntimeEvent::LockAfterCurrentBreak);
     }
-
-    poller.queue_event(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL));
 
     if update.finished {
         poller.queue_event(RuntimeEvent::BreakFinished);
@@ -457,6 +456,22 @@ where
 
     fn send_shutdown(&mut self) -> Result<(), MacOSHelperError> {
         self.send(&DaemonMessage::Shutdown)
+    }
+
+    fn receive_shutdown_complete(&mut self) -> Result<(), MacOSHelperError> {
+        self.receive_expected(
+            "helper shutdown completion",
+            "shutdown",
+            |message| match message {
+                HelperMessage::ShutdownComplete => Ok(()),
+                message => Err(message),
+            },
+        )
+    }
+
+    fn shutdown(&mut self) -> Result<(), MacOSHelperError> {
+        self.send_shutdown()?;
+        self.receive_shutdown_complete()
     }
 
     fn send(&mut self, message: &DaemonMessage) -> Result<(), MacOSHelperError> {
@@ -748,7 +763,7 @@ fn shutdown_helper_process(
 
     if !*shutdown_sent {
         match session {
-            Some(session) => match session.send_shutdown() {
+            Some(session) => match session.shutdown() {
                 Ok(()) => {
                     *shutdown_sent = true;
                 }
@@ -1160,6 +1175,35 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_waits_for_completion() -> Result<(), Box<dyn std::error::Error>> {
+        let input = Cursor::new(br#"{"type":"shutdownComplete"}"#.to_vec());
+        let mut output = Vec::new();
+        let mut session = HelperSession::new(input, &mut output);
+
+        session.shutdown()?;
+
+        assert_eq!(daemon_messages(&output)?, vec![DaemonMessage::Shutdown]);
+        Ok(())
+    }
+
+    #[test]
+    fn shutdown_rejects_wrong_completion() -> Result<(), Box<dyn std::error::Error>> {
+        let input = Cursor::new(br#"{"type":"commandComplete","command":"clearBreak"}"#.to_vec());
+        let mut output = Vec::new();
+        let mut session = HelperSession::new(input, &mut output);
+
+        let Err(error) = session.shutdown() else {
+            panic!("wrong shutdown completion must fail");
+        };
+
+        let message = error.to_string();
+        assert!(message.contains("expected helper shutdown completion"));
+        assert!(message.contains("got commandComplete"));
+        assert_eq!(daemon_messages(&output)?, vec![DaemonMessage::Shutdown]);
+        Ok(())
+    }
+
+    #[test]
     fn shutdown_complete_message_is_decoded() -> Result<(), Box<dyn std::error::Error>> {
         let input = Cursor::new(br#"{"type":"shutdownComplete"}"#.to_vec());
         let mut session = HelperSession::new(input, Vec::new());
@@ -1209,7 +1253,7 @@ mod tests {
     }
 
     #[test]
-    fn overlay_runtime_events_queue_lock_request_before_finish() {
+    fn overlay_runtime_events_queue_wall_clock_before_lock_request_and_finish() {
         let mut poller = ActivityPoller::new(OVERLAY_TICK_INTERVAL);
 
         queue_overlay_runtime_events(
@@ -1224,11 +1268,11 @@ mod tests {
 
         assert_eq!(
             poller.next_event(),
-            Some(RuntimeEvent::LockAfterCurrentBreak)
+            Some(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL))
         );
         assert_eq!(
             poller.next_event(),
-            Some(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL))
+            Some(RuntimeEvent::LockAfterCurrentBreak)
         );
         assert_eq!(poller.next_event(), Some(RuntimeEvent::BreakFinished));
         assert_eq!(poller.next_event(), None);

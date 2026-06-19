@@ -23,7 +23,6 @@ private enum ProtocolError: Error, CustomStringConvertible {
     case invalidActivitySample
     case inputBlockingUnavailable
     case lockScreenUnavailable(String)
-    case outputEncodingFailed
 
     var description: String {
         switch self {
@@ -39,8 +38,6 @@ private enum ProtocolError: Error, CustomStringConvertible {
             return "failed to create macOS input event tap; grant Accessibility and Input Monitoring permissions to Resteyes"
         case .lockScreenUnavailable(let reason):
             return "failed to lock macOS session: \(reason)"
-        case .outputEncodingFailed:
-            return "failed to encode helper output"
         }
     }
 }
@@ -219,14 +216,14 @@ private final class BreakOverlayController {
             return
         }
 
-        for point in candidateScreenPoints(for: location) {
+        for point in screenPointCandidates(fromQuartzEventLocation: location) {
             if requestLockAfterBreak(atScreenPoint: point) {
                 return
             }
         }
     }
 
-    private func candidateScreenPoints(for point: CGPoint) -> [CGPoint] {
+    private func screenPointCandidates(fromQuartzEventLocation point: CGPoint) -> [CGPoint] {
         let flippedPoint = flippedScreenPoint(point)
         if abs(flippedPoint.x - point.x) < 0.5 && abs(flippedPoint.y - point.y) < 0.5 {
             return [point]
@@ -580,41 +577,156 @@ private func isMouseDownEvent(_ type: CGEventType) -> Bool {
     type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown
 }
 
-private func parseMessage(_ line: String) throws -> [String: Any] {
-    guard let data = line.data(using: .utf8),
-          let message = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-          message["type"] is String
-    else {
+private let messageDecoder = JSONDecoder()
+private let messageEncoder = JSONEncoder()
+
+private enum DaemonMessage {
+    case hello(HelloCommand)
+    case preflightPermissions
+    case startBreak(StartBreakCommand)
+    case updateBreak(UpdateBreakCommand)
+    case finishBreak(FinishBreakCommand)
+    case clearBreak
+    case pollActivity
+    case shutdown
+}
+
+private enum HelperCommand: String, Encodable {
+    case startBreak
+    case updateBreak
+    case finishBreak
+    case clearBreak
+}
+
+private struct MessageEnvelope: Decodable {
+    let type: String
+}
+
+private struct HelloCommand: Decodable {
+    let version: Int
+}
+
+private struct StartBreakCommand: Decodable {
+    let breakInfo: BreakInfo
+
+    private enum CodingKeys: String, CodingKey {
+        case breakInfo = "break"
+    }
+}
+
+private struct BreakInfo: Decodable {
+    let durationMs: UInt64
+    let messages: [String]
+    let autolock: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case durationMs
+        case messages
+        case autolock
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        durationMs = try container.decode(UInt64.self, forKey: .durationMs)
+        messages = (try? container.decode([String].self, forKey: .messages)) ?? []
+        autolock = try container.decode(Bool.self, forKey: .autolock)
+    }
+}
+
+private struct UpdateBreakCommand: Decodable {
+    let remainingMs: UInt64
+    let lockAfter: Bool
+}
+
+private struct FinishBreakCommand: Decodable {
+    let lockAfter: Bool
+}
+
+private struct ReadyMessage: Encodable {
+    let type = "ready"
+    let version: Int
+}
+
+private struct PreflightResultMessage: Encodable {
+    let type = "preflightResult"
+    let accessibilityTrusted: Bool
+    let inputMonitoringTrusted: Bool
+}
+
+private struct ActivitySampleMessage: Encodable {
+    let type = "activitySample"
+    let idleMs: UInt64
+    let lockAfterBreakRequested: Bool
+}
+
+private struct CommandCompleteMessage: Encodable {
+    let type = "commandComplete"
+    let command: HelperCommand
+}
+
+private struct ShutdownCompleteMessage: Encodable {
+    let type = "shutdownComplete"
+}
+
+private struct ErrorMessage: Encodable {
+    let type = "error"
+    let message: String
+}
+
+private func parseMessage(_ line: String) throws -> DaemonMessage {
+    guard let data = line.data(using: .utf8) else {
         throw ProtocolError.invalidJSON
     }
 
-    return message
-}
+    let envelope: MessageEnvelope
+    do {
+        envelope = try messageDecoder.decode(MessageEnvelope.self, from: data)
+    } catch {
+        throw ProtocolError.invalidJSON
+    }
 
-private func messageType(_ message: [String: Any]) throws -> String {
-    guard let type = message["type"] as? String else {
+    switch envelope.type {
+    case "hello":
+        return .hello(try decodeMessage(HelloCommand.self, from: data))
+    case "preflightPermissions":
+        return .preflightPermissions
+    case "startBreak":
+        return .startBreak(try decodeMessage(StartBreakCommand.self, from: data))
+    case "updateBreak":
+        return .updateBreak(try decodeMessage(UpdateBreakCommand.self, from: data))
+    case "finishBreak":
+        return .finishBreak(try decodeMessage(FinishBreakCommand.self, from: data))
+    case "clearBreak":
+        return .clearBreak
+    case "pollActivity":
+        return .pollActivity
+    case "shutdown":
+        return .shutdown
+    default:
         throw ProtocolError.invalidMessage
     }
-
-    return type
 }
 
-private func writeMessage(_ message: [String: Any]) throws {
-    let data = try JSONSerialization.data(withJSONObject: message)
-    guard let line = String(data: data, encoding: .utf8) else {
-        throw ProtocolError.outputEncodingFailed
+private func decodeMessage<T: Decodable>(_ messageType: T.Type, from data: Data) throws -> T {
+    do {
+        return try messageDecoder.decode(messageType, from: data)
+    } catch {
+        throw ProtocolError.invalidMessage
     }
+}
 
-    FileHandle.standardOutput.write(Data((line + "\n").utf8))
+private func writeMessage<T: Encodable>(_ message: T) throws {
+    let data = try messageEncoder.encode(message)
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
 }
 
 private func writeError(_ error: Error) {
-    let message = ["type": "error", "message": String(describing: error)]
-    try? writeMessage(message)
+    try? writeMessage(ErrorMessage(message: String(describing: error)))
 }
 
-private func writeCommandComplete(_ command: String) throws {
-    try writeMessage(["type": "commandComplete", "command": command])
+private func writeCommandComplete(_ command: HelperCommand) throws {
+    try writeMessage(CommandCompleteMessage(command: command))
 }
 
 private func writeStandardErrorLine(_ line: String) {
@@ -626,24 +738,23 @@ private func exitAfterDirectInvocationMessage() -> Never {
     exit(directInvocationExitCode)
 }
 
-private func handleHello(_ message: [String: Any]) throws {
-    let version = message["version"] as? Int ?? 0
+private func handleHello(_ message: HelloCommand) throws {
+    let version = message.version
     guard version == protocolVersion else {
         throw ProtocolError.incompatibleVersion(version)
     }
 
-    try writeMessage(["type": "ready", "version": protocolVersion])
+    try writeMessage(ReadyMessage(version: protocolVersion))
 }
 
 private func handlePreflightPermissions() throws {
     let accessibilityTrusted = requestAccessibilityTrust()
     let inputMonitoringTrusted = CGPreflightListenEventAccess()
 
-    try writeMessage([
-        "type": "preflightResult",
-        "accessibilityTrusted": accessibilityTrusted,
-        "inputMonitoringTrusted": inputMonitoringTrusted,
-    ])
+    try writeMessage(PreflightResultMessage(
+        accessibilityTrusted: accessibilityTrusted,
+        inputMonitoringTrusted: inputMonitoringTrusted
+    ))
 }
 
 private func requestAccessibilityTrust() -> Bool {
@@ -652,26 +763,23 @@ private func requestAccessibilityTrust() -> Bool {
     return AXIsProcessTrustedWithOptions(options)
 }
 
-private func handleStartBreak(_ message: [String: Any], overlay: BreakOverlayController) throws {
-    let state = try breakOverlayState(from: message)
+private func handleStartBreak(_ command: StartBreakCommand, overlay: BreakOverlayController) throws {
+    let state = breakOverlayState(from: command)
     try runThrowingOnMain {
         try overlay.show(state: state)
     }
 }
 
-private func handleUpdateBreak(_ message: [String: Any], overlay: BreakOverlayController) throws {
-    let remainingMs = try unsignedInteger(message["remainingMs"])
-    let lockAfterBreak = try lockAfterBreak(from: message)
+private func handleUpdateBreak(_ command: UpdateBreakCommand, overlay: BreakOverlayController) {
     runOnMain {
-        overlay.update(remainingMs: remainingMs, lockAfterBreak: lockAfterBreak)
+        overlay.update(remainingMs: command.remainingMs, lockAfterBreak: command.lockAfter)
     }
 }
 
-private func handleFinishBreak(_ message: [String: Any], overlay: BreakOverlayController) throws {
-    let lockAfter = try lockAfterBreak(from: message)
+private func handleFinishBreak(_ command: FinishBreakCommand, overlay: BreakOverlayController) throws {
     clearBreakOverlay(overlay)
 
-    if lockAfter {
+    if command.lockAfter {
         try lockScreenImmediately()
     }
 }
@@ -689,58 +797,22 @@ private func handlePollActivity(overlay: BreakOverlayController) throws {
     let lockAfterBreakRequested = runReturningOnMain {
         overlay.takeLockAfterBreakRequest()
     }
-    try writeMessage([
-        "type": "activitySample",
-        "idleMs": UInt64(idleMilliseconds),
-        "lockAfterBreakRequested": lockAfterBreakRequested,
-    ])
+    try writeMessage(ActivitySampleMessage(
+        idleMs: UInt64(idleMilliseconds),
+        lockAfterBreakRequested: lockAfterBreakRequested
+    ))
 }
 
-private func breakOverlayState(from message: [String: Any]) throws -> BreakOverlayState {
-    guard let breakInfo = message["break"] as? [String: Any] else {
-        throw ProtocolError.invalidMessage
-    }
-
-    let messages = breakInfo["messages"] as? [String] ?? []
+private func breakOverlayState(from command: StartBreakCommand) -> BreakOverlayState {
+    let messages = command.breakInfo.messages
     let message = messages.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         ?? defaultBreakMessage
-    let durationMs = try unsignedInteger(breakInfo["durationMs"])
-    let autolock = try booleanValue(breakInfo["autolock"])
 
     return BreakOverlayState(
         message: message,
-        remainingMs: durationMs,
-        lockAfterBreak: autolock
+        remainingMs: command.breakInfo.durationMs,
+        lockAfterBreak: command.breakInfo.autolock
     )
-}
-
-private func unsignedInteger(_ value: Any?) throws -> UInt64 {
-    guard let number = value as? NSNumber else {
-        throw ProtocolError.invalidMessage
-    }
-
-    let doubleValue = number.doubleValue
-    guard doubleValue.isFinite, doubleValue >= 0, doubleValue.rounded() == doubleValue else {
-        throw ProtocolError.invalidMessage
-    }
-
-    return number.uint64Value
-}
-
-private func booleanValue(_ value: Any?) throws -> Bool {
-    guard let value = value as? Bool else {
-        throw ProtocolError.invalidMessage
-    }
-
-    return value
-}
-
-private func lockAfterBreak(from message: [String: Any]) throws -> Bool {
-    guard let lockAfter = message["lockAfter"] as? Bool else {
-        throw ProtocolError.invalidMessage
-    }
-
-    return lockAfter
 }
 
 private func lockScreenImmediately() throws {
@@ -821,7 +893,7 @@ private func runThrowingOnMain(_ body: @escaping () throws -> Void) throws {
     }
 }
 
-private func readInitialHelloMessage() -> [String: Any] {
+private func readInitialHelloMessage() -> HelloCommand {
     if isatty(STDIN_FILENO) != 0 {
         exitAfterDirectInvocationMessage()
     }
@@ -832,12 +904,11 @@ private func readInitialHelloMessage() -> [String: Any] {
         }
 
         let firstMessage = try parseMessage(firstLine)
-        let firstType = try messageType(firstMessage)
-        guard firstType == "hello" else {
+        guard case .hello(let command) = firstMessage else {
             exitAfterDirectInvocationMessage()
         }
 
-        return firstMessage
+        return command
     } catch {
         exitAfterDirectInvocationMessage()
     }
@@ -860,29 +931,29 @@ private func runProtocolLoop(overlay: BreakOverlayController) {
     while let line = readLine() {
         do {
             let message = try parseMessage(line)
-            switch try messageType(message) {
-            case "preflightPermissions":
-                try handlePreflightPermissions()
-            case "startBreak":
-                try handleStartBreak(message, overlay: overlay)
-                try writeCommandComplete("startBreak")
-            case "updateBreak":
-                try handleUpdateBreak(message, overlay: overlay)
-                try writeCommandComplete("updateBreak")
-            case "finishBreak":
-                try handleFinishBreak(message, overlay: overlay)
-                try writeCommandComplete("finishBreak")
-            case "clearBreak":
-                clearBreakOverlay(overlay)
-                try writeCommandComplete("clearBreak")
-            case "pollActivity":
-                try handlePollActivity(overlay: overlay)
-            case "shutdown":
-                clearBreakOverlay(overlay)
-                try writeMessage(["type": "shutdownComplete"])
-                return
-            default:
+            switch message {
+            case .hello:
                 throw ProtocolError.invalidMessage
+            case .preflightPermissions:
+                try handlePreflightPermissions()
+            case .startBreak(let command):
+                try handleStartBreak(command, overlay: overlay)
+                try writeCommandComplete(.startBreak)
+            case .updateBreak(let command):
+                handleUpdateBreak(command, overlay: overlay)
+                try writeCommandComplete(.updateBreak)
+            case .finishBreak(let command):
+                try handleFinishBreak(command, overlay: overlay)
+                try writeCommandComplete(.finishBreak)
+            case .clearBreak:
+                clearBreakOverlay(overlay)
+                try writeCommandComplete(.clearBreak)
+            case .pollActivity:
+                try handlePollActivity(overlay: overlay)
+            case .shutdown:
+                clearBreakOverlay(overlay)
+                try writeMessage(ShutdownCompleteMessage())
+                return
             }
         } catch {
             writeError(error)

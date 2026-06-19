@@ -18,6 +18,16 @@
   when a break starts and registers an arrow cursor rect for the full overlay
   view, so a pre-existing insertion cursor from another app does not remain
   visible during an input-blocking break.
+- Follow-up cleanup: the Swift helper now decodes daemon commands and encodes
+  helper responses through typed `Codable` protocol values instead of
+  dictionary/string-key parsing.
+- Follow-up cleanup: Rust now validates the helper `shutdownComplete` response
+  during shutdown, computes break elapsed once per overlay sample, and queues
+  macOS overlay runtime events in the same wall-clock, lock-request,
+  break-finished order as X11.
+- Follow-up cleanup: helper lock-control hit testing now names the Quartz event
+  point conversion path explicitly while preserving the existing raw/flipped
+  point fallback.
 
 ## Decisions
 
@@ -41,6 +51,8 @@
 - `make check` passed after fixing `lockAfter` command field serialization.
 - `make macos-helper-build` passed after fixing the overlay cursor.
 - `make check` passed after fixing the overlay cursor.
+- `make macos-helper-build` passed after the typed helper protocol cleanup.
+- `make check` passed after the Rust shutdown/event-order cleanup.
 
 ## Follow-up
 

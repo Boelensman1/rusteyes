@@ -124,7 +124,10 @@
   helper command lock flag as `lockAfter` so `updateBreak` and `finishBreak`
   match the Swift protocol parser. Later follow-up fix forces the break overlay
   cursor to the arrow cursor so an insertion cursor from another app does not
-  remain visible during an input-blocking break.
+  remain visible during an input-blocking break. Later cleanup replaced Swift
+  dictionary protocol parsing with typed `Codable` messages, made Rust validate
+  helper shutdown completion, aligned macOS overlay event ordering with X11,
+  and clarified helper hit-test point conversion.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -179,6 +182,9 @@
   serialization.
 - `make macos-helper-build` passes after fixing the macOS overlay cursor.
 - `make check` passes after fixing the macOS overlay cursor.
+- `make macos-helper-build` passes after the typed macOS helper protocol
+  cleanup.
+- `make check` passes after the macOS helper shutdown/event-order cleanup.
 - A bounded `timeout 3s make run` on macOS stays alive until terminated by
   `timeout` and no longer emits helper stderr during startup after AppKit setup
   was made lazy.
