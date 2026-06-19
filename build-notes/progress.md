@@ -117,6 +117,10 @@
   lock-after-break intent by clearing the helper overlay/input tap before
   either calling the helper-native `SACLockScreenImmediate` default lock path or
   running an explicitly configured no-shell lock command from Rust.
+- Completed `macos-ui-improvements`: macOS break overlays now render remaining
+  break time and a lock-after-break control through helper protocol version 6,
+  and helper click requests are reported back to the runtime before a break can
+  finish and request local locking.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -162,6 +166,9 @@
 - `make check` passes after adding macOS lock-after-break behavior.
 - `make macos-helper-build` passes after adding macOS lock-after-break
   behavior.
+- `make test` passes after adding macOS overlay UI protocol and backend state.
+- `make macos-helper-build` passes after adding macOS overlay UI controls.
+- `make check` passes after adding macOS overlay UI controls.
 - A bounded `timeout 3s make run` on macOS stays alive until terminated by
   `timeout` and no longer emits helper stderr during startup after AppKit setup
   was made lazy.
@@ -178,7 +185,7 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next planned increment is `macos-ui-improvements`.
+- The next planned increment is `sync-protocol`.
 - The later build order now brings macOS backend parity before sync protocol,
   then separates sync protocol, LAN discovery, authenticated peer transport,
   active-time sync, synced break/disable behavior, tray UI, and synced

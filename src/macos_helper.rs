@@ -14,7 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{trace, warn};
 
-const PROTOCOL_VERSION: u16 = 5;
+const PROTOCOL_VERSION: u16 = 6;
 const HELPER_PATH_ENV: &str = "RESTEYES_MACOS_HELPER";
 const DEVELOPMENT_HELPER_PATH: &str = "helpers/macos-helper/.build/debug/resteyes-macos-helper";
 const HELPER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -82,7 +82,7 @@ impl MacOSHelperBackend {
         thread::sleep(self.poller.poll_interval());
 
         let sample = self.session.poll_activity()?;
-        self.poller.queue_sample(sample);
+        self.poller.queue_sample(sample.activity);
 
         Ok(())
     }
@@ -91,25 +91,23 @@ impl MacOSHelperBackend {
         thread::sleep(OVERLAY_TICK_INTERVAL);
 
         let sample = self.session.poll_activity()?;
-        let break_elapsed = break_elapsed_for_sample(sample, OVERLAY_TICK_INTERVAL);
+        let break_elapsed = break_elapsed_for_sample(sample.activity, OVERLAY_TICK_INTERVAL);
         trace!(
-            idle_for = ?sample.idle_for(),
-            state = ?sample.state_for(OVERLAY_TICK_INTERVAL),
+            idle_for = ?sample.activity.idle_for(),
+            state = ?sample.activity.state_for(OVERLAY_TICK_INTERVAL),
             ?break_elapsed,
             break_time_advanced = !break_elapsed.is_zero(),
             "sampled macOS activity during break overlay"
         );
 
-        let finished = self
+        if let Some(update) = self
             .active_break
             .as_mut()
-            .is_some_and(|active_break| active_break.advance(break_elapsed));
-
-        self.poller
-            .queue_event(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL));
-
-        if finished {
-            self.poller.queue_event(RuntimeEvent::BreakFinished);
+            .map(|active_break| active_break.apply_sample(sample, OVERLAY_TICK_INTERVAL))
+        {
+            self.session
+                .update_break(update.remaining, update.lock_after_break)?;
+            queue_overlay_runtime_events(&mut self.poller, update);
         }
 
         Ok(())
@@ -117,8 +115,9 @@ impl MacOSHelperBackend {
 
     fn start_break(&mut self, scheduled_break: ScheduledBreak) {
         let duration = scheduled_break.duration;
+        let lock_after_break = scheduled_break.autolock;
         if self.send_backend_command(BackendCommand::StartBreak(scheduled_break)) {
-            self.active_break = Some(ActiveBreak::new(duration));
+            self.active_break = Some(ActiveBreak::new(duration, lock_after_break));
         }
     }
 
@@ -230,17 +229,71 @@ impl Backend for MacOSHelperBackend {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ActiveBreak {
     timer: BreakTimer,
+    lock_after_break: bool,
 }
 
 impl ActiveBreak {
-    const fn new(duration: Duration) -> Self {
+    const fn new(duration: Duration, lock_after_break: bool) -> Self {
         Self {
             timer: BreakTimer::new(duration),
+            lock_after_break,
+        }
+    }
+
+    fn apply_sample(
+        &mut self,
+        sample: HelperActivitySample,
+        poll_interval: Duration,
+    ) -> ActiveBreakUpdate {
+        if sample.lock_after_break_requested {
+            self.request_lock_after_break();
+        }
+
+        let break_elapsed = break_elapsed_for_sample(sample.activity, poll_interval);
+        let finished = self.advance(break_elapsed);
+
+        ActiveBreakUpdate {
+            remaining: self.remaining(),
+            lock_after_break: self.lock_after_break(),
+            lock_after_break_requested: sample.lock_after_break_requested,
+            finished,
         }
     }
 
     fn advance(&mut self, elapsed: Duration) -> bool {
         self.timer.advance(elapsed)
+    }
+
+    fn request_lock_after_break(&mut self) {
+        self.lock_after_break = true;
+    }
+
+    const fn remaining(self) -> Duration {
+        self.timer.remaining()
+    }
+
+    const fn lock_after_break(self) -> bool {
+        self.lock_after_break
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActiveBreakUpdate {
+    remaining: Duration,
+    lock_after_break: bool,
+    lock_after_break_requested: bool,
+    finished: bool,
+}
+
+fn queue_overlay_runtime_events(poller: &mut ActivityPoller, update: ActiveBreakUpdate) {
+    if update.lock_after_break_requested {
+        poller.queue_event(RuntimeEvent::LockAfterCurrentBreak);
+    }
+
+    poller.queue_event(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL));
+
+    if update.finished {
+        poller.queue_event(RuntimeEvent::BreakFinished);
     }
 }
 
@@ -319,7 +372,29 @@ where
 
     fn send_command(&mut self, command: BackendCommand) -> Result<(), MacOSHelperError> {
         let expected_command = HelperCommand::from_backend_command(&command);
-        self.send(&DaemonMessage::from(command))?;
+        self.send_helper_command(&DaemonMessage::from(command), expected_command)
+    }
+
+    fn update_break(
+        &mut self,
+        remaining: Duration,
+        lock_after: bool,
+    ) -> Result<(), MacOSHelperError> {
+        self.send_helper_command(
+            &DaemonMessage::UpdateBreak {
+                remaining_ms: duration_millis(remaining),
+                lock_after,
+            },
+            HelperCommand::Update,
+        )
+    }
+
+    fn send_helper_command(
+        &mut self,
+        message: &DaemonMessage,
+        expected_command: HelperCommand,
+    ) -> Result<(), MacOSHelperError> {
+        self.send(message)?;
 
         let error_context = format!("{} command", expected_command.as_str());
         let command =
@@ -361,16 +436,20 @@ where
         .ensure_trusted()
     }
 
-    fn poll_activity(&mut self) -> Result<ActivitySample, MacOSHelperError> {
+    fn poll_activity(&mut self) -> Result<HelperActivitySample, MacOSHelperError> {
         self.send(&DaemonMessage::PollActivity)?;
 
         self.receive_expected(
             "helper activity sample",
             "activity",
             |message| match message {
-                HelperMessage::ActivitySample { idle_ms } => {
-                    Ok(ActivitySample::new(Duration::from_millis(idle_ms)))
-                }
+                HelperMessage::ActivitySample {
+                    idle_ms,
+                    lock_after_break_requested,
+                } => Ok(HelperActivitySample {
+                    activity: ActivitySample::new(Duration::from_millis(idle_ms)),
+                    lock_after_break_requested,
+                }),
                 message => Err(message),
             },
         )
@@ -444,6 +523,11 @@ enum DaemonMessage {
     FinishBreak {
         lock_after: bool,
     },
+    UpdateBreak {
+        #[serde(rename = "remainingMs")]
+        remaining_ms: u64,
+        lock_after: bool,
+    },
     ClearBreak,
     PollActivity,
     Shutdown,
@@ -506,6 +590,8 @@ enum HelperCommand {
     Start,
     #[serde(rename = "finishBreak")]
     Finish,
+    #[serde(rename = "updateBreak")]
+    Update,
     #[serde(rename = "clearBreak")]
     Clear,
 }
@@ -523,9 +609,16 @@ impl HelperCommand {
         match self {
             Self::Start => "startBreak",
             Self::Finish => "finishBreak",
+            Self::Update => "updateBreak",
             Self::Clear => "clearBreak",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HelperActivitySample {
+    activity: ActivitySample,
+    lock_after_break_requested: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -537,6 +630,8 @@ enum HelperMessage {
     ActivitySample {
         #[serde(rename = "idleMs")]
         idle_ms: u64,
+        #[serde(rename = "lockAfterBreakRequested")]
+        lock_after_break_requested: bool,
     },
     PreflightResult {
         #[serde(rename = "accessibilityTrusted")]
@@ -778,7 +873,7 @@ mod tests {
 
     #[test]
     fn handshake_writes_hello_and_accepts_ready() -> Result<(), Box<dyn std::error::Error>> {
-        let input = Cursor::new(br#"{"type":"ready","version":5}"#.to_vec());
+        let input = Cursor::new(br#"{"type":"ready","version":6}"#.to_vec());
         let mut output = Vec::new();
 
         {
@@ -874,7 +969,7 @@ mod tests {
 
     #[test]
     fn handshake_rejects_incompatible_version() {
-        let input = Cursor::new(br#"{"type":"ready","version":6}"#.to_vec());
+        let input = Cursor::new(br#"{"type":"ready","version":7}"#.to_vec());
         let mut output = Vec::new();
         let mut session = HelperSession::new(input, &mut output);
 
@@ -890,14 +985,17 @@ mod tests {
 
     #[test]
     fn poll_activity_writes_request_and_decodes_sample() -> Result<(), Box<dyn std::error::Error>> {
-        let input = Cursor::new(br#"{"type":"activitySample","idleMs":750}"#.to_vec());
+        let input = Cursor::new(
+            br#"{"type":"activitySample","idleMs":750,"lockAfterBreakRequested":true}"#.to_vec(),
+        );
         let mut output = Vec::new();
         let sample = {
             let mut session = HelperSession::new(input, &mut output);
             session.poll_activity()?
         };
 
-        assert_eq!(sample.idle_for(), Duration::from_millis(750));
+        assert_eq!(sample.activity.idle_for(), Duration::from_millis(750));
+        assert!(sample.lock_after_break_requested);
         assert_eq!(daemon_messages(&output)?, vec![DaemonMessage::PollActivity]);
         Ok(())
     }
@@ -943,6 +1041,24 @@ mod tests {
         assert_eq!(
             daemon_messages(&output)?,
             vec![DaemonMessage::FinishBreak { lock_after: true }]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn update_break_command_is_framed() -> Result<(), Box<dyn std::error::Error>> {
+        let input = Cursor::new(br#"{"type":"commandComplete","command":"updateBreak"}"#.to_vec());
+        let mut output = Vec::new();
+        let mut session = HelperSession::new(input, &mut output);
+
+        session.update_break(Duration::from_millis(2_500), true)?;
+
+        assert_eq!(
+            daemon_messages(&output)?,
+            vec![DaemonMessage::UpdateBreak {
+                remaining_ms: 2_500,
+                lock_after: true,
+            }]
         );
         Ok(())
     }
@@ -1045,14 +1161,68 @@ mod tests {
 
     #[test]
     fn activity_sample_message_is_decoded() -> Result<(), Box<dyn std::error::Error>> {
-        let input = Cursor::new(br#"{"type":"activitySample","idleMs":1000}"#.to_vec());
+        let input = Cursor::new(
+            br#"{"type":"activitySample","idleMs":1000,"lockAfterBreakRequested":false}"#.to_vec(),
+        );
         let mut session = HelperSession::new(input, Vec::new());
 
         assert_eq!(
             session.receive()?,
-            HelperMessage::ActivitySample { idle_ms: 1_000 }
+            HelperMessage::ActivitySample {
+                idle_ms: 1_000,
+                lock_after_break_requested: false,
+            }
         );
         Ok(())
+    }
+
+    #[test]
+    fn active_break_sample_tracks_remaining_time_and_lock_request() {
+        let mut active_break = ActiveBreak::new(Duration::from_secs(2), false);
+
+        let update = active_break.apply_sample(
+            HelperActivitySample {
+                activity: ActivitySample::new(Duration::from_secs(2)),
+                lock_after_break_requested: true,
+            },
+            Duration::from_secs(1),
+        );
+
+        assert_eq!(
+            update,
+            ActiveBreakUpdate {
+                remaining: Duration::from_secs(1),
+                lock_after_break: true,
+                lock_after_break_requested: true,
+                finished: false,
+            }
+        );
+    }
+
+    #[test]
+    fn overlay_runtime_events_queue_lock_request_before_finish() {
+        let mut poller = ActivityPoller::new(OVERLAY_TICK_INTERVAL);
+
+        queue_overlay_runtime_events(
+            &mut poller,
+            ActiveBreakUpdate {
+                remaining: Duration::ZERO,
+                lock_after_break: true,
+                lock_after_break_requested: true,
+                finished: true,
+            },
+        );
+
+        assert_eq!(
+            poller.next_event(),
+            Some(RuntimeEvent::LockAfterCurrentBreak)
+        );
+        assert_eq!(
+            poller.next_event(),
+            Some(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL))
+        );
+        assert_eq!(poller.next_event(), Some(RuntimeEvent::BreakFinished));
+        assert_eq!(poller.next_event(), None);
     }
 
     #[test]

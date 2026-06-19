@@ -4,12 +4,14 @@ import CoreGraphics
 import Darwin
 import Foundation
 
-private let protocolVersion = 5
+private let protocolVersion = 6
 private let directInvocationExitCode: Int32 = 2
 private let directInvocationMessage =
     "resteyes-macos-helper is an internal Resteyes helper. Start Resteyes with the main resteyes binary; do not run this helper directly."
 private let anyInputEventType = CGEventType(rawValue: UInt32.max)!
 private let defaultBreakMessage = "Take a break"
+private let lockControlLabel = "Lock after break"
+private let lockControlRequestedLabel = "Locking after break"
 private let loginFrameworkPath = "/System/Library/PrivateFrameworks/login.framework/Versions/Current/login"
 private let lockScreenSymbolName = "SACLockScreenImmediate"
 private typealias LockScreenImmediate = @convention(c) () -> Void
@@ -43,9 +45,16 @@ private enum ProtocolError: Error, CustomStringConvertible {
     }
 }
 
+private struct BreakOverlayState {
+    var message: String
+    var remainingMs: UInt64
+    var lockAfterBreak: Bool
+}
+
 private final class InputBlocker {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    var mouseDownHandler: ((CGPoint) -> Void)?
 
     func enable() throws {
         guard eventTap == nil else {
@@ -101,23 +110,67 @@ private final class InputBlocker {
 
         CGEvent.tapEnable(tap: eventTap, enable: true)
     }
+
+    func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            reenableIfActive()
+            return Unmanaged.passUnretained(event)
+        }
+
+        if isMouseDownEvent(type) {
+            let location = event.location
+            if Thread.isMainThread {
+                mouseDownHandler?(location)
+            } else {
+                DispatchQueue.main.async { [weak self] in
+                    self?.mouseDownHandler?(location)
+                }
+            }
+        }
+
+        return nil
+    }
 }
 
 private final class BreakOverlayController {
     private var windows: [NSWindow] = []
     private let inputBlocker = InputBlocker()
     private var applicationPrepared = false
+    private var state: BreakOverlayState?
+    private var lockAfterBreakRequested = false
 
-    func show(message: String) throws {
+    func show(state: BreakOverlayState) throws {
         prepareApplication()
         clear()
+        self.state = state
+        lockAfterBreakRequested = false
+        inputBlocker.mouseDownHandler = { [weak self] location in
+            self?.handleMouseDown(at: location)
+        }
         try inputBlocker.enable()
 
         for screen in NSScreen.screens {
-            let window = overlayWindow(for: screen, message: message)
+            let window = overlayWindow(for: screen, state: state)
             windows.append(window)
             window.orderFrontRegardless()
         }
+    }
+
+    func update(remainingMs: UInt64, lockAfterBreak: Bool) {
+        guard var state else {
+            return
+        }
+
+        state.remainingMs = remainingMs
+        state.lockAfterBreak = lockAfterBreak
+        self.state = state
+        updateWindows(with: state)
+    }
+
+    func takeLockAfterBreakRequest() -> Bool {
+        let requested = lockAfterBreakRequested
+        lockAfterBreakRequested = false
+        return requested
     }
 
     func clear() {
@@ -127,9 +180,12 @@ private final class BreakOverlayController {
         }
         windows.removeAll()
         inputBlocker.disable()
+        inputBlocker.mouseDownHandler = nil
+        state = nil
+        lockAfterBreakRequested = false
     }
 
-    private func overlayWindow(for screen: NSScreen, message: String) -> NSWindow {
+    private func overlayWindow(for screen: NSScreen, state: BreakOverlayState) -> NSWindow {
         let frame = screen.frame
         let window = NSWindow(
             contentRect: frame,
@@ -147,7 +203,7 @@ private final class BreakOverlayController {
         ]
         window.contentView = BreakOverlayView(
             frame: NSRect(origin: .zero, size: frame.size),
-            message: message
+            state: state
         )
         window.hasShadow = false
         window.ignoresMouseEvents = false
@@ -155,6 +211,82 @@ private final class BreakOverlayController {
         window.isReleasedWhenClosed = false
         window.level = .screenSaver
         return window
+    }
+
+    private func handleMouseDown(at location: CGPoint) {
+        guard let state, !state.lockAfterBreak else {
+            return
+        }
+
+        for point in candidateScreenPoints(for: location) {
+            if requestLockAfterBreak(atScreenPoint: point) {
+                return
+            }
+        }
+    }
+
+    private func candidateScreenPoints(for point: CGPoint) -> [CGPoint] {
+        let flippedPoint = flippedScreenPoint(point)
+        if abs(flippedPoint.x - point.x) < 0.5 && abs(flippedPoint.y - point.y) < 0.5 {
+            return [point]
+        }
+
+        return [point, flippedPoint]
+    }
+
+    private func flippedScreenPoint(_ point: CGPoint) -> CGPoint {
+        let frame = combinedScreenFrame()
+        return CGPoint(x: point.x, y: frame.maxY - (point.y - frame.minY))
+    }
+
+    private func combinedScreenFrame() -> NSRect {
+        guard var frame = NSScreen.screens.first?.frame else {
+            return .zero
+        }
+
+        for screen in NSScreen.screens.dropFirst() {
+            frame = frame.union(screen.frame)
+        }
+
+        return frame
+    }
+
+    private func requestLockAfterBreak(atScreenPoint point: CGPoint) -> Bool {
+        for window in windows {
+            guard let view = window.contentView as? BreakOverlayView else {
+                continue
+            }
+
+            let localPoint = CGPoint(
+                x: point.x - window.frame.minX,
+                y: point.y - window.frame.minY
+            )
+            if view.bounds.contains(localPoint), view.lockControlContains(localPoint) {
+                markLockAfterBreakRequested()
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private func markLockAfterBreakRequested() {
+        guard var state, !state.lockAfterBreak else {
+            return
+        }
+
+        state.lockAfterBreak = true
+        self.state = state
+        lockAfterBreakRequested = true
+        updateWindows(with: state)
+    }
+
+    private func updateWindows(with state: BreakOverlayState) {
+        for window in windows {
+            if let view = window.contentView as? BreakOverlayView {
+                view.update(state: state)
+            }
+        }
     }
 
     private func prepareApplication() {
@@ -170,10 +302,10 @@ private final class BreakOverlayController {
 }
 
 private final class BreakOverlayView: NSView {
-    private let message: String
+    private var state: BreakOverlayState
 
-    init(frame frameRect: NSRect, message: String) {
-        self.message = message
+    init(frame frameRect: NSRect, state: BreakOverlayState) {
+        self.state = state
         super.init(frame: frameRect)
     }
 
@@ -186,50 +318,173 @@ private final class BreakOverlayView: NSView {
         true
     }
 
+    func update(state: BreakOverlayState) {
+        self.state = state
+        needsDisplay = true
+    }
+
+    func lockControlContains(_ point: CGPoint) -> Bool {
+        overlayLayout().lockControlRect.contains(point)
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         NSColor.black.setFill()
         dirtyRect.fill()
-        drawMessage()
+        let layout = overlayLayout()
+
+        drawMessage(in: layout.messageRect, fontSize: layout.messageFontSize)
+        drawRemainingTime(in: layout.remainingRect)
+        drawLockControl(layout)
     }
 
-    private func drawMessage() {
-        let availableWidth = max(bounds.width * 0.8, 1)
-        let availableHeight = max(bounds.height * 0.8, 1)
-        let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.alignment = .center
-
-        var fontSize = min(max(min(bounds.width, bounds.height) / 12, 24), 72)
-        var renderedMessage = attributedMessage(fontSize: fontSize, paragraphStyle: paragraphStyle)
-        var textBounds = measuredBounds(for: renderedMessage, width: availableWidth)
-
-        while textBounds.height > availableHeight && fontSize > 18 {
-            fontSize -= 2
-            renderedMessage = attributedMessage(fontSize: fontSize, paragraphStyle: paragraphStyle)
-            textBounds = measuredBounds(for: renderedMessage, width: availableWidth)
-        }
-
-        let textHeight = min(textBounds.height.rounded(.up), availableHeight)
-        let textRect = NSRect(
-            x: bounds.midX - availableWidth / 2,
-            y: bounds.midY - textHeight / 2,
-            width: availableWidth,
-            height: textHeight
-        )
-        renderedMessage.draw(
-            with: textRect,
+    private func drawMessage(in rect: NSRect, fontSize: CGFloat) {
+        attributedMessage(fontSize: fontSize).draw(
+            with: rect,
             options: [.usesLineFragmentOrigin, .usesFontLeading]
         )
     }
 
-    private func attributedMessage(
-        fontSize: CGFloat,
-        paragraphStyle: NSParagraphStyle
+    private func drawRemainingTime(in rect: NSRect) {
+        attributedCenteredText(
+            remainingTimeText(state.remainingMs),
+            font: NSFont.monospacedDigitSystemFont(ofSize: 36, weight: .regular),
+            color: .white
+        )
+        .draw(with: rect, options: [.usesLineFragmentOrigin, .usesFontLeading])
+    }
+
+    private func drawLockControl(_ layout: OverlayLayout) {
+        let path = NSBezierPath(
+            roundedRect: layout.lockControlRect,
+            xRadius: 4,
+            yRadius: 4
+        )
+        let textColor: NSColor
+
+        if state.lockAfterBreak {
+            NSColor.white.setFill()
+            path.fill()
+            textColor = .black
+        } else {
+            NSColor.white.setStroke()
+            path.lineWidth = 1
+            path.stroke()
+            textColor = .white
+        }
+
+        attributedCenteredText(
+            lockControlText(),
+            font: NSFont.systemFont(ofSize: layout.lockControlFontSize, weight: .medium),
+            color: textColor
+        )
+        .draw(
+            with: layout.lockControlTextRect,
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        )
+    }
+
+    private func overlayLayout() -> OverlayLayout {
+        let availableWidth = max(bounds.width * 0.8, 1)
+        let availableHeight = max(bounds.height * 0.8, 1)
+        let verticalGap: CGFloat = 18
+        let remainingHeight: CGFloat = 42
+        let controlHeight: CGFloat = 40
+        let maxMessageHeight = max(
+            availableHeight - remainingHeight - controlHeight - verticalGap * 2,
+            20
+        )
+
+        var fontSize = min(max(min(bounds.width, bounds.height) / 12, 24), 72)
+        var renderedMessage = attributedMessage(fontSize: fontSize)
+        var textBounds = measuredBounds(for: renderedMessage, width: availableWidth)
+
+        while textBounds.height > maxMessageHeight && fontSize > 18 {
+            fontSize -= 2
+            renderedMessage = attributedMessage(fontSize: fontSize)
+            textBounds = measuredBounds(for: renderedMessage, width: availableWidth)
+        }
+
+        let messageHeight = min(max(textBounds.height.rounded(.up), 20), maxMessageHeight)
+        let totalHeight = messageHeight + remainingHeight + controlHeight + verticalGap * 2
+        let top = bounds.midY + totalHeight / 2
+        let messageRect = NSRect(
+            x: bounds.midX - availableWidth / 2,
+            y: top - messageHeight,
+            width: availableWidth,
+            height: messageHeight
+        )
+        let remainingRect = NSRect(
+            x: bounds.midX - availableWidth / 2,
+            y: messageRect.minY - verticalGap - remainingHeight,
+            width: availableWidth,
+            height: remainingHeight
+        )
+        let controlFontSize = lockControlFontSize(maxWidth: availableWidth)
+        let controlWidth = lockControlWidth(maxWidth: availableWidth, fontSize: controlFontSize)
+        let controlRect = NSRect(
+            x: bounds.midX - controlWidth / 2,
+            y: remainingRect.minY - verticalGap - controlHeight,
+            width: controlWidth,
+            height: controlHeight
+        )
+        let textRect = controlRect.insetBy(dx: 16, dy: 9)
+
+        return OverlayLayout(
+            messageRect: messageRect,
+            messageFontSize: fontSize,
+            remainingRect: remainingRect,
+            lockControlRect: controlRect,
+            lockControlTextRect: textRect,
+            lockControlFontSize: controlFontSize
+        )
+    }
+
+    private func lockControlWidth(maxWidth: CGFloat, fontSize: CGFloat) -> CGFloat {
+        let text = attributedCenteredText(
+            lockControlText(),
+            font: NSFont.systemFont(ofSize: fontSize, weight: .medium),
+            color: .white
+        )
+        let textWidth = measuredBounds(for: text, width: .greatestFiniteMagnitude).width
+        return min(max(textWidth + 32, 160), maxWidth)
+    }
+
+    private func lockControlFontSize(maxWidth: CGFloat) -> CGFloat {
+        var fontSize: CGFloat = 18
+        while fontSize > 12 {
+            let font = NSFont.systemFont(ofSize: fontSize, weight: .medium)
+            let text = attributedCenteredText(lockControlText(), font: font, color: .white)
+            let textWidth = measuredBounds(for: text, width: .greatestFiniteMagnitude).width
+            if textWidth + 32 <= maxWidth {
+                return fontSize
+            }
+            fontSize -= 1
+        }
+
+        return fontSize
+    }
+
+    private func attributedMessage(fontSize: CGFloat) -> NSAttributedString {
+        attributedCenteredText(
+            state.message,
+            font: NSFont.systemFont(ofSize: fontSize, weight: .medium),
+            color: .white
+        )
+    }
+
+    private func attributedCenteredText(
+        _ text: String,
+        font: NSFont,
+        color: NSColor
     ) -> NSAttributedString {
-        NSAttributedString(
-            string: message,
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = .center
+
+        return NSAttributedString(
+            string: text,
             attributes: [
-                .font: NSFont.systemFont(ofSize: fontSize, weight: .medium),
-                .foregroundColor: NSColor.white,
+                .font: font,
+                .foregroundColor: color,
                 .paragraphStyle: paragraphStyle,
             ]
         )
@@ -241,6 +496,36 @@ private final class BreakOverlayView: NSView {
             options: [.usesLineFragmentOrigin, .usesFontLeading]
         )
     }
+
+    private func lockControlText() -> String {
+        state.lockAfterBreak ? lockControlRequestedLabel : lockControlLabel
+    }
+}
+
+private struct OverlayLayout {
+    let messageRect: NSRect
+    let messageFontSize: CGFloat
+    let remainingRect: NSRect
+    let lockControlRect: NSRect
+    let lockControlTextRect: NSRect
+    let lockControlFontSize: CGFloat
+}
+
+private func remainingTimeText(_ remainingMs: UInt64) -> String {
+    let seconds = remainingMs / 1_000 + (remainingMs % 1_000 == 0 ? 0 : 1)
+    let hours = seconds / 3_600
+    let minutes = (seconds % 3_600) / 60
+    let remainingSeconds = seconds % 60
+
+    if hours > 0 {
+        return "\(hours):\(paddedTimeComponent(minutes)):\(paddedTimeComponent(remainingSeconds))"
+    }
+
+    return "\(minutes):\(paddedTimeComponent(remainingSeconds))"
+}
+
+private func paddedTimeComponent(_ value: UInt64) -> String {
+    value < 10 ? "0\(value)" : "\(value)"
 }
 
 private func inputBlockingEventMask() -> CGEventMask {
@@ -276,18 +561,18 @@ private func inputBlockingEventCallback(
     event: CGEvent,
     userInfo: UnsafeMutableRawPointer?
 ) -> Unmanaged<CGEvent>? {
-    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        if let userInfo {
-            let inputBlocker = Unmanaged<InputBlocker>
-                .fromOpaque(userInfo)
-                .takeUnretainedValue()
-            inputBlocker.reenableIfActive()
-        }
-
-        return Unmanaged.passUnretained(event)
+    guard let userInfo else {
+        return nil
     }
 
-    return nil
+    let inputBlocker = Unmanaged<InputBlocker>
+        .fromOpaque(userInfo)
+        .takeUnretainedValue()
+    return inputBlocker.handle(type: type, event: event)
+}
+
+private func isMouseDownEvent(_ type: CGEventType) -> Bool {
+    type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown
 }
 
 private func parseMessage(_ line: String) throws -> [String: Any] {
@@ -363,9 +648,17 @@ private func requestAccessibilityTrust() -> Bool {
 }
 
 private func handleStartBreak(_ message: [String: Any], overlay: BreakOverlayController) throws {
-    let message = try selectedBreakMessage(from: message)
+    let state = try breakOverlayState(from: message)
     try runThrowingOnMain {
-        try overlay.show(message: message)
+        try overlay.show(state: state)
+    }
+}
+
+private func handleUpdateBreak(_ message: [String: Any], overlay: BreakOverlayController) throws {
+    let remainingMs = try unsignedInteger(message["remainingMs"])
+    let lockAfterBreak = try lockAfterBreak(from: message)
+    runOnMain {
+        overlay.update(remainingMs: remainingMs, lockAfterBreak: lockAfterBreak)
     }
 }
 
@@ -378,7 +671,7 @@ private func handleFinishBreak(_ message: [String: Any], overlay: BreakOverlayCo
     }
 }
 
-private func handlePollActivity() throws {
+private func handlePollActivity(overlay: BreakOverlayController) throws {
     let idleSeconds = CGEventSource.secondsSinceLastEventType(
         .combinedSessionState,
         eventType: anyInputEventType
@@ -388,20 +681,53 @@ private func handlePollActivity() throws {
     }
 
     let idleMilliseconds = min(idleSeconds * 1000, Double(UInt64.max))
+    let lockAfterBreakRequested = runReturningOnMain {
+        overlay.takeLockAfterBreakRequest()
+    }
     try writeMessage([
         "type": "activitySample",
         "idleMs": UInt64(idleMilliseconds),
+        "lockAfterBreakRequested": lockAfterBreakRequested,
     ])
 }
 
-private func selectedBreakMessage(from message: [String: Any]) throws -> String {
+private func breakOverlayState(from message: [String: Any]) throws -> BreakOverlayState {
     guard let breakInfo = message["break"] as? [String: Any] else {
         throw ProtocolError.invalidMessage
     }
 
     let messages = breakInfo["messages"] as? [String] ?? []
-    return messages.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    let message = messages.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         ?? defaultBreakMessage
+    let durationMs = try unsignedInteger(breakInfo["durationMs"])
+    let autolock = try booleanValue(breakInfo["autolock"])
+
+    return BreakOverlayState(
+        message: message,
+        remainingMs: durationMs,
+        lockAfterBreak: autolock
+    )
+}
+
+private func unsignedInteger(_ value: Any?) throws -> UInt64 {
+    guard let number = value as? NSNumber else {
+        throw ProtocolError.invalidMessage
+    }
+
+    let doubleValue = number.doubleValue
+    guard doubleValue.isFinite, doubleValue >= 0, doubleValue.rounded() == doubleValue else {
+        throw ProtocolError.invalidMessage
+    }
+
+    return number.uint64Value
+}
+
+private func booleanValue(_ value: Any?) throws -> Bool {
+    guard let value = value as? Bool else {
+        throw ProtocolError.invalidMessage
+    }
+
+    return value
 }
 
 private func lockAfterBreak(from message: [String: Any]) throws -> Bool {
@@ -458,6 +784,18 @@ private func runOnMain(_ body: @escaping () -> Void) {
     } else {
         DispatchQueue.main.sync(execute: body)
     }
+}
+
+private func runReturningOnMain<T>(_ body: @escaping () -> T) -> T {
+    if Thread.isMainThread {
+        return body()
+    }
+
+    var result: T?
+    DispatchQueue.main.sync {
+        result = body()
+    }
+    return result!
 }
 
 private func runThrowingOnMain(_ body: @escaping () throws -> Void) throws {
@@ -523,6 +861,9 @@ private func runProtocolLoop(overlay: BreakOverlayController) {
             case "startBreak":
                 try handleStartBreak(message, overlay: overlay)
                 try writeCommandComplete("startBreak")
+            case "updateBreak":
+                try handleUpdateBreak(message, overlay: overlay)
+                try writeCommandComplete("updateBreak")
             case "finishBreak":
                 try handleFinishBreak(message, overlay: overlay)
                 try writeCommandComplete("finishBreak")
@@ -530,7 +871,7 @@ private func runProtocolLoop(overlay: BreakOverlayController) {
                 clearBreakOverlay(overlay)
                 try writeCommandComplete("clearBreak")
             case "pollActivity":
-                try handlePollActivity()
+                try handlePollActivity(overlay: overlay)
             case "shutdown":
                 clearBreakOverlay(overlay)
                 try writeMessage(["type": "shutdownComplete"])
