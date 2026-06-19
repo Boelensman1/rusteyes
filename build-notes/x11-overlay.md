@@ -24,11 +24,14 @@
   continues, the break countdown advances only while the latest XScreenSaver
   sample is idle, `BreakFinished` is emitted after the configured idle break
   duration, and `ClearBreak` destroys overlay resources.
+- Follow-up cleanup removed unused monitor names from overlay geometry, avoided
+  CRTC queries for outputs that cannot become monitors, and dropped a redundant
+  per-window raise during overlay creation.
 
 ## Decisions
 
-- This increment intentionally does not grab or block input. Normal input
-  blocking remains the next X11 step.
+- This increment intentionally did not grab or block input; `x11-input-blocking`
+  completed that follow-up.
 - One deterministic message is shown: the first configured message for the due
   break type. Message randomization or cycling remains deferred.
 - Break duration is enforced as idle time while the overlay is visible, not
@@ -48,6 +51,6 @@
 
 ## Follow-up
 
-- Continue with `x11-input-blocking`.
+- Fulfilled by `x11-input-blocking`.
 - Manual X11 overlay verification still needs to be run in a real X session;
   this environment does not provide usable X server access.

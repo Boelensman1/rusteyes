@@ -14,9 +14,15 @@ make run
 ```
 
 On Linux/X11, the current daemon loads configuration, initializes the scheduler,
-polls X11 activity, and shows unmanaged monitor-covering break overlays when a
-break is due. Input blocking, tray controls, and richer break UI are added in
-later increments.
+polls X11 activity, shows unmanaged monitor-covering break overlays when a
+break is due, and blocks keyboard/pointer input while the overlay is visible.
+Tray controls and richer break UI are added in later increments.
+
+For a short manual X11 break cycle:
+
+```sh
+RESTEYES_CONFIG=test-configs/ten-second-break.yaml make run
+```
 
 ## Common Commands
 

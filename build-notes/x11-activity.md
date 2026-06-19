@@ -14,23 +14,24 @@
 - The backend emits `WallClockElapsed` every one-second poll and
   `ActiveTimeElapsed` when the observed X11 idle time is less than or equal to
   that poll interval.
-- Temporary stderr diagnostics are layered through a diagnostic wrapper that
-  prints activity samples and backend commands so `make run` can be manually
-  inspected before overlay/input behavior exists.
+- This increment temporarily layered stderr diagnostics through a wrapper that
+  printed activity samples and backend commands; `x11-overlay` removed that
+  wrapper after visible break behavior existed.
 - Unsupported targets keep the no-op backend path.
 - Added unit tests for activity classification, queued event ordering, idle
-  behavior, and diagnostic line formatting without requiring a live X server.
+  behavior, and overlay break countdown helpers without requiring a live X
+  server.
 
 ## Decisions
 
-- The X11 activity backend is permanent production code; only the console
-  diagnostics are temporary.
+- The X11 activity backend is permanent production code; the temporary console
+  diagnostics were removed by `x11-overlay`.
 - Activity and idle interpretation stay outside the scheduler. Idle means no
   active-time advancement.
 - X11 startup errors are surfaced through the existing public application error
   type without exposing X11 types in the crate API.
-- If a break becomes due during this diagnostic phase, the backend prints the
-  command instead of attempting overlay, input blocking, or break completion.
+- Break due handling is provided by the later `x11-overlay` and
+  `x11-input-blocking` increments.
 
 ## Commands
 
@@ -42,4 +43,5 @@
 
 - Fulfilled by `x11-overlay`: removed temporary console diagnostics after break
   commands gained visible overlay behavior.
-- Continue with `x11-input-blocking`.
+- Fulfilled by `x11-input-blocking`: visible overlays now grab keyboard and
+  pointer input while a break is active.

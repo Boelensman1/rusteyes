@@ -55,7 +55,7 @@ impl X11Screen {
     }
 
     fn fallback_monitor(self) -> MonitorGeometry {
-        MonitorGeometry::new("screen", 0, 0, self.width, self.height)
+        MonitorGeometry::new(0, 0, self.width, self.height)
     }
 }
 
@@ -166,11 +166,7 @@ impl X11Overlay {
     }
 
     pub(crate) fn destroy(mut self, connection: &RustConnection) -> Result<(), X11OverlayError> {
-        let mut first_error = None;
-
-        if let Err(error) = self.input_grab.release(connection) {
-            remember_first_overlay_error(&mut first_error, error);
-        }
+        let mut first_error = self.input_grab.release(connection).err();
 
         for window in self.windows {
             remember_first_error(
@@ -230,13 +226,6 @@ impl X11Overlay {
             ),
         )?;
         x11("map overlay window", connection.map_window(window))?;
-        x11(
-            "raise overlay window",
-            connection.configure_window(
-                window,
-                &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
-            ),
-        )?;
 
         self.windows.push(OverlayWindow { window, monitor });
         Ok(())
@@ -406,7 +395,6 @@ struct OverlayWindow {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MonitorGeometry {
-    name: String,
     x: i16,
     y: i16,
     width: u16,
@@ -414,20 +402,12 @@ struct MonitorGeometry {
 }
 
 impl MonitorGeometry {
-    fn new(name: impl Into<String>, x: i16, y: i16, width: u16, height: u16) -> Self {
+    const fn new(x: i16, y: i16, width: u16, height: u16) -> Self {
         Self {
-            name: name.into(),
             x,
             y,
             width,
             height,
-        }
-    }
-
-    fn with_name(self, name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            ..self
         }
     }
 
@@ -480,17 +460,11 @@ fn check_grab_status(operation: &'static str, status: GrabStatus) -> Result<(), 
 }
 
 fn query_monitors(connection: &RustConnection, screen: X11Screen) -> Vec<MonitorGeometry> {
-    let monitors = match current_screen_resources(connection, screen.root) {
-        Some((config_timestamp, outputs)) => {
+    let monitors = current_screen_resources(connection, screen.root)
+        .or_else(|| screen_resources(connection, screen.root))
+        .map_or_else(Vec::new, |(config_timestamp, outputs)| {
             monitors_from_outputs(connection, config_timestamp, &outputs)
-        }
-        None => match screen_resources(connection, screen.root) {
-            Some((config_timestamp, outputs)) => {
-                monitors_from_outputs(connection, config_timestamp, &outputs)
-            }
-            None => Vec::new(),
-        },
-    };
+        });
 
     normalize_monitor_geometries(monitors, screen.fallback_monitor())
 }
@@ -531,6 +505,10 @@ fn monitors_from_outputs(
         else {
             continue;
         };
+        if !output_has_monitor(info.connection, info.crtc) {
+            continue;
+        }
+
         let Some(crtc) = connection
             .randr_get_crtc_info(info.crtc, config_timestamp)
             .ok()
@@ -539,30 +517,19 @@ fn monitors_from_outputs(
             continue;
         };
 
-        if let Some(monitor) = monitor_from_output(
-            String::from_utf8_lossy(&info.name).into_owned(),
-            info.connection,
-            info.crtc,
-            MonitorGeometry::new("", crtc.x, crtc.y, crtc.width, crtc.height),
-        ) {
-            monitors.push(monitor);
-        }
+        monitors.push(MonitorGeometry::new(
+            crtc.x,
+            crtc.y,
+            crtc.width,
+            crtc.height,
+        ));
     }
 
     monitors
 }
 
-fn monitor_from_output(
-    name: String,
-    connection: RandrConnection,
-    crtc: Crtc,
-    geometry: MonitorGeometry,
-) -> Option<MonitorGeometry> {
-    if connection != RandrConnection::CONNECTED || crtc == 0 {
-        return None;
-    }
-
-    Some(geometry.with_name(name))
+fn output_has_monitor(connection: RandrConnection, crtc: Crtc) -> bool {
+    connection == RandrConnection::CONNECTED && crtc != 0
 }
 
 fn normalize_monitor_geometries(
@@ -655,12 +622,6 @@ fn remember_first_error<T, E>(
         if let Err(error) = result {
             *first_error = Some(X11OverlayError::new(operation, error.to_string()));
         }
-    }
-}
-
-fn remember_first_overlay_error(first_error: &mut Option<X11OverlayError>, error: X11OverlayError) {
-    if first_error.is_none() {
-        *first_error = Some(error);
     }
 }
 

@@ -1,7 +1,7 @@
 use super::{
-    MAX_X11_TEXT_BYTES, MonitorGeometry, check_grab_status, monitor_from_output,
-    normalize_monitor_geometries, overlay_window_event_mask, pointer_grab_event_mask,
-    selected_break_message, x11_text_bytes,
+    MAX_X11_TEXT_BYTES, MonitorGeometry, check_grab_status, normalize_monitor_geometries,
+    output_has_monitor, overlay_window_event_mask, pointer_grab_event_mask, selected_break_message,
+    x11_text_bytes,
 };
 use crate::scheduler::ScheduledBreak;
 use std::time::Duration;
@@ -9,52 +9,28 @@ use x11rb::protocol::randr::Connection as RandrConnection;
 use x11rb::protocol::xproto::{EventMask, GrabStatus};
 
 #[test]
-fn connected_outputs_with_crtcs_become_monitors() {
-    let monitor = monitor_from_output(
-        String::from("HDMI-1"),
-        RandrConnection::CONNECTED,
-        42,
-        MonitorGeometry::new("", 10, 20, 1920, 1080),
-    );
-
-    assert_eq!(
-        monitor,
-        Some(MonitorGeometry::new("HDMI-1", 10, 20, 1920, 1080))
-    );
+fn connected_outputs_with_crtcs_can_become_monitors() {
+    assert!(output_has_monitor(RandrConnection::CONNECTED, 42));
 }
 
 #[test]
 fn disconnected_outputs_are_ignored() {
-    let monitor = monitor_from_output(
-        String::from("HDMI-1"),
-        RandrConnection::DISCONNECTED,
-        42,
-        MonitorGeometry::new("", 10, 20, 1920, 1080),
-    );
-
-    assert_eq!(monitor, None);
+    assert!(!output_has_monitor(RandrConnection::DISCONNECTED, 42));
 }
 
 #[test]
 fn connected_outputs_without_crtcs_are_ignored() {
-    let monitor = monitor_from_output(
-        String::from("HDMI-1"),
-        RandrConnection::CONNECTED,
-        0,
-        MonitorGeometry::new("", 10, 20, 1920, 1080),
-    );
-
-    assert_eq!(monitor, None);
+    assert!(!output_has_monitor(RandrConnection::CONNECTED, 0));
 }
 
 #[test]
 fn monitor_geometries_are_deduplicated_and_sorted() {
-    let fallback = MonitorGeometry::new("screen", 0, 0, 3200, 1080);
+    let fallback = MonitorGeometry::new(0, 0, 3200, 1080);
     let monitors = normalize_monitor_geometries(
         vec![
-            MonitorGeometry::new("right", 1920, 0, 1280, 1024),
-            MonitorGeometry::new("left", 0, 0, 1920, 1080),
-            MonitorGeometry::new("left-clone", 0, 0, 1920, 1080),
+            MonitorGeometry::new(1920, 0, 1280, 1024),
+            MonitorGeometry::new(0, 0, 1920, 1080),
+            MonitorGeometry::new(0, 0, 1920, 1080),
         ],
         fallback,
     );
@@ -62,15 +38,15 @@ fn monitor_geometries_are_deduplicated_and_sorted() {
     assert_eq!(
         monitors,
         vec![
-            MonitorGeometry::new("left", 0, 0, 1920, 1080),
-            MonitorGeometry::new("right", 1920, 0, 1280, 1024),
+            MonitorGeometry::new(0, 0, 1920, 1080),
+            MonitorGeometry::new(1920, 0, 1280, 1024),
         ]
     );
 }
 
 #[test]
 fn monitor_geometries_fall_back_to_root_screen() {
-    let fallback = MonitorGeometry::new("screen", 0, 0, 3200, 1080);
+    let fallback = MonitorGeometry::new(0, 0, 3200, 1080);
     let monitors = normalize_monitor_geometries(Vec::new(), fallback.clone());
 
     assert_eq!(monitors, vec![fallback]);
