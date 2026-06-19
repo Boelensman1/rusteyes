@@ -13,7 +13,8 @@
   `shutdownComplete`, and `error`.
 - The Swift helper now reserves stdout for JSON Lines protocol messages,
   validates the initial `hello` message, sends `ready`, accepts no-op break
-  commands, and exits after `shutdown`.
+  commands, exits after `shutdown`, and prints a human-facing stderr message
+  when launched without the daemon's initial `hello`.
 - `make run` now depends on the helper artifact on Darwin so local macOS runs
   rebuild the helper first.
 
@@ -29,6 +30,13 @@
 - Keep real macOS activity, overlay, input blocking, and lock behavior out of
   this increment.
 - Keep helper stdout protocol-only; human diagnostics belong on stderr.
+- Treat terminal launches, empty stdin, invalid first input, and non-`hello`
+  first messages as direct helper invocation. These cases print
+  `resteyes-macos-helper is an internal Resteyes helper. Start Resteyes with
+  the main resteyes binary; do not run this helper directly.` to stderr and
+  exit with status 2.
+- Keep incompatible `hello` versions on the JSON protocol path so the daemon
+  can report version mismatches as structured helper errors.
 - Default helper lookup uses
   `helpers/macos-helper/.build/debug/resteyes-macos-helper`, with
   `RESTEYES_MACOS_HELPER` available as an override for tests and future
@@ -44,6 +52,19 @@
   unavailable.
 - `make run` passed with approved Nix daemon access and exited cleanly through
   the macOS helper handshake path.
+- `make check` passed after adding the direct-invocation guard.
+- `make macos-helper-build` reported the helper target up to date; forced
+  `make -B macos-helper-build` initially failed in the sandbox because SwiftPM
+  and Clang could not write user caches, then passed with approved cache
+  access.
+- Direct helper terminal launch, empty stdin, invalid first input, and a
+  non-`hello` first message each printed the direct-invocation message and
+  exited with status 2.
+- A valid `hello` followed by `shutdown` returned `ready` and
+  `shutdownComplete` JSON messages.
+- An incompatible `hello` version returned a JSON `error` message.
+- `make run` still starts the helper and exits cleanly through the macOS helper
+  handshake path.
 
 ## Follow-up
 

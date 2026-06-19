@@ -1,8 +1,12 @@
 import AppKit
 import CoreGraphics
+import Darwin
 import Foundation
 
 private let protocolVersion = 1
+private let directInvocationExitCode: Int32 = 2
+private let directInvocationMessage =
+    "resteyes-macos-helper is an internal Resteyes helper. Start Resteyes with the main resteyes binary; do not run this helper directly."
 
 private struct HelperContext {
     let appType: NSApplication.Type
@@ -74,6 +78,15 @@ private func writeError(_ error: Error) {
     try? writeMessage(message)
 }
 
+private func writeStandardErrorLine(_ line: String) {
+    FileHandle.standardError.write(Data((line + "\n").utf8))
+}
+
+private func exitAfterDirectInvocationMessage() -> Never {
+    writeStandardErrorLine(directInvocationMessage)
+    exit(directInvocationExitCode)
+}
+
 private func handleHello(_ message: [String: Any]) throws {
     let version = message["version"] as? Int ?? 0
     guard version == protocolVersion else {
@@ -83,19 +96,32 @@ private func handleHello(_ message: [String: Any]) throws {
     try writeMessage(["type": "ready", "version": protocolVersion])
 }
 
-private func runProtocolLoop() {
-    guard let firstLine = readLine() else {
-        writeError(ProtocolError.invalidMessage)
-        return
+private func readInitialHelloMessage() -> [String: Any] {
+    if isatty(STDIN_FILENO) != 0 {
+        exitAfterDirectInvocationMessage()
     }
 
     do {
+        guard let firstLine = readLine() else {
+            exitAfterDirectInvocationMessage()
+        }
+
         let firstMessage = try parseMessage(firstLine)
         let firstType = try messageType(firstMessage)
         guard firstType == "hello" else {
-            throw ProtocolError.unexpectedFirstMessage(firstType)
+            exitAfterDirectInvocationMessage()
         }
 
+        return firstMessage
+    } catch {
+        exitAfterDirectInvocationMessage()
+    }
+}
+
+private func runProtocolLoop() {
+    let firstMessage = readInitialHelloMessage()
+
+    do {
         try handleHello(firstMessage)
     } catch {
         writeError(error)
