@@ -1,10 +1,12 @@
 use super::{
-    MAX_X11_TEXT_BYTES, MonitorGeometry, monitor_from_output, normalize_monitor_geometries,
+    MAX_X11_TEXT_BYTES, MonitorGeometry, check_grab_status, monitor_from_output,
+    normalize_monitor_geometries, overlay_window_event_mask, pointer_grab_event_mask,
     selected_break_message, x11_text_bytes,
 };
 use crate::scheduler::ScheduledBreak;
 use std::time::Duration;
 use x11rb::protocol::randr::Connection as RandrConnection;
+use x11rb::protocol::xproto::{EventMask, GrabStatus};
 
 #[test]
 fn connected_outputs_with_crtcs_become_monitors() {
@@ -87,6 +89,48 @@ fn overlay_text_replaces_non_ascii_and_is_bounded_for_x11() {
 
     assert_eq!(text.len(), MAX_X11_TEXT_BYTES);
     assert!(text.iter().all(u8::is_ascii));
+}
+
+#[test]
+fn overlay_windows_select_expose_and_grabbed_input_events() {
+    let mask = u32::from(overlay_window_event_mask());
+
+    assert_ne!(mask & u32::from(EventMask::EXPOSURE), 0);
+    assert_ne!(mask & u32::from(EventMask::KEY_PRESS), 0);
+    assert_ne!(mask & u32::from(EventMask::KEY_RELEASE), 0);
+    assert_ne!(mask & u32::from(EventMask::BUTTON_PRESS), 0);
+    assert_ne!(mask & u32::from(EventMask::BUTTON_RELEASE), 0);
+    assert_ne!(mask & u32::from(EventMask::POINTER_MOTION), 0);
+}
+
+#[test]
+fn pointer_grab_mask_keeps_pointer_motion_available() {
+    let mask = u32::from(pointer_grab_event_mask());
+
+    assert_ne!(mask & u32::from(EventMask::BUTTON_PRESS), 0);
+    assert_ne!(mask & u32::from(EventMask::BUTTON_RELEASE), 0);
+    assert_ne!(mask & u32::from(EventMask::POINTER_MOTION), 0);
+}
+
+#[test]
+fn successful_grab_status_is_accepted() {
+    assert_eq!(
+        check_grab_status("grab overlay pointer input", GrabStatus::SUCCESS),
+        Ok(())
+    );
+}
+
+#[test]
+fn failed_grab_status_returns_context() {
+    let error = match check_grab_status("grab overlay pointer input", GrabStatus::ALREADY_GRABBED) {
+        Ok(()) => panic!("expected grab status error"),
+        Err(error) => error,
+    };
+
+    assert_eq!(
+        error.to_string(),
+        "failed to grab overlay pointer input: ALREADY_GRABBED"
+    );
 }
 
 fn scheduled_break(messages: impl IntoIterator<Item = &'static str>) -> ScheduledBreak {

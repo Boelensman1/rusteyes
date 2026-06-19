@@ -48,6 +48,10 @@
   break, suppress active-time polling while the break is visible, count down
   break duration only on idle overlay samples, and clear the overlays when the
   runtime finishes or clears the break.
+- Completed `x11-input-blocking`: X11 break overlays now acquire active core
+  pointer and keyboard grabs while visible, keep pointer movement unconstrained,
+  prevent grabbed input from reaching other X11 clients, and release grabs when
+  overlays are cleared.
 - Added `test-break-config`: `test-configs/ten-second-break.yaml` starts a 10
   second test break after 10 seconds of active time for manual testing.
 - Cargo is the Rust build system; `make` is the project task runner.
@@ -62,12 +66,12 @@
 - `make build` passes.
 - `nix build` passes.
 - `.codex/hooks/rustfmt.sh` runs successfully.
-- Manual X11 overlay verification is still pending because this environment
-  does not provide usable X server access.
+- Manual X11 overlay and input-blocking verification is still pending because
+  this environment does not provide usable X server access.
 
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next increment should be `x11-input-blocking`.
+- The next increment has not been selected yet.
 - Step-specific notes belong in `build-notes/$step.md`.
 - Update this file whenever a step is completed or the project state changes.

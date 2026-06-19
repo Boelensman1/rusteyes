@@ -1,7 +1,6 @@
 use crate::scheduler::ScheduledBreak;
 use std::collections::BTreeSet;
 use std::fmt;
-use x11rb::COPY_FROM_PARENT;
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::randr::{
@@ -9,9 +8,11 @@ use x11rb::protocol::randr::{
 };
 use x11rb::protocol::xproto::{
     ConfigureWindowAux, ConnectionExt as XprotoConnectionExt, CreateGCAux, CreateWindowAux,
-    EventMask, Gcontext, Rectangle, StackMode, Timestamp, Window, WindowClass,
+    CursorEnum, EventMask, Gcontext, GrabMode, GrabStatus, Rectangle, StackMode, Time, Timestamp,
+    Window, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
+use x11rb::{COPY_FROM_PARENT, NONE};
 
 const DEFAULT_BREAK_MESSAGE: &str = "Take a break";
 const TEXT_WIDTH_PIXELS: i32 = 6;
@@ -63,6 +64,7 @@ pub(crate) struct X11Overlay {
     windows: Vec<OverlayWindow>,
     background_gc: Gcontext,
     foreground_gc: Gcontext,
+    input_grab: InputGrab,
     message: Vec<u8>,
 }
 
@@ -103,17 +105,29 @@ impl X11Overlay {
             windows: Vec::with_capacity(monitors.len()),
             background_gc,
             foreground_gc,
+            input_grab: InputGrab::none(),
             message: x11_text_bytes(selected_break_message(scheduled_break)),
         };
 
-        for monitor in monitors {
-            overlay.create_window(connection, screen, monitor)?;
-        }
+        let result = (|| {
+            for monitor in monitors {
+                overlay.create_window(connection, screen, monitor)?;
+            }
 
-        x11("flush mapped overlay windows", connection.flush())?;
-        overlay.draw(connection)?;
-        overlay.raise(connection)?;
-        Ok(overlay)
+            x11("flush mapped overlay windows", connection.flush())?;
+            overlay.draw(connection)?;
+            overlay.raise(connection)?;
+            overlay.grab_input(connection)?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => Ok(overlay),
+            Err(error) => {
+                let _ = overlay.destroy(connection);
+                Err(error)
+            }
+        }
     }
 
     pub(crate) fn handle_pending_events(
@@ -151,8 +165,12 @@ impl X11Overlay {
         x11("flush raised overlay windows", connection.flush())
     }
 
-    pub(crate) fn destroy(self, connection: &RustConnection) -> Result<(), X11OverlayError> {
+    pub(crate) fn destroy(mut self, connection: &RustConnection) -> Result<(), X11OverlayError> {
         let mut first_error = None;
+
+        if let Err(error) = self.input_grab.release(connection) {
+            remember_first_overlay_error(&mut first_error, error);
+        }
 
         for window in self.windows {
             remember_first_error(
@@ -190,7 +208,7 @@ impl X11Overlay {
         monitor: MonitorGeometry,
     ) -> Result<(), X11OverlayError> {
         let window = generate_id(connection, "generate overlay window")?;
-        let event_mask = EventMask::EXPOSURE | EventMask::STRUCTURE_NOTIFY;
+        let event_mask = overlay_window_event_mask();
 
         x11(
             "create overlay window",
@@ -221,6 +239,19 @@ impl X11Overlay {
         )?;
 
         self.windows.push(OverlayWindow { window, monitor });
+        Ok(())
+    }
+
+    fn grab_input(&mut self, connection: &RustConnection) -> Result<(), X11OverlayError> {
+        let grab_window = self
+            .windows
+            .first()
+            .map(|window| window.window)
+            .ok_or_else(|| {
+                X11OverlayError::new("grab overlay input", "no overlay windows".to_owned())
+            })?;
+
+        self.input_grab = InputGrab::acquire(connection, grab_window)?;
         Ok(())
     }
 
@@ -258,6 +289,113 @@ impl X11Overlay {
         )?;
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InputGrab {
+    pointer: bool,
+    keyboard: bool,
+}
+
+impl InputGrab {
+    const fn none() -> Self {
+        Self {
+            pointer: false,
+            keyboard: false,
+        }
+    }
+
+    const fn pointer_only() -> Self {
+        Self {
+            pointer: true,
+            keyboard: false,
+        }
+    }
+
+    fn acquire(connection: &RustConnection, window: Window) -> Result<Self, X11OverlayError> {
+        let pointer_reply = x11(
+            "grab overlay pointer input",
+            x11(
+                "request overlay pointer input grab",
+                connection.grab_pointer(
+                    false,
+                    window,
+                    pointer_grab_event_mask(),
+                    GrabMode::ASYNC,
+                    GrabMode::ASYNC,
+                    NONE,
+                    CursorEnum::NONE,
+                    Time::CURRENT_TIME,
+                ),
+            )?
+            .reply(),
+        )?;
+        check_grab_status("grab overlay pointer input", pointer_reply.status)?;
+
+        let mut input_grab = Self::pointer_only();
+        if let Err(error) = grab_keyboard(connection, window) {
+            let _ = input_grab.release(connection);
+            return Err(error);
+        }
+        input_grab.keyboard = true;
+
+        Ok(input_grab)
+    }
+
+    fn release(&mut self, connection: &RustConnection) -> Result<(), X11OverlayError> {
+        let mut first_error = None;
+        let release_keyboard = self.keyboard;
+        let release_pointer = self.pointer;
+
+        if release_keyboard {
+            remember_first_error(
+                &mut first_error,
+                "ungrab overlay keyboard input",
+                connection.ungrab_keyboard(Time::CURRENT_TIME),
+            );
+            self.keyboard = false;
+        }
+
+        if release_pointer {
+            remember_first_error(
+                &mut first_error,
+                "ungrab overlay pointer input",
+                connection.ungrab_pointer(Time::CURRENT_TIME),
+            );
+            self.pointer = false;
+        }
+
+        if release_keyboard || release_pointer {
+            remember_first_error(
+                &mut first_error,
+                "flush released overlay input grabs",
+                connection.flush(),
+            );
+        }
+
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+fn grab_keyboard(connection: &RustConnection, window: Window) -> Result<(), X11OverlayError> {
+    let keyboard_reply = x11(
+        "grab overlay keyboard input",
+        x11(
+            "request overlay keyboard input grab",
+            connection.grab_keyboard(
+                false,
+                window,
+                Time::CURRENT_TIME,
+                GrabMode::ASYNC,
+                GrabMode::ASYNC,
+            ),
+        )?
+        .reply(),
+    )?;
+    check_grab_status("grab overlay keyboard input", keyboard_reply.status)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -318,6 +456,28 @@ impl fmt::Display for X11OverlayError {
 }
 
 impl std::error::Error for X11OverlayError {}
+
+fn overlay_window_event_mask() -> EventMask {
+    EventMask::EXPOSURE
+        | EventMask::STRUCTURE_NOTIFY
+        | EventMask::KEY_PRESS
+        | EventMask::KEY_RELEASE
+        | EventMask::BUTTON_PRESS
+        | EventMask::BUTTON_RELEASE
+        | EventMask::POINTER_MOTION
+}
+
+fn pointer_grab_event_mask() -> EventMask {
+    EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION
+}
+
+fn check_grab_status(operation: &'static str, status: GrabStatus) -> Result<(), X11OverlayError> {
+    if status == GrabStatus::SUCCESS {
+        Ok(())
+    } else {
+        Err(X11OverlayError::new(operation, format!("{status:?}")))
+    }
+}
 
 fn query_monitors(connection: &RustConnection, screen: X11Screen) -> Vec<MonitorGeometry> {
     let monitors = match current_screen_resources(connection, screen.root) {
@@ -495,6 +655,12 @@ fn remember_first_error<T, E>(
         if let Err(error) = result {
             *first_error = Some(X11OverlayError::new(operation, error.to_string()));
         }
+    }
+}
+
+fn remember_first_overlay_error(first_error: &mut Option<X11OverlayError>, error: X11OverlayError) {
+    if first_error.is_none() {
+        *first_error = Some(error);
     }
 }
 
