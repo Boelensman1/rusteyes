@@ -55,12 +55,13 @@
   pointer and keyboard grabs while visible, keep pointer movement unconstrained,
   prevent grabbed input from reaching other X11 clients, and release grabs when
   overlays are cleared.
-- Completed `x11-lock-after-break`: config now has a `lock.command` argv list
-  defaulting to `loginctl lock-session`, and Linux/X11 production runs start
-  and supervise the configured command after a break requests local locking.
-  Follow-up fix keeps the overlay visible during lock handoff by finishing the
-  break and starting the lock command through one backend command before
-  destroying the overlay.
+- Completed `x11-lock-after-break`: config now has an optional `lock.command`
+  argv override, and Linux/X11 production runs start and supervise
+  `loginctl lock-session` by default, or the configured command after a break
+  requests local locking. Follow-up fix keeps the overlay visible during lock
+  handoff by finishing the break and starting the lock command through one
+  backend command before destroying the overlay. Later cleanup moved default
+  lock behavior to each platform backend.
 - Completed `x11-ui-improvements`: X11 break overlays now render remaining
   break time and a lock-after-break control, and runtime tracks current-break
   lock state from configured autolock or that control before requesting the
@@ -112,6 +113,10 @@
   either permission is missing, acknowledges break/control commands before Rust
   updates backend break state, and keeps the break-time event tap failure path
   as a defense against permissions revoked later.
+- Completed `macos-lock-after-break`: macOS production runs now honor
+  lock-after-break intent by clearing the helper overlay/input tap before
+  either calling the helper-native `SACLockScreenImmediate` default lock path or
+  running an explicitly configured no-shell lock command from Rust.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -151,6 +156,12 @@
 - `make macos-helper-build` passes after adding the permission preflight.
 - `make macos-helper-build` passes after adding protocol version 4 command
   acknowledgements.
+- A temporary Swift smoke test loaded and invoked `SACLockScreenImmediate` from
+  login.framework successfully.
+- `make test` passes after adding macOS lock-after-break behavior.
+- `make check` passes after adding macOS lock-after-break behavior.
+- `make macos-helper-build` passes after adding macOS lock-after-break
+  behavior.
 - A bounded `timeout 3s make run` on macOS stays alive until terminated by
   `timeout` and no longer emits helper stderr during startup after AppKit setup
   was made lazy.
@@ -167,7 +178,7 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next planned increment is `macos-lock-after-break`.
+- The next planned increment is `macos-ui-improvements`.
 - The later build order now brings macOS backend parity before sync protocol,
   then separates sync protocol, LAN discovery, authenticated peer transport,
   synced break/disable behavior, tray UI, and synced lock-after-break behavior.

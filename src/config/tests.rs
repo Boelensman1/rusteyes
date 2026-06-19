@@ -1,8 +1,8 @@
 use super::{
     BreakTypeConfig, Config, ConfigError, ConfigLoadError, DEFAULT_BREAK_AFTER_ACTIVE,
-    DEFAULT_DISABLE_PRESETS, DEFAULT_LOCK_COMMAND, DEFAULT_LONG_BREAK_DURATION,
-    DEFAULT_LONG_BREAK_INTERVAL, DEFAULT_SHORT_BREAK_DURATION, DEFAULT_SHORT_BREAK_INTERVAL,
-    LockConfig, MIN_SYNC_SHARED_SECRET_LENGTH, SharedSecret, SyncConfig,
+    DEFAULT_DISABLE_PRESETS, DEFAULT_LONG_BREAK_DURATION, DEFAULT_LONG_BREAK_INTERVAL,
+    DEFAULT_SHORT_BREAK_DURATION, DEFAULT_SHORT_BREAK_INTERVAL, LockConfig,
+    MIN_SYNC_SHARED_SECRET_LENGTH, SharedSecret, SyncConfig,
 };
 use std::error::Error;
 use std::fs;
@@ -48,16 +48,10 @@ fn default_config_uses_expected_disable_presets() {
 }
 
 #[test]
-fn default_config_uses_expected_lock_command() {
+fn default_config_uses_platform_lock_default() {
     let config = Config::default();
 
-    assert_eq!(
-        config.lock.command,
-        DEFAULT_LOCK_COMMAND
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<_>>()
-    );
+    assert_eq!(config.lock.command, None);
 }
 
 #[test]
@@ -275,7 +269,7 @@ fn rejects_duplicate_disable_preset() {
 #[test]
 fn rejects_empty_lock_command() {
     let mut config = Config::default();
-    config.lock.command.clear();
+    config.lock.command = Some(Vec::new());
 
     assert_eq!(config.validate(), Err(ConfigError::EmptyLockCommand));
 }
@@ -283,7 +277,7 @@ fn rejects_empty_lock_command() {
 #[test]
 fn rejects_blank_lock_program() {
     let mut config = Config::default();
-    config.lock.command[0] = String::from("   ");
+    config.lock.command = Some(vec![String::from("   "), String::from("lock")]);
 
     assert_eq!(config.validate(), Err(ConfigError::BlankLockProgram));
 }
@@ -444,7 +438,10 @@ lock:
     );
     assert_eq!(
         config.lock.command,
-        vec![String::from("test-locker"), String::from("--lock-now")]
+        Some(vec![
+            String::from("test-locker"),
+            String::from("--lock-now")
+        ])
     );
     Ok(())
 }
@@ -550,8 +547,21 @@ lock:
 
     assert_eq!(
         config.lock.command,
-        vec![String::from("xdg-screensaver"), String::from("lock")]
+        Some(vec![String::from("xdg-screensaver"), String::from("lock")])
     );
+    Ok(())
+}
+
+#[test]
+fn yaml_accepts_null_lock_command_as_platform_default() -> Result<(), Box<dyn Error>> {
+    let config = Config::from_yaml_str(
+        r"
+lock:
+  command: null
+",
+    )?;
+
+    assert_eq!(config.lock.command, None);
     Ok(())
 }
 

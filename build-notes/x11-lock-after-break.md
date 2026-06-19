@@ -7,8 +7,9 @@
 
 ## Changes
 
-- Added a `lock.command` YAML setting that is parsed as an argv list.
-- The default lock command is `["loginctl", "lock-session"]`.
+- Added a `lock.command` YAML setting that is parsed as an optional argv list.
+- When no override is configured, X11 uses `["loginctl", "lock-session"]` as
+  its platform default lock command.
 - Config validation now rejects an empty lock command and a blank lock command
   program.
 - Linux/X11 startup passes the validated lock command into the activity
@@ -29,6 +30,8 @@
   command, so X11 can keep the overlay visible, release its own input grabs for
   the locker, start the lock command, wait 250ms for handoff, and only then
   destroy the overlay.
+- Follow-up cleanup during `macos-lock-after-break`: `lock.command` became an
+  optional override so platform backends own their own default lock behavior.
 
 ## Decisions
 

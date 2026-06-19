@@ -4,12 +4,15 @@ import CoreGraphics
 import Darwin
 import Foundation
 
-private let protocolVersion = 4
+private let protocolVersion = 5
 private let directInvocationExitCode: Int32 = 2
 private let directInvocationMessage =
     "resteyes-macos-helper is an internal Resteyes helper. Start Resteyes with the main resteyes binary; do not run this helper directly."
 private let anyInputEventType = CGEventType(rawValue: UInt32.max)!
 private let defaultBreakMessage = "Take a break"
+private let loginFrameworkPath = "/System/Library/PrivateFrameworks/login.framework/Versions/Current/login"
+private let lockScreenSymbolName = "SACLockScreenImmediate"
+private typealias LockScreenImmediate = @convention(c) () -> Void
 
 private enum ProtocolError: Error, CustomStringConvertible {
     case invalidJSON
@@ -17,6 +20,7 @@ private enum ProtocolError: Error, CustomStringConvertible {
     case incompatibleVersion(Int)
     case invalidActivitySample
     case inputBlockingUnavailable
+    case lockScreenUnavailable(String)
     case outputEncodingFailed
 
     var description: String {
@@ -31,6 +35,8 @@ private enum ProtocolError: Error, CustomStringConvertible {
             return "invalid activity sample"
         case .inputBlockingUnavailable:
             return "failed to create macOS input event tap; grant Accessibility and Input Monitoring permissions to Resteyes"
+        case .lockScreenUnavailable(let reason):
+            return "failed to lock macOS session: \(reason)"
         case .outputEncodingFailed:
             return "failed to encode helper output"
         }
@@ -363,6 +369,15 @@ private func handleStartBreak(_ message: [String: Any], overlay: BreakOverlayCon
     }
 }
 
+private func handleFinishBreak(_ message: [String: Any], overlay: BreakOverlayController) throws {
+    let lockAfter = try lockAfterBreak(from: message)
+    clearBreakOverlay(overlay)
+
+    if lockAfter {
+        try lockScreenImmediately()
+    }
+}
+
 private func handlePollActivity() throws {
     let idleSeconds = CGEventSource.secondsSinceLastEventType(
         .combinedSessionState,
@@ -387,6 +402,48 @@ private func selectedBreakMessage(from message: [String: Any]) throws -> String 
     let messages = breakInfo["messages"] as? [String] ?? []
     return messages.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         ?? defaultBreakMessage
+}
+
+private func lockAfterBreak(from message: [String: Any]) throws -> Bool {
+    guard let lockAfter = message["lockAfter"] as? Bool else {
+        throw ProtocolError.invalidMessage
+    }
+
+    return lockAfter
+}
+
+private func lockScreenImmediately() throws {
+    clearDynamicLoaderError()
+    guard let handle = dlopen(loginFrameworkPath, RTLD_LAZY) else {
+        throw ProtocolError.lockScreenUnavailable(
+            "could not open \(loginFrameworkPath): \(dynamicLoaderError())"
+        )
+    }
+    defer {
+        _ = dlclose(handle)
+    }
+
+    clearDynamicLoaderError()
+    guard let symbol = dlsym(handle, lockScreenSymbolName) else {
+        throw ProtocolError.lockScreenUnavailable(
+            "could not resolve \(lockScreenSymbolName): \(dynamicLoaderError())"
+        )
+    }
+
+    let lockScreen = unsafeBitCast(symbol, to: LockScreenImmediate.self)
+    lockScreen()
+}
+
+private func clearDynamicLoaderError() {
+    _ = dlerror()
+}
+
+private func dynamicLoaderError() -> String {
+    guard let error = dlerror() else {
+        return "no dynamic loader error detail"
+    }
+
+    return String(cString: error)
 }
 
 private func clearBreakOverlay(_ overlay: BreakOverlayController) {
@@ -467,7 +524,7 @@ private func runProtocolLoop(overlay: BreakOverlayController) {
                 try handleStartBreak(message, overlay: overlay)
                 try writeCommandComplete("startBreak")
             case "finishBreak":
-                clearBreakOverlay(overlay)
+                try handleFinishBreak(message, overlay: overlay)
                 try writeCommandComplete("finishBreak")
             case "clearBreak":
                 clearBreakOverlay(overlay)

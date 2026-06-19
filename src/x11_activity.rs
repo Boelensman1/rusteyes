@@ -1,12 +1,10 @@
 use crate::activity::{ActivityPoller, ActivitySample, BreakTimer, break_elapsed_for_sample};
 use crate::backend::{Backend, BackendCommand, RuntimeEvent};
 use crate::config::LockConfig;
+use crate::lock_command::{LockCommand, LockCommandError, start_lock_command};
 use crate::scheduler::ScheduledBreak;
 use crate::x11_overlay::{X11Overlay, X11OverlayError, X11Screen};
 use std::fmt;
-use std::io::{self, BufRead, BufReader, Read, Write};
-use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
-use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 use tracing::{error, trace};
@@ -17,6 +15,7 @@ use x11rb::rust_connection::RustConnection;
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const OVERLAY_TICK_INTERVAL: Duration = Duration::from_millis(500);
 const LOCK_HANDOFF_DELAY: Duration = Duration::from_millis(250);
+const DEFAULT_LOCK_COMMAND: [&str; 2] = ["loginctl", "lock-session"];
 const SCREENSAVER_CLIENT_MAJOR_VERSION: u8 = 1;
 const SCREENSAVER_CLIENT_MINOR_VERSION: u8 = 1;
 
@@ -117,10 +116,9 @@ impl X11ActivityBackend {
 
     fn finish_break(&mut self, lock_after: bool) {
         let lock_result = if lock_after {
-            match self
-                .prepare_lock_handoff()
-                .and_then(|()| start_lock_command(&self.lock_command))
-            {
+            match self.prepare_lock_handoff().and_then(|()| {
+                start_lock_command(&self.lock_command).map_err(X11ActivityError::lock_command)
+            }) {
                 Ok(()) => {
                     thread::sleep(LOCK_HANDOFF_DELAY);
                     Ok(())
@@ -196,167 +194,12 @@ impl Drop for X11ActivityBackend {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct LockCommand {
-    argv: Vec<String>,
-}
-
-impl LockCommand {
-    fn description(&self) -> String {
-        if self.argv.is_empty() {
-            String::from("<empty lock command>")
-        } else {
-            self.argv.join(" ")
-        }
-    }
-}
-
 impl From<LockConfig> for LockCommand {
     fn from(lock_config: LockConfig) -> Self {
-        Self {
-            argv: lock_config.command,
-        }
-    }
-}
-
-fn start_lock_command(lock_command: &LockCommand) -> Result<(), X11ActivityError> {
-    let lock_command = lock_command.clone();
-    let description = lock_command.description();
-    let (startup_tx, startup_rx) = mpsc::channel();
-
-    thread::Builder::new()
-        .name(String::from("resteyes-lock-command"))
-        .spawn(move || match spawn_lock_command(&lock_command) {
-            Ok(spawned) => {
-                let _ = startup_tx.send(Ok(()));
-                supervise_lock_command(spawned);
-            }
-            Err(error) => {
-                let _ = startup_tx.send(Err(error));
-            }
-        })
-        .map_err(|error| {
-            X11ActivityError::lock(format!(
-                "failed to start supervisor for {description}: {error}"
-            ))
-        })?;
-
-    startup_rx.recv().map_err(|error| {
-        X11ActivityError::lock(format!(
-            "failed to receive startup status for {description}: {error}"
-        ))
-    })?
-}
-
-fn spawn_lock_command(lock_command: &LockCommand) -> Result<SpawnedLockCommand, X11ActivityError> {
-    let description = lock_command.description();
-    let mut command = lock_process(lock_command)?;
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|error| {
-        X11ActivityError::lock(format!("failed to start {description}: {error}"))
-    })?;
-
-    Ok(SpawnedLockCommand {
-        description,
-        stdout: child.stdout.take(),
-        stderr: child.stderr.take(),
-        child,
-    })
-}
-
-fn lock_process(lock_command: &LockCommand) -> Result<Command, X11ActivityError> {
-    let Some((program, args)) = lock_command.argv.split_first() else {
-        return Err(X11ActivityError::lock(String::from(
-            "lock command must not be empty",
-        )));
-    };
-
-    let mut command = Command::new(program);
-    command.args(args);
-    Ok(command)
-}
-
-struct SpawnedLockCommand {
-    description: String,
-    child: Child,
-    stdout: Option<ChildStdout>,
-    stderr: Option<ChildStderr>,
-}
-
-fn supervise_lock_command(spawned: SpawnedLockCommand) {
-    let SpawnedLockCommand {
-        description,
-        mut child,
-        stdout,
-        stderr,
-    } = spawned;
-
-    thread::scope(|scope| {
-        if let Some(stdout) = stdout {
-            let description = description.clone();
-            scope.spawn(move || trace_lock_stdout(&description, stdout));
-        }
-
-        if let Some(stderr) = stderr {
-            let description = description.clone();
-            scope.spawn(move || mirror_lock_stderr(&description, stderr));
-        }
-
-        match child.wait() {
-            Ok(status) => {
-                trace!(
-                    command = %description,
-                    %status,
-                    success = status.success(),
-                    "lock command exited"
-                );
-            }
-            Err(error) => {
-                error!(command = %description, %error, "failed to wait for lock command");
-            }
-        }
-    });
-}
-
-fn trace_lock_stdout<R>(description: &str, output: R)
-where
-    R: Read,
-{
-    for line in BufReader::new(output).lines() {
-        match line {
-            Ok(line) => trace!(command = %description, %line, "lock command stdout"),
-            Err(error) => {
-                trace!(command = %description, %error, "failed to read lock command stdout");
-                break;
-            }
-        }
-    }
-}
-
-fn mirror_lock_stderr<R>(description: &str, output: R)
-where
-    R: Read,
-{
-    let mut stderr = io::stderr().lock();
-
-    for line in BufReader::new(output).lines() {
-        match line {
-            Ok(line) => {
-                let _ = writeln!(
-                    stderr,
-                    "resteyes: lock command stderr ({description}): {line}"
-                );
-                trace!(command = %description, %line, "lock command stderr");
-            }
-            Err(error) => {
-                let _ = writeln!(
-                    stderr,
-                    "resteyes: failed to read lock command stderr ({description}): {error}"
-                );
-                trace!(command = %description, %error, "failed to read lock command stderr");
-                break;
-            }
-        }
+        let argv = lock_config
+            .command
+            .unwrap_or_else(|| DEFAULT_LOCK_COMMAND.into_iter().map(String::from).collect());
+        Self::new(argv)
     }
 }
 
@@ -492,6 +335,10 @@ impl X11ActivityError {
             operation: "request local lock",
             message,
         }
+    }
+
+    fn lock_command(error: LockCommandError) -> Self {
+        Self::lock(error.to_string())
     }
 }
 

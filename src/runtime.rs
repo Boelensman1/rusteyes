@@ -19,9 +19,9 @@ pub(crate) fn run() -> Result<(), crate::Error> {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn run() -> Result<(), crate::Error> {
-    let Config { breaks, .. } = Config::load()?;
+    let Config { breaks, lock, .. } = Config::load()?;
     let schedule = BreakSchedule::try_from(breaks)?;
-    let mut backend = MacOSHelperBackend::connect()?;
+    let mut backend = MacOSHelperBackend::connect(lock)?;
 
     run_with_backend(schedule, &mut backend);
     Ok(())

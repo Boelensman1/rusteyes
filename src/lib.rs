@@ -3,6 +3,7 @@ use std::fmt;
 mod activity;
 mod backend;
 pub(crate) mod config;
+mod lock_command;
 
 #[cfg(target_os = "macos")]
 mod macos_helper;

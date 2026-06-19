@@ -24,7 +24,6 @@ pub(crate) const DEFAULT_DISABLE_PRESETS: [Duration; 4] = [
     Duration::from_secs(2 * 60 * 60),
     Duration::from_secs(3 * 60 * 60),
 ];
-pub(crate) const DEFAULT_LOCK_COMMAND: [&str; 2] = ["loginctl", "lock-session"];
 pub(crate) const MIN_SYNC_SHARED_SECRET_LENGTH: usize = 32;
 
 #[allow(clippy::module_name_repetitions)]
@@ -304,14 +303,18 @@ impl BreakTypeConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct LockConfig {
-    pub(crate) command: Vec<String>,
+    pub(crate) command: Option<Vec<String>>,
 }
 
 impl LockConfig {
     fn validate(&self) -> Result<(), ConfigError> {
-        let Some(program) = self.command.first() else {
+        let Some(command) = &self.command else {
+            return Ok(());
+        };
+
+        let Some(program) = command.first() else {
             return Err(ConfigError::EmptyLockCommand);
         };
 
@@ -320,14 +323,6 @@ impl LockConfig {
         }
 
         Ok(())
-    }
-}
-
-impl Default for LockConfig {
-    fn default() -> Self {
-        Self {
-            command: DEFAULT_LOCK_COMMAND.into_iter().map(String::from).collect(),
-        }
     }
 }
 
@@ -578,9 +573,7 @@ struct PartialLockConfig {
 
 impl PartialLockConfig {
     fn apply_to(self, lock: &mut LockConfig) {
-        if let Some(command) = self.command {
-            lock.command = command;
-        }
+        lock.command = self.command;
     }
 }
 

@@ -1,5 +1,7 @@
 use crate::activity::{ActivityPoller, ActivitySample, BreakTimer, break_elapsed_for_sample};
 use crate::backend::{Backend, BackendCommand, RuntimeEvent};
+use crate::config::LockConfig;
+use crate::lock_command::{LockCommand, LockCommandError, start_lock_command};
 use crate::scheduler::{BreakOrigin, ScheduledBreak};
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -12,7 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{trace, warn};
 
-const PROTOCOL_VERSION: u16 = 4;
+const PROTOCOL_VERSION: u16 = 5;
 const HELPER_PATH_ENV: &str = "RESTEYES_MACOS_HELPER";
 const DEVELOPMENT_HELPER_PATH: &str = "helpers/macos-helper/.build/debug/resteyes-macos-helper";
 const HELPER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -26,11 +28,12 @@ pub(crate) struct MacOSHelperBackend {
     session: HelperSession<ChildStdout, ChildStdin>,
     poller: ActivityPoller,
     active_break: Option<ActiveBreak>,
+    lock: MacOSLock,
     shutdown_sent: bool,
 }
 
 impl MacOSHelperBackend {
-    pub(crate) fn connect() -> Result<Self, MacOSHelperError> {
+    pub(crate) fn connect(lock_config: LockConfig) -> Result<Self, MacOSHelperError> {
         let path = helper_path();
         let mut child = spawn_helper(&path)?;
         let stdin = child
@@ -62,6 +65,7 @@ impl MacOSHelperBackend {
             session,
             poller: ActivityPoller::new(ACTIVITY_POLL_INTERVAL),
             active_break: None,
+            lock: MacOSLock::from(lock_config),
             shutdown_sent: false,
         })
     }
@@ -119,8 +123,30 @@ impl MacOSHelperBackend {
     }
 
     fn finish_break(&mut self, lock_after: bool) {
-        if self.send_backend_command(BackendCommand::FinishBreak { lock_after }) {
-            self.active_break = None;
+        let helper_lock_after = self.lock.helper_lock_after(lock_after);
+        match self.session.send_command(BackendCommand::FinishBreak {
+            lock_after: helper_lock_after,
+        }) {
+            Ok(()) => {
+                self.active_break = None;
+                if lock_after {
+                    self.start_configured_lock_command();
+                }
+            }
+            Err(error) => {
+                self.active_break = None;
+                self.queue_backend_error(&error);
+            }
+        }
+    }
+
+    fn start_configured_lock_command(&mut self) {
+        let MacOSLock::Command(lock_command) = &self.lock else {
+            return;
+        };
+
+        if let Err(error) = start_lock_command(lock_command) {
+            self.queue_backend_error(&MacOSHelperError::lock_command(&error));
         }
     }
 
@@ -134,11 +160,15 @@ impl MacOSHelperBackend {
         match self.session.send_command(command) {
             Ok(()) => true,
             Err(error) => {
-                warn!(%error, "failed to complete command with macOS helper");
-                self.poller.queue_event(RuntimeEvent::Shutdown);
+                self.queue_backend_error(&error);
                 false
             }
         }
+    }
+
+    fn queue_backend_error(&mut self, error: &MacOSHelperError) {
+        warn!(%error, "macOS backend error");
+        self.poller.queue_event(RuntimeEvent::Shutdown);
     }
 
     fn shutdown_helper(&mut self) -> Result<(), MacOSHelperError> {
@@ -147,6 +177,27 @@ impl MacOSHelperBackend {
             Some(&mut self.session),
             &mut self.shutdown_sent,
         )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MacOSLock {
+    PlatformDefault,
+    Command(LockCommand),
+}
+
+impl MacOSLock {
+    const fn helper_lock_after(&self, requested: bool) -> bool {
+        requested && matches!(self, Self::PlatformDefault)
+    }
+}
+
+impl From<LockConfig> for MacOSLock {
+    fn from(lock_config: LockConfig) -> Self {
+        match lock_config.command {
+            Some(command) => Self::Command(LockCommand::new(command)),
+            None => Self::PlatformDefault,
+        }
     }
 }
 
@@ -211,6 +262,10 @@ impl MacOSHelperError {
         Self {
             message: message.into(),
         }
+    }
+
+    fn lock_command(error: &LockCommandError) -> Self {
+        Self::new(format!("failed to request local lock: {error}"))
     }
 }
 
@@ -723,7 +778,7 @@ mod tests {
 
     #[test]
     fn handshake_writes_hello_and_accepts_ready() -> Result<(), Box<dyn std::error::Error>> {
-        let input = Cursor::new(br#"{"type":"ready","version":4}"#.to_vec());
+        let input = Cursor::new(br#"{"type":"ready","version":5}"#.to_vec());
         let mut output = Vec::new();
 
         {
@@ -819,7 +874,7 @@ mod tests {
 
     #[test]
     fn handshake_rejects_incompatible_version() {
-        let input = Cursor::new(br#"{"type":"ready","version":5}"#.to_vec());
+        let input = Cursor::new(br#"{"type":"ready","version":6}"#.to_vec());
         let mut output = Vec::new();
         let mut session = HelperSession::new(input, &mut output);
 
@@ -890,6 +945,32 @@ mod tests {
             vec![DaemonMessage::FinishBreak { lock_after: true }]
         );
         Ok(())
+    }
+
+    #[test]
+    fn default_macos_lock_requests_helper_lock() {
+        let lock = MacOSLock::from(LockConfig { command: None });
+
+        assert_eq!(lock, MacOSLock::PlatformDefault);
+        assert!(lock.helper_lock_after(true));
+        assert!(!lock.helper_lock_after(false));
+    }
+
+    #[test]
+    fn explicit_macos_lock_command_uses_rust_command_runner() {
+        let lock = MacOSLock::from(LockConfig {
+            command: Some(vec![String::from("locker"), String::from("--now")]),
+        });
+
+        assert_eq!(
+            lock,
+            MacOSLock::Command(LockCommand::new(vec![
+                String::from("locker"),
+                String::from("--now")
+            ]))
+        );
+        assert!(!lock.helper_lock_after(true));
+        assert!(!lock.helper_lock_after(false));
     }
 
     #[test]
