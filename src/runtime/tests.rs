@@ -172,27 +172,31 @@ fn test_config() -> Config {
             types: [
                 (
                     String::from("short"),
-                    BreakTypeConfig {
-                        interval: 1,
-                        duration: Duration::from_secs(20),
-                        messages: vec![String::from("Rest your eyes")],
-                        autolock: false,
-                    },
+                    break_type(1, 20, "Rest your eyes", false),
                 ),
                 (
                     String::from("long"),
-                    BreakTypeConfig {
-                        interval: 2,
-                        duration: Duration::from_secs(300),
-                        messages: vec![String::from("Take a longer break")],
-                        autolock: true,
-                    },
+                    break_type(2, 300, "Take a longer break", true),
                 ),
             ]
             .into_iter()
             .collect::<BTreeMap<_, _>>(),
         },
         disable_presets: vec![Duration::from_secs(30)],
+    }
+}
+
+fn break_type(
+    interval: usize,
+    duration_secs: u64,
+    message: &str,
+    autolock: bool,
+) -> BreakTypeConfig {
+    BreakTypeConfig {
+        interval,
+        duration: Duration::from_secs(duration_secs),
+        messages: vec![message.to_owned()],
+        autolock,
     }
 }
 

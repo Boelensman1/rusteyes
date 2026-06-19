@@ -22,6 +22,8 @@
 - Later cleanup made scheduler break completion and disable transitions return
   the affected pending break, so runtime no longer peeks at scheduler pending
   state before clearing backend break state.
+- Later cleanup gave `Backend::handle_command` a default no-op implementation
+  so backends only override it when they handle commands.
 - Updated runtime tests to use a scripted backend that records ordered backend
   commands.
 
@@ -39,6 +41,7 @@
 
 - `make test`
 - `make check`
+- `make check` after backend default-command cleanup
 
 ## Follow-up
 

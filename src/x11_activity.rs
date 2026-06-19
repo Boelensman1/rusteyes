@@ -58,8 +58,6 @@ impl Backend for X11ActivityBackend {
             }
         }
     }
-
-    fn handle_command(&mut self, _command: BackendCommand) {}
 }
 
 #[allow(clippy::module_name_repetitions)]

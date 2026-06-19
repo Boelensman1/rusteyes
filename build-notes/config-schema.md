@@ -6,7 +6,7 @@
 
 ## Changes
 
-- Added a public `config` module with typed defaults for shared break
+- Added a crate-internal `config` module with typed defaults for shared break
   scheduling, named break types, break durations, break messages, disable
   presets, and per-break-type autolock flags.
 - Added validation for zero active durations, empty break type maps, empty break
@@ -37,6 +37,7 @@
 - `make check`
 - `make run`
 - `make check` after generic break type correction
+- `make check` after config visibility cleanup
 
 ## Follow-up
 

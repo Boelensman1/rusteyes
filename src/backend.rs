@@ -4,7 +4,7 @@ use std::time::Duration;
 pub(crate) trait Backend {
     fn next_event(&mut self) -> RuntimeEvent;
 
-    fn handle_command(&mut self, command: BackendCommand);
+    fn handle_command(&mut self, _command: BackendCommand) {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +41,4 @@ impl Backend for NoopBackend {
     fn next_event(&mut self) -> RuntimeEvent {
         RuntimeEvent::Shutdown
     }
-
-    fn handle_command(&mut self, _command: BackendCommand) {}
 }

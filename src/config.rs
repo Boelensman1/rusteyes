@@ -13,12 +13,12 @@ const HOME: &str = "HOME";
 const CONFIG_DIR: &str = "resteyes";
 const CONFIG_FILE: &str = "config.yaml";
 
-pub const DEFAULT_BREAK_AFTER_ACTIVE: Duration = Duration::from_secs(20 * 60);
-pub const DEFAULT_SHORT_BREAK_INTERVAL: usize = 1;
-pub const DEFAULT_SHORT_BREAK_DURATION: Duration = Duration::from_secs(20);
-pub const DEFAULT_LONG_BREAK_INTERVAL: usize = 2;
-pub const DEFAULT_LONG_BREAK_DURATION: Duration = Duration::from_secs(5 * 60);
-pub const DEFAULT_DISABLE_PRESETS: [Duration; 4] = [
+pub(crate) const DEFAULT_BREAK_AFTER_ACTIVE: Duration = Duration::from_secs(20 * 60);
+pub(crate) const DEFAULT_SHORT_BREAK_INTERVAL: usize = 1;
+pub(crate) const DEFAULT_SHORT_BREAK_DURATION: Duration = Duration::from_secs(20);
+pub(crate) const DEFAULT_LONG_BREAK_INTERVAL: usize = 2;
+pub(crate) const DEFAULT_LONG_BREAK_DURATION: Duration = Duration::from_secs(5 * 60);
+pub(crate) const DEFAULT_DISABLE_PRESETS: [Duration; 4] = [
     Duration::from_secs(30 * 60),
     Duration::from_secs(60 * 60),
     Duration::from_secs(2 * 60 * 60),
@@ -27,9 +27,9 @@ pub const DEFAULT_DISABLE_PRESETS: [Duration; 4] = [
 
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Config {
-    pub breaks: Breaks,
-    pub disable_presets: Vec<Duration>,
+pub(crate) struct Config {
+    pub(crate) breaks: Breaks,
+    pub(crate) disable_presets: Vec<Duration>,
 }
 
 impl Config {
@@ -42,7 +42,7 @@ impl Config {
     ///
     /// Returns an error when an explicit config cannot be read, an implicit
     /// config exists but cannot be read, YAML parsing fails, or validation fails.
-    pub fn load() -> Result<Self, ConfigLoadError> {
+    pub(crate) fn load() -> Result<Self, ConfigLoadError> {
         Self::load_from_env(
             std::env::var_os(ENV_CONFIG),
             std::env::var_os(XDG_CONFIG_HOME),
@@ -60,7 +60,7 @@ impl Config {
     /// # Errors
     ///
     /// Returns the first invalid value found.
-    pub fn validate(&self) -> Result<(), ConfigError> {
+    pub(crate) fn validate(&self) -> Result<(), ConfigError> {
         self.breaks.validate()?;
         validate_disable_presets(&self.disable_presets)
     }
@@ -135,7 +135,7 @@ impl Default for Config {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConfigLoadError {
+pub(crate) enum ConfigLoadError {
     Read {
         path: PathBuf,
         message: String,
@@ -188,9 +188,9 @@ impl std::error::Error for ConfigLoadError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Breaks {
-    pub after_active: Duration,
-    pub types: BTreeMap<String, BreakTypeConfig>,
+pub(crate) struct Breaks {
+    pub(crate) after_active: Duration,
+    pub(crate) types: BTreeMap<String, BreakTypeConfig>,
 }
 
 impl Breaks {
@@ -256,11 +256,11 @@ impl Default for Breaks {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BreakTypeConfig {
-    pub interval: usize,
-    pub duration: Duration,
-    pub messages: Vec<String>,
-    pub autolock: bool,
+pub(crate) struct BreakTypeConfig {
+    pub(crate) interval: usize,
+    pub(crate) duration: Duration,
+    pub(crate) messages: Vec<String>,
+    pub(crate) autolock: bool,
 }
 
 impl BreakTypeConfig {
@@ -303,7 +303,7 @@ enum ConfigPathMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConfigError {
+pub(crate) enum ConfigError {
     ZeroBreakAfterActiveDuration,
     EmptyBreakTypes,
     InvalidBreakTypeName {

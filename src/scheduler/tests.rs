@@ -280,14 +280,18 @@ fn custom_breaks(after_active_secs: u64, types: &[(&str, usize, u64)]) -> Breaks
             .map(|(name, interval, duration_secs)| {
                 (
                     (*name).to_owned(),
-                    BreakTypeConfig {
-                        interval: *interval,
-                        duration: Duration::from_secs(*duration_secs),
-                        messages: vec![format!("Take a {name} break")],
-                        autolock: false,
-                    },
+                    break_type(name, *interval, *duration_secs),
                 )
             })
             .collect::<BTreeMap<_, _>>(),
+    }
+}
+
+fn break_type(name: &str, interval: usize, duration_secs: u64) -> BreakTypeConfig {
+    BreakTypeConfig {
+        interval,
+        duration: Duration::from_secs(duration_secs),
+        messages: vec![format!("Take a {name} break")],
+        autolock: false,
     }
 }

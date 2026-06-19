@@ -23,7 +23,8 @@
 - Completed internal API cleanup before daemon wiring: crate public API now
   exposes `run` and an application error wrapper, config remains crate-internal,
   and scheduler construction uses a validated `BreakSchedule` instead of raw
-  config storage.
+  config storage. Follow-up cleanup tightened config type visibility to the
+  crate boundary.
 - Generalized break config to one shared `breaks.after_active` duration plus an
   arbitrary `breaks.types` map. Each break type has an integer slot interval,
   duration, messages, and per-type autolock flag.
@@ -34,7 +35,8 @@
   boundary with runtime events for activity/control input and backend commands
   for break start, break clear, and local lock requests. Follow-up cleanup made
   scheduler transitions return affected pending breaks so runtime does not
-  inspect scheduler pending state to drive backend cleanup.
+  inspect scheduler pending state to drive backend cleanup, and made backend
+  command handling default to no-op for backends that do not handle commands.
 - Completed `x11-activity`: Linux production runs now use a permanent
   crate-internal X11 activity backend backed by XScreenSaver idle time. It emits
   wall-clock ticks and active-time increments into the runtime, while a
