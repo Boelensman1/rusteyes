@@ -29,6 +29,9 @@ RestEyes is an as-simple-as-possible SafeEyes replacement focused on reliable br
 
 - Use LAN discovery to find peers.
 - Authenticate peer messages with a configured shared secret.
+- Generate a transient sender identity at daemon startup for message
+  attribution and deduplication; it does not need to be configured or
+  persisted.
 - Allow any authenticated peer to broadcast that a break is due.
 - Apply break starts, disable/snooze periods, and lock-after-break decisions across authenticated peers.
 - Each machine runs its own local lock mechanism when a synced lock-after-break decision applies.
@@ -99,10 +102,10 @@ step note when implementation begins.
     time and a control to lock automatically after the current break ends.
 13. `manual-break-control`: add runtime control flow for starting configured
     named breaks on demand, reusing the existing X11 break backend.
-14. `sync-config-auth`: add configuration and validation for sync enablement,
-    peer identity, and the shared secret used to authenticate peers.
+14. `sync-config-auth`: add configuration and validation for sync enablement
+    and the shared secret used to authenticate peers.
 15. `sync-protocol`: define authenticated sync events for break start, disable
-    periods, and lock-after-break decisions.
+    periods, lock-after-break decisions, and transient sender identity.
 16. `lan-discovery`: discover authenticated peers on the LAN.
 17. `authenticated-peer-transport`: exchange authenticated sync messages with
     discovered peers.

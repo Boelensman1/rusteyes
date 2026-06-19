@@ -25,6 +25,7 @@ pub(crate) const DEFAULT_DISABLE_PRESETS: [Duration; 4] = [
     Duration::from_secs(3 * 60 * 60),
 ];
 pub(crate) const DEFAULT_LOCK_COMMAND: [&str; 2] = ["loginctl", "lock-session"];
+pub(crate) const MIN_SYNC_SHARED_SECRET_LENGTH: usize = 32;
 
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +33,7 @@ pub(crate) struct Config {
     pub(crate) breaks: Breaks,
     pub(crate) disable_presets: Vec<Duration>,
     pub(crate) lock: LockConfig,
+    pub(crate) sync: SyncConfig,
 }
 
 impl Config {
@@ -65,7 +67,8 @@ impl Config {
     pub(crate) fn validate(&self) -> Result<(), ConfigError> {
         self.breaks.validate()?;
         validate_disable_presets(&self.disable_presets)?;
-        self.lock.validate()
+        self.lock.validate()?;
+        self.sync.validate()
     }
 
     fn load_from_env(
@@ -134,6 +137,7 @@ impl Default for Config {
             breaks: Breaks::default(),
             disable_presets: DEFAULT_DISABLE_PRESETS.to_vec(),
             lock: LockConfig::default(),
+            sync: SyncConfig::default(),
         }
     }
 }
@@ -327,6 +331,41 @@ impl Default for LockConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct SyncConfig {
+    pub(crate) enabled: bool,
+    pub(crate) shared_secret: Option<SharedSecret>,
+}
+
+impl SyncConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        match &self.shared_secret {
+            Some(shared_secret) => validate_sync_shared_secret(shared_secret),
+            None if self.enabled => Err(ConfigError::MissingSyncSharedSecret),
+            None => Ok(()),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct SharedSecret(String);
+
+impl SharedSecret {
+    fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for SharedSecret {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SharedSecret(<redacted>)")
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConfigPathMode {
     Required,
@@ -367,6 +406,13 @@ pub(crate) enum ConfigError {
     },
     EmptyLockCommand,
     BlankLockProgram,
+    MissingSyncSharedSecret,
+    BlankSyncSharedSecret,
+    WhitespacePaddedSyncSharedSecret,
+    ShortSyncSharedSecret {
+        min_length: usize,
+        actual_length: usize,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -425,6 +471,24 @@ impl fmt::Display for ConfigError {
             }
             Self::EmptyLockCommand => formatter.write_str("lock command must not be empty"),
             Self::BlankLockProgram => formatter.write_str("lock command program must not be blank"),
+            Self::MissingSyncSharedSecret => {
+                formatter.write_str("sync shared_secret is required when sync is enabled")
+            }
+            Self::BlankSyncSharedSecret => {
+                formatter.write_str("sync shared_secret must not be empty")
+            }
+            Self::WhitespacePaddedSyncSharedSecret => {
+                formatter.write_str("sync shared_secret must not contain surrounding whitespace")
+            }
+            Self::ShortSyncSharedSecret {
+                min_length,
+                actual_length,
+            } => {
+                write!(
+                    formatter,
+                    "sync shared_secret must be at least {min_length} characters long, got {actual_length}"
+                )
+            }
         }
     }
 }
@@ -437,6 +501,7 @@ struct PartialConfig {
     breaks: Option<PartialBreaks>,
     disable_presets: Option<Vec<ConfigDuration>>,
     lock: Option<PartialLockConfig>,
+    sync: Option<PartialSyncConfig>,
 }
 
 impl PartialConfig {
@@ -454,6 +519,10 @@ impl PartialConfig {
 
         if let Some(lock) = self.lock {
             lock.apply_to(&mut config.lock);
+        }
+
+        if let Some(sync) = self.sync {
+            sync.apply_to(&mut config.sync);
         }
     }
 }
@@ -515,6 +584,25 @@ impl PartialLockConfig {
     }
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PartialSyncConfig {
+    enabled: Option<bool>,
+    shared_secret: Option<String>,
+}
+
+impl PartialSyncConfig {
+    fn apply_to(self, sync: &mut SyncConfig) {
+        if let Some(enabled) = self.enabled {
+            sync.enabled = enabled;
+        }
+
+        if let Some(shared_secret) = self.shared_secret {
+            sync.shared_secret = Some(SharedSecret::new(shared_secret));
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ConfigDuration(Duration);
 
@@ -560,6 +648,28 @@ fn validate_disable_presets(disable_presets: &[Duration]) -> Result<(), ConfigEr
         if disable_presets[..index].contains(preset) {
             return Err(ConfigError::DuplicateDisablePreset { duration: *preset });
         }
+    }
+
+    Ok(())
+}
+
+fn validate_sync_shared_secret(shared_secret: &SharedSecret) -> Result<(), ConfigError> {
+    let value = shared_secret.as_str();
+
+    if value.trim().is_empty() {
+        return Err(ConfigError::BlankSyncSharedSecret);
+    }
+
+    if value.trim() != value {
+        return Err(ConfigError::WhitespacePaddedSyncSharedSecret);
+    }
+
+    let actual_length = value.chars().count();
+    if actual_length < MIN_SYNC_SHARED_SECRET_LENGTH {
+        return Err(ConfigError::ShortSyncSharedSecret {
+            min_length: MIN_SYNC_SHARED_SECRET_LENGTH,
+            actual_length,
+        });
     }
 
     Ok(())

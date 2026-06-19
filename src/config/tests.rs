@@ -2,7 +2,7 @@ use super::{
     BreakTypeConfig, Config, ConfigError, ConfigLoadError, DEFAULT_BREAK_AFTER_ACTIVE,
     DEFAULT_DISABLE_PRESETS, DEFAULT_LOCK_COMMAND, DEFAULT_LONG_BREAK_DURATION,
     DEFAULT_LONG_BREAK_INTERVAL, DEFAULT_SHORT_BREAK_DURATION, DEFAULT_SHORT_BREAK_INTERVAL,
-    LockConfig,
+    LockConfig, MIN_SYNC_SHARED_SECRET_LENGTH, SharedSecret, SyncConfig,
 };
 use std::error::Error;
 use std::fs;
@@ -10,6 +10,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
+const VALID_SHARED_SECRET: &str = "0123456789abcdef0123456789abcdef";
 
 #[test]
 fn default_config_is_valid() {
@@ -56,6 +58,14 @@ fn default_config_uses_expected_lock_command() {
             .map(String::from)
             .collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn default_config_uses_expected_sync_settings() {
+    let config = Config::default();
+
+    assert!(!config.sync.enabled);
+    assert!(config.sync.shared_secret.is_none());
 }
 
 #[test]
@@ -279,6 +289,48 @@ fn rejects_blank_lock_program() {
 }
 
 #[test]
+fn rejects_enabled_sync_without_shared_secret() {
+    let mut config = Config::default();
+    config.sync.enabled = true;
+
+    assert_eq!(config.validate(), Err(ConfigError::MissingSyncSharedSecret));
+}
+
+#[test]
+fn rejects_blank_sync_shared_secret() {
+    let mut config = Config::default();
+    config.sync.shared_secret = Some(SharedSecret::new(String::from("   ")));
+
+    assert_eq!(config.validate(), Err(ConfigError::BlankSyncSharedSecret));
+}
+
+#[test]
+fn rejects_whitespace_padded_sync_shared_secret() {
+    let mut config = Config::default();
+    config.sync.shared_secret = Some(SharedSecret::new(format!(" {VALID_SHARED_SECRET}")));
+
+    assert_eq!(
+        config.validate(),
+        Err(ConfigError::WhitespacePaddedSyncSharedSecret)
+    );
+}
+
+#[test]
+fn rejects_short_sync_shared_secret() {
+    let mut config = Config::default();
+    let short_secret = "a".repeat(MIN_SYNC_SHARED_SECRET_LENGTH - 1);
+    config.sync.shared_secret = Some(SharedSecret::new(short_secret.clone()));
+
+    assert_eq!(
+        config.validate(),
+        Err(ConfigError::ShortSyncSharedSecret {
+            min_length: MIN_SYNC_SHARED_SECRET_LENGTH,
+            actual_length: short_secret.chars().count()
+        })
+    );
+}
+
+#[test]
 fn load_uses_defaults_when_implicit_config_is_missing() -> Result<(), Box<dyn Error>> {
     let test_dir = TestDir::new("missing-implicit")?;
     let xdg_home = test_dir.path().join("xdg");
@@ -334,6 +386,7 @@ breaks:
     assert_eq!(config.breaks.types, Config::default().breaks.types);
     assert_eq!(config.disable_presets, DEFAULT_DISABLE_PRESETS);
     assert_eq!(config.lock, LockConfig::default());
+    assert_eq!(config.sync, SyncConfig::default());
     Ok(())
 }
 
@@ -503,6 +556,41 @@ lock:
 }
 
 #[test]
+fn yaml_accepts_sync_config() -> Result<(), Box<dyn Error>> {
+    let config = Config::from_yaml_str(
+        r"
+sync:
+  enabled: true
+  shared_secret: '0123456789abcdef0123456789abcdef'
+",
+    )?;
+
+    assert!(config.sync.enabled);
+    assert_eq!(
+        config.sync.shared_secret.as_ref().map(SharedSecret::as_str),
+        Some(VALID_SHARED_SECRET)
+    );
+    Ok(())
+}
+
+#[test]
+fn sync_shared_secret_debug_output_is_redacted() -> Result<(), Box<dyn Error>> {
+    let config = Config::from_yaml_str(
+        r"
+sync:
+  enabled: true
+  shared_secret: '0123456789abcdef0123456789abcdef'
+",
+    )?;
+
+    let debug_output = format!("{config:?}");
+
+    assert!(debug_output.contains("<redacted>"));
+    assert!(!debug_output.contains(VALID_SHARED_SECRET));
+    Ok(())
+}
+
+#[test]
 fn yaml_rejects_empty_lock_command() {
     let error = expected_config_error(Config::from_yaml_str(
         r"
@@ -533,6 +621,81 @@ lock:
         error,
         ConfigLoadError::Invalid {
             error: ConfigError::BlankLockProgram,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn yaml_rejects_enabled_sync_without_shared_secret() {
+    let error = expected_config_error(Config::from_yaml_str(
+        r"
+sync:
+  enabled: true
+",
+    ));
+
+    assert!(matches!(
+        error,
+        ConfigLoadError::Invalid {
+            error: ConfigError::MissingSyncSharedSecret,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn yaml_rejects_blank_sync_shared_secret() {
+    let error = expected_config_error(Config::from_yaml_str(
+        r#"
+sync:
+  shared_secret: "   "
+"#,
+    ));
+
+    assert!(matches!(
+        error,
+        ConfigLoadError::Invalid {
+            error: ConfigError::BlankSyncSharedSecret,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn yaml_rejects_whitespace_padded_sync_shared_secret() {
+    let error = expected_config_error(Config::from_yaml_str(
+        r#"
+sync:
+  shared_secret: " 0123456789abcdef0123456789abcdef"
+"#,
+    ));
+
+    assert!(matches!(
+        error,
+        ConfigLoadError::Invalid {
+            error: ConfigError::WhitespacePaddedSyncSharedSecret,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn yaml_rejects_short_sync_shared_secret() {
+    let error = expected_config_error(Config::from_yaml_str(
+        r"
+sync:
+  shared_secret: short-secret
+",
+    ));
+
+    assert!(matches!(
+        error,
+        ConfigLoadError::Invalid {
+            error: ConfigError::ShortSyncSharedSecret {
+                min_length: MIN_SYNC_SHARED_SECRET_LENGTH,
+                actual_length: 12
+            },
             ..
         }
     ));
@@ -714,6 +877,18 @@ fn yaml_rejects_unknown_fields() {
     let error = expected_config_error(Config::from_yaml_str(
         r"
 unsupported: true
+",
+    ));
+
+    assert!(matches!(error, ConfigLoadError::Parse { .. }));
+}
+
+#[test]
+fn yaml_rejects_unknown_sync_fields() {
+    let error = expected_config_error(Config::from_yaml_str(
+        r"
+sync:
+  peer_id: workstation
 ",
     ));
 

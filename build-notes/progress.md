@@ -74,6 +74,9 @@
   slot breaks, and manual starts work while local scheduling is disabled.
   Follow-up cleanup simplified scheduler pending state and runtime
   current-break lock state.
+- Completed `sync-config-auth`: config now has disabled-by-default sync
+  settings with a validated 32-character minimum shared secret for enabled
+  sync, redacted shared-secret debug output, and no configured peer ID.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -93,7 +96,7 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next planned increment is `sync-config-auth`.
+- The next planned increment is `sync-protocol`.
 - The later build order now separates manual break control, sync
   configuration/authentication, sync protocol, LAN discovery, authenticated
   peer transport, and synced break/disable behavior.
