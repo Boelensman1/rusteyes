@@ -15,18 +15,9 @@ use x11rb::protocol::xproto::{
 use x11rb::rust_connection::RustConnection;
 use x11rb::{COPY_FROM_PARENT, NONE};
 
+use layout::{TextLine, lock_control_contains_root_position, overlay_layout, x11_text_bytes};
+
 const DEFAULT_BREAK_MESSAGE: &str = "Take a break";
-const TEXT_WIDTH_PIXELS: i32 = 6;
-const TEXT_MIN_X: i32 = 20;
-const TEXT_MIN_Y: i32 = 30;
-const LINE_HEIGHT_PIXELS: i32 = 28;
-const CONTROL_MARGIN_TOP_PIXELS: i32 = 22;
-const CONTROL_PADDING_X_PIXELS: i32 = 14;
-const CONTROL_HEIGHT_PIXELS: u16 = 32;
-const CONTROL_TEXT_BASELINE_OFFSET_PIXELS: i32 = 21;
-const LOCK_CONTROL_LABEL: &str = "Lock after break";
-const LOCK_CONTROL_REQUESTED_LABEL: &str = "Locking after break";
-const MAX_X11_TEXT_BYTES: usize = 255;
 
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -522,13 +513,7 @@ impl fmt::Display for X11OverlayError {
 impl std::error::Error for X11OverlayError {}
 
 fn overlay_window_event_mask() -> EventMask {
-    EventMask::EXPOSURE
-        | EventMask::STRUCTURE_NOTIFY
-        | EventMask::KEY_PRESS
-        | EventMask::KEY_RELEASE
-        | EventMask::BUTTON_PRESS
-        | EventMask::BUTTON_RELEASE
-        | EventMask::POINTER_MOTION
+    EventMask::EXPOSURE | EventMask::BUTTON_PRESS
 }
 
 fn pointer_grab_event_mask() -> EventMask {
@@ -643,198 +628,218 @@ fn selected_break_message(scheduled_break: &ScheduledBreak) -> &str {
         .map_or(DEFAULT_BREAK_MESSAGE, String::as_str)
 }
 
-fn x11_text_bytes(message: &str) -> Vec<u8> {
-    let bytes = message
-        .bytes()
-        .map(|byte| {
-            if byte.is_ascii_graphic() || byte == b' ' {
-                byte
-            } else {
-                b'?'
-            }
+mod layout {
+    use super::{DEFAULT_BREAK_MESSAGE, MonitorGeometry, OverlayWindow};
+    use std::time::Duration;
+
+    const TEXT_WIDTH_PIXELS: i32 = 6;
+    const TEXT_MIN_X: i32 = 20;
+    const TEXT_MIN_Y: i32 = 30;
+    const LINE_HEIGHT_PIXELS: i32 = 28;
+    const CONTROL_MARGIN_TOP_PIXELS: i32 = 22;
+    const CONTROL_PADDING_X_PIXELS: i32 = 14;
+    const CONTROL_HEIGHT_PIXELS: u16 = 32;
+    const CONTROL_TEXT_BASELINE_OFFSET_PIXELS: i32 = 21;
+    const LOCK_CONTROL_LABEL: &str = "Lock after break";
+    const LOCK_CONTROL_REQUESTED_LABEL: &str = "Locking after break";
+    pub(super) const MAX_X11_TEXT_BYTES: usize = 255;
+
+    pub(super) fn x11_text_bytes(message: &str) -> Vec<u8> {
+        let bytes = message
+            .bytes()
+            .map(|byte| {
+                if byte.is_ascii_graphic() || byte == b' ' {
+                    byte
+                } else {
+                    b'?'
+                }
+            })
+            .take(MAX_X11_TEXT_BYTES)
+            .collect::<Vec<_>>();
+
+        if bytes.is_empty() {
+            DEFAULT_BREAK_MESSAGE.as_bytes().to_vec()
+        } else {
+            bytes
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(super) struct OverlayLayout {
+        pub(super) message: TextLine,
+        pub(super) remaining: TextLine,
+        pub(super) lock_control: LockControlLayout,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(super) struct TextLine {
+        pub(super) x: i16,
+        pub(super) y: i16,
+        pub(super) text: Vec<u8>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(super) struct LockControlLayout {
+        pub(super) bounds: ControlBounds,
+        pub(super) label: TextLine,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) struct ControlBounds {
+        pub(super) x: i16,
+        pub(super) y: i16,
+        pub(super) width: u16,
+        pub(super) height: u16,
+    }
+
+    impl ControlBounds {
+        pub(super) fn contains(self, x: i32, y: i32) -> bool {
+            let left = i32::from(self.x);
+            let top = i32::from(self.y);
+            let right = left.saturating_add(i32::from(self.width));
+            let bottom = top.saturating_add(i32::from(self.height));
+
+            x >= left && x < right && y >= top && y < bottom
+        }
+    }
+
+    pub(super) fn lock_control_contains_root_position(
+        windows: &[OverlayWindow],
+        root_x: i16,
+        root_y: i16,
+        lock_after_break: bool,
+    ) -> bool {
+        windows.iter().any(|window| {
+            let local_x = i32::from(root_x).saturating_sub(i32::from(window.monitor.x));
+            let local_y = i32::from(root_y).saturating_sub(i32::from(window.monitor.y));
+
+            lock_control_layout(&window.monitor, lock_after_break)
+                .bounds
+                .contains(local_x, local_y)
         })
-        .take(MAX_X11_TEXT_BYTES)
-        .collect::<Vec<_>>();
-
-    if bytes.is_empty() {
-        DEFAULT_BREAK_MESSAGE.as_bytes().to_vec()
-    } else {
-        bytes
     }
-}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct OverlayLayout {
-    message: TextLine,
-    remaining: TextLine,
-    lock_control: LockControlLayout,
-}
+    pub(super) fn overlay_layout(
+        monitor: &MonitorGeometry,
+        message: &[u8],
+        remaining: Duration,
+        lock_after_break: bool,
+    ) -> OverlayLayout {
+        let center_y = i32::from(monitor.height) / 2;
+        let message_y = (center_y - LINE_HEIGHT_PIXELS).max(TEXT_MIN_Y);
+        let remaining_y = center_y.max(TEXT_MIN_Y);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TextLine {
-    x: i16,
-    y: i16,
-    text: Vec<u8>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct LockControlLayout {
-    bounds: ControlBounds,
-    label: TextLine,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ControlBounds {
-    x: i16,
-    y: i16,
-    width: u16,
-    height: u16,
-}
-
-impl ControlBounds {
-    fn contains(self, x: i32, y: i32) -> bool {
-        let left = i32::from(self.x);
-        let top = i32::from(self.y);
-        let right = left.saturating_add(i32::from(self.width));
-        let bottom = top.saturating_add(i32::from(self.height));
-
-        x >= left && x < right && y >= top && y < bottom
+        OverlayLayout {
+            message: centered_text_line(monitor, message.to_vec(), message_y),
+            remaining: centered_text_line(
+                monitor,
+                x11_text_bytes(&remaining_time_text(remaining)),
+                remaining_y,
+            ),
+            lock_control: lock_control_layout(monitor, lock_after_break),
+        }
     }
-}
 
-fn lock_control_contains_root_position(
-    windows: &[OverlayWindow],
-    root_x: i16,
-    root_y: i16,
-    lock_after_break: bool,
-) -> bool {
-    windows.iter().any(|window| {
-        let local_x = i32::from(root_x).saturating_sub(i32::from(window.monitor.x));
-        let local_y = i32::from(root_y).saturating_sub(i32::from(window.monitor.y));
-
-        lock_control_layout(&window.monitor, lock_after_break)
-            .bounds
-            .contains(local_x, local_y)
-    })
-}
-
-fn overlay_layout(
-    monitor: &MonitorGeometry,
-    message: &[u8],
-    remaining: Duration,
-    lock_after_break: bool,
-) -> OverlayLayout {
-    let center_y = i32::from(monitor.height) / 2;
-    let message_y = (center_y - LINE_HEIGHT_PIXELS).max(TEXT_MIN_Y);
-    let remaining_y = center_y.max(TEXT_MIN_Y);
-
-    OverlayLayout {
-        message: centered_text_line(monitor, message.to_vec(), message_y),
-        remaining: centered_text_line(
-            monitor,
-            x11_text_bytes(&remaining_time_text(remaining)),
-            remaining_y,
-        ),
-        lock_control: lock_control_layout(monitor, lock_after_break),
+    fn centered_text_line(monitor: &MonitorGeometry, text: Vec<u8>, y: i32) -> TextLine {
+        TextLine {
+            x: centered_text_x(monitor, text.len()),
+            y: saturating_i16(y),
+            text,
+        }
     }
-}
 
-fn centered_text_line(monitor: &MonitorGeometry, text: Vec<u8>, y: i32) -> TextLine {
-    TextLine {
-        x: centered_text_x(monitor, text.len()),
-        y: saturating_i16(y),
-        text,
+    fn centered_text_x(monitor: &MonitorGeometry, text_len: usize) -> i16 {
+        let text_width = text_width_pixels(text_len);
+        let x = ((i32::from(monitor.width) - text_width) / 2).max(TEXT_MIN_X);
+
+        saturating_i16(x)
     }
-}
 
-fn centered_text_x(monitor: &MonitorGeometry, text_len: usize) -> i16 {
-    let text_width = text_width_pixels(text_len);
-    let x = ((i32::from(monitor.width) - text_width) / 2).max(TEXT_MIN_X);
-
-    saturating_i16(x)
-}
-
-fn text_width_pixels(text_len: usize) -> i32 {
-    i32::try_from(text_len).map_or(i32::MAX, |text_len| {
-        text_len.saturating_mul(TEXT_WIDTH_PIXELS)
-    })
-}
-
-fn remaining_time_text(remaining: Duration) -> String {
-    let seconds = if remaining.is_zero() {
-        0
-    } else {
-        remaining
-            .as_secs()
-            .saturating_add(u64::from(remaining.subsec_nanos() > 0))
-    };
-    let hours = seconds / 3_600;
-    let minutes = (seconds % 3_600) / 60;
-    let seconds = seconds % 60;
-
-    if hours > 0 {
-        format!("{hours}:{minutes:02}:{seconds:02}")
-    } else {
-        format!("{minutes}:{seconds:02}")
+    fn text_width_pixels(text_len: usize) -> i32 {
+        i32::try_from(text_len).map_or(i32::MAX, |text_len| {
+            text_len.saturating_mul(TEXT_WIDTH_PIXELS)
+        })
     }
-}
 
-fn lock_control_label(lock_after_break: bool) -> &'static str {
-    if lock_after_break {
-        LOCK_CONTROL_REQUESTED_LABEL
-    } else {
-        LOCK_CONTROL_LABEL
+    pub(super) fn remaining_time_text(remaining: Duration) -> String {
+        let seconds = if remaining.is_zero() {
+            0
+        } else {
+            remaining
+                .as_secs()
+                .saturating_add(u64::from(remaining.subsec_nanos() > 0))
+        };
+        let hours = seconds / 3_600;
+        let minutes = (seconds % 3_600) / 60;
+        let seconds = seconds % 60;
+
+        if hours > 0 {
+            format!("{hours}:{minutes:02}:{seconds:02}")
+        } else {
+            format!("{minutes}:{seconds:02}")
+        }
     }
-}
 
-fn lock_control_layout(monitor: &MonitorGeometry, lock_after_break: bool) -> LockControlLayout {
-    let label = x11_text_bytes(lock_control_label(lock_after_break));
-    let width = lock_control_width(monitor, label.len());
-    let x = ((i32::from(monitor.width) - i32::from(width)) / 2).max(TEXT_MIN_X);
-    let y = (i32::from(monitor.height) / 2).saturating_add(CONTROL_MARGIN_TOP_PIXELS);
-    let bounds = ControlBounds {
-        x: saturating_i16(x),
-        y: saturating_i16(y),
-        width,
-        height: CONTROL_HEIGHT_PIXELS,
-    };
-    let label_x = i32::from(bounds.x).saturating_add(CONTROL_PADDING_X_PIXELS);
-    let label_y = i32::from(bounds.y).saturating_add(CONTROL_TEXT_BASELINE_OFFSET_PIXELS);
-
-    LockControlLayout {
-        bounds,
-        label: TextLine {
-            x: saturating_i16(label_x),
-            y: saturating_i16(label_y),
-            text: label,
-        },
+    pub(super) fn lock_control_label(lock_after_break: bool) -> &'static str {
+        if lock_after_break {
+            LOCK_CONTROL_REQUESTED_LABEL
+        } else {
+            LOCK_CONTROL_LABEL
+        }
     }
-}
 
-fn lock_control_width(monitor: &MonitorGeometry, label_len: usize) -> u16 {
-    let width = text_width_pixels(label_len)
-        .saturating_add(CONTROL_PADDING_X_PIXELS.saturating_mul(2))
-        .max(1);
-    let max_width = i32::from(monitor.width)
-        .saturating_sub(TEXT_MIN_X.saturating_mul(2))
-        .max(1);
+    pub(super) fn lock_control_layout(
+        monitor: &MonitorGeometry,
+        lock_after_break: bool,
+    ) -> LockControlLayout {
+        let label = x11_text_bytes(lock_control_label(lock_after_break));
+        let width = lock_control_width(monitor, label.len());
+        let x = ((i32::from(monitor.width) - i32::from(width)) / 2).max(TEXT_MIN_X);
+        let y = (i32::from(monitor.height) / 2).saturating_add(CONTROL_MARGIN_TOP_PIXELS);
+        let bounds = ControlBounds {
+            x: saturating_i16(x),
+            y: saturating_i16(y),
+            width,
+            height: CONTROL_HEIGHT_PIXELS,
+        };
+        let label_x = i32::from(bounds.x).saturating_add(CONTROL_PADDING_X_PIXELS);
+        let label_y = i32::from(bounds.y).saturating_add(CONTROL_TEXT_BASELINE_OFFSET_PIXELS);
 
-    saturating_u16(width.min(max_width))
-}
-
-fn saturating_i16(value: i32) -> i16 {
-    match i16::try_from(value) {
-        Ok(value) => value,
-        Err(_) if value.is_negative() => i16::MIN,
-        Err(_) => i16::MAX,
+        LockControlLayout {
+            bounds,
+            label: TextLine {
+                x: saturating_i16(label_x),
+                y: saturating_i16(label_y),
+                text: label,
+            },
+        }
     }
-}
 
-fn saturating_u16(value: i32) -> u16 {
-    match u16::try_from(value) {
-        Ok(value) => value,
-        Err(_) if value.is_negative() => 0,
-        Err(_) => u16::MAX,
+    fn lock_control_width(monitor: &MonitorGeometry, label_len: usize) -> u16 {
+        let width = text_width_pixels(label_len)
+            .saturating_add(CONTROL_PADDING_X_PIXELS.saturating_mul(2))
+            .max(1);
+        let max_width = i32::from(monitor.width)
+            .saturating_sub(TEXT_MIN_X.saturating_mul(2))
+            .max(1);
+
+        saturating_u16(width.min(max_width))
+    }
+
+    fn saturating_i16(value: i32) -> i16 {
+        match i16::try_from(value) {
+            Ok(value) => value,
+            Err(_) if value.is_negative() => i16::MIN,
+            Err(_) => i16::MAX,
+        }
+    }
+
+    fn saturating_u16(value: i32) -> u16 {
+        match u16::try_from(value) {
+            Ok(value) => value,
+            Err(_) if value.is_negative() => 0,
+            Err(_) => u16::MAX,
+        }
     }
 }
 

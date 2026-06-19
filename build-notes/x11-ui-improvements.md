@@ -13,10 +13,10 @@
   only while overlay samples are idle.
 - Clicking the lock control queues a runtime event that applies only to the
   currently active break.
-- Runtime now tracks lock-after-current-break as break-local state, ignores
-  stale requests outside a break, clears the request after finish or disable,
-  and requests the local lock when either the break is configured for autolock
-  or the current-break request was made.
+- Runtime now tracks whether the current break should lock afterward as
+  break-local state initialized from configured autolock, ignores stale
+  requests outside a break, clears the request after finish or disable, and
+  requests the local lock when that state is set.
 - Breaks already configured with autolock show the lock control in the
   requested state from the start.
 
@@ -31,6 +31,9 @@
 - Follow-up fix: lock-control clicks use root coordinates across all overlay
   windows instead of the grabbed event window's local coordinates, and accepted
   clicks redraw immediately so the requested state is visible.
+- Follow-up cleanup: overlay windows now select only the consumed exposure and
+  button-press events, and pure overlay layout/text helpers are grouped under a
+  private layout module.
 
 ## Commands
 

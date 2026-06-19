@@ -1,8 +1,10 @@
+use super::layout::{
+    MAX_X11_TEXT_BYTES, lock_control_contains_root_position, lock_control_label,
+    lock_control_layout, overlay_layout, remaining_time_text, x11_text_bytes,
+};
 use super::{
-    MAX_X11_TEXT_BYTES, MonitorGeometry, OverlayWindow, check_grab_status,
-    lock_control_contains_root_position, lock_control_label, lock_control_layout,
-    normalize_monitor_geometries, output_has_monitor, overlay_layout, overlay_window_event_mask,
-    pointer_grab_event_mask, remaining_time_text, selected_break_message, x11_text_bytes,
+    MonitorGeometry, OverlayWindow, check_grab_status, normalize_monitor_geometries,
+    output_has_monitor, overlay_window_event_mask, pointer_grab_event_mask, selected_break_message,
 };
 use crate::scheduler::ScheduledBreak;
 use std::time::Duration;
@@ -159,15 +161,15 @@ fn lock_control_label_reflects_requested_state() {
 }
 
 #[test]
-fn overlay_windows_select_expose_and_grabbed_input_events() {
+fn overlay_windows_select_only_consumed_events() {
     let mask = u32::from(overlay_window_event_mask());
 
     assert_ne!(mask & u32::from(EventMask::EXPOSURE), 0);
-    assert_ne!(mask & u32::from(EventMask::KEY_PRESS), 0);
-    assert_ne!(mask & u32::from(EventMask::KEY_RELEASE), 0);
     assert_ne!(mask & u32::from(EventMask::BUTTON_PRESS), 0);
-    assert_ne!(mask & u32::from(EventMask::BUTTON_RELEASE), 0);
-    assert_ne!(mask & u32::from(EventMask::POINTER_MOTION), 0);
+    assert_eq!(mask & u32::from(EventMask::KEY_PRESS), 0);
+    assert_eq!(mask & u32::from(EventMask::KEY_RELEASE), 0);
+    assert_eq!(mask & u32::from(EventMask::BUTTON_RELEASE), 0);
+    assert_eq!(mask & u32::from(EventMask::POINTER_MOTION), 0);
 }
 
 #[test]

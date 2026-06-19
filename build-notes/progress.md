@@ -53,12 +53,12 @@
   prevent grabbed input from reaching other X11 clients, and release grabs when
   overlays are cleared.
 - Completed `x11-lock-after-break`: config now has a `lock.command` argv list
-  defaulting to `loginctl lock-session`, and Linux/X11 production runs spawn the
-  configured command after an autolock break finishes.
+  defaulting to `loginctl lock-session`, and Linux/X11 production runs start
+  and supervise the configured command after a break requests local locking.
 - Completed `x11-ui-improvements`: X11 break overlays now render remaining
-  break time and a lock-after-break control, and runtime honors that control as
-  a current-break-only request to run the configured local lock command after
-  the break finishes.
+  break time and a lock-after-break control, and runtime tracks current-break
+  lock state from configured autolock or that control before requesting the
+  local lock command after the break finishes.
 - Completed `logging`: the binary now initializes `tracing` output with a
   warning-level default and `RUST_LOG` override support, X11 backend errors use
   tracing events, high-frequency X11 activity and overlay samples are available
