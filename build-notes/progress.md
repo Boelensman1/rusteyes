@@ -83,6 +83,9 @@
   now builds a stub `resteyes-macos-helper` executable that prints
   `hello world`, with an explicit Make artifact target and `macos-helper-build`
   alias that build on Darwin and skip successfully elsewhere.
+- Completed `macos-helper-ipc`: macOS production runs now start the Swift
+  helper, complete a versioned stdio JSON Lines handshake, define command and
+  event framing for later macOS backend work, and shut the helper down cleanly.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -94,6 +97,8 @@
 - `make check` passes formatting, Clippy, and tests.
 - `make build` passes.
 - `make macos-helper-build` passes on macOS with SwiftPM available.
+- `make run` on macOS starts the helper, completes the IPC handshake, and exits
+  cleanly because macOS activity events are not implemented yet.
 - `nix build` passes.
 - `.codex/hooks/rustfmt.sh` runs successfully.
 - On unsupported targets, `make run` prints
@@ -105,7 +110,7 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next planned increment is `macos-helper-ipc`.
+- The next planned increment is `macos-activity`.
 - The later build order now brings macOS backend parity before sync protocol,
   then separates sync protocol, LAN discovery, authenticated peer transport,
   synced break/disable behavior, tray UI, and synced lock-after-break behavior.

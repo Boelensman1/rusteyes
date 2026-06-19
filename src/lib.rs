@@ -1,12 +1,11 @@
 use std::fmt;
 
-#[cfg(any(test, target_os = "linux"))]
 mod backend;
-#[cfg(any(test, target_os = "linux"))]
 pub(crate) mod config;
 
+#[cfg(target_os = "macos")]
+mod macos_helper;
 mod runtime;
-#[cfg(any(test, target_os = "linux"))]
 pub(crate) mod scheduler;
 #[cfg(target_os = "linux")]
 mod x11_activity;
@@ -20,14 +19,12 @@ pub struct Error {
 }
 
 impl Error {
-    #[cfg(any(test, target_os = "linux"))]
     const fn config(error: config::ConfigLoadError) -> Self {
         Self {
             kind: ErrorKind::Config(error),
         }
     }
 
-    #[cfg(any(test, target_os = "linux"))]
     const fn schedule(error: config::ConfigError) -> Self {
         Self {
             kind: ErrorKind::Schedule(error),
@@ -41,7 +38,14 @@ impl Error {
         }
     }
 
-    #[cfg(any(test, not(target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    const fn macos_helper(error: macos_helper::MacOSHelperError) -> Self {
+        Self {
+            kind: ErrorKind::MacOSHelper(error),
+        }
+    }
+
+    #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
     const fn unsupported_platform() -> Self {
         Self {
             kind: ErrorKind::UnsupportedPlatform {
@@ -53,26 +57,28 @@ impl Error {
 
 #[derive(Debug)]
 enum ErrorKind {
-    #[cfg(any(test, target_os = "linux"))]
     Config(config::ConfigLoadError),
-    #[cfg(any(test, target_os = "linux"))]
     Schedule(config::ConfigError),
     #[cfg(target_os = "linux")]
     Backend(x11_activity::X11ActivityError),
-    #[cfg(any(test, not(target_os = "linux")))]
-    UnsupportedPlatform { platform: &'static str },
+    #[cfg(target_os = "macos")]
+    MacOSHelper(macos_helper::MacOSHelperError),
+    #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
+    UnsupportedPlatform {
+        platform: &'static str,
+    },
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
-            #[cfg(any(test, target_os = "linux"))]
             ErrorKind::Config(error) => write!(formatter, "{error}"),
-            #[cfg(any(test, target_os = "linux"))]
             ErrorKind::Schedule(error) => write!(formatter, "invalid break schedule: {error}"),
             #[cfg(target_os = "linux")]
             ErrorKind::Backend(error) => write!(formatter, "{error}"),
-            #[cfg(any(test, not(target_os = "linux")))]
+            #[cfg(target_os = "macos")]
+            ErrorKind::MacOSHelper(error) => write!(formatter, "{error}"),
+            #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
             ErrorKind::UnsupportedPlatform { platform } => {
                 write!(formatter, "no backend is available for {platform} yet")
             }
@@ -83,26 +89,24 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.kind {
-            #[cfg(any(test, target_os = "linux"))]
             ErrorKind::Config(error) => Some(error),
-            #[cfg(any(test, target_os = "linux"))]
             ErrorKind::Schedule(error) => Some(error),
             #[cfg(target_os = "linux")]
             ErrorKind::Backend(error) => Some(error),
-            #[cfg(any(test, not(target_os = "linux")))]
+            #[cfg(target_os = "macos")]
+            ErrorKind::MacOSHelper(error) => Some(error),
+            #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
             ErrorKind::UnsupportedPlatform { .. } => None,
         }
     }
 }
 
-#[cfg(any(test, target_os = "linux"))]
 impl From<config::ConfigLoadError> for Error {
     fn from(error: config::ConfigLoadError) -> Self {
         Self::config(error)
     }
 }
 
-#[cfg(any(test, target_os = "linux"))]
 impl From<config::ConfigError> for Error {
     fn from(error: config::ConfigError) -> Self {
         Self::schedule(error)
@@ -113,6 +117,13 @@ impl From<config::ConfigError> for Error {
 impl From<x11_activity::X11ActivityError> for Error {
     fn from(error: x11_activity::X11ActivityError) -> Self {
         Self::backend(error)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl From<macos_helper::MacOSHelperError> for Error {
+    fn from(error: macos_helper::MacOSHelperError) -> Self {
+        Self::macos_helper(error)
     }
 }
 

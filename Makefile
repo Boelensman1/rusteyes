@@ -12,6 +12,9 @@ SWIFT_BUILD_ENV := env -u DEVELOPER_DIR -u SDKROOT -u MACOSX_DEPLOYMENT_TARGET
 MACOS_HELPER_DIR := helpers/macos-helper
 MACOS_HELPER_BIN := $(MACOS_HELPER_DIR)/.build/debug/resteyes-macos-helper
 MACOS_HELPER_SOURCES := $(MACOS_HELPER_DIR)/Package.swift $(shell find $(MACOS_HELPER_DIR)/Sources -type f -name '*.swift' 2>/dev/null)
+ifeq ($(UNAME_S),Darwin)
+RUN_DEPS := $(MACOS_HELPER_BIN)
+endif
 
 .PHONY: help run fmt fmt-check lint test check build macos-helper-build clean
 
@@ -28,7 +31,7 @@ help:
 		'  make macos-helper-build  Build the macOS helper on Darwin' \
 		'  make clean      Remove Cargo build output'
 
-run:
+run: $(RUN_DEPS)
 	$(CARGO_RUN) run
 
 fmt:

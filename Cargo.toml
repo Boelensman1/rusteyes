@@ -15,6 +15,9 @@ tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.13.2", default-features = false, features = ["randr", "screensaver"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+serde_json = "1.0"
+
 [lints.rust]
 unsafe_code = "forbid"
 

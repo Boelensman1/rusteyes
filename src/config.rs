@@ -7,11 +7,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-#[cfg(target_os = "linux")]
 const ENV_CONFIG: &str = "RESTEYES_CONFIG";
-#[cfg(target_os = "linux")]
 const XDG_CONFIG_HOME: &str = "XDG_CONFIG_HOME";
-#[cfg(target_os = "linux")]
 const HOME: &str = "HOME";
 const CONFIG_DIR: &str = "resteyes";
 const CONFIG_FILE: &str = "config.yaml";
@@ -49,7 +46,6 @@ impl Config {
     ///
     /// Returns an error when an explicit config cannot be read, an implicit
     /// config exists but cannot be read, YAML parsing fails, or validation fails.
-    #[cfg(target_os = "linux")]
     pub(crate) fn load() -> Result<Self, ConfigLoadError> {
         Self::load_from_env(
             std::env::var_os(ENV_CONFIG),
