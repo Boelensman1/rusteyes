@@ -4,9 +4,9 @@
 
 - Added a standalone SwiftPM executable package for the macOS helper at
   `helpers/macos-helper`.
-- The helper currently compiles as a stub binary named `resteyes-macos-helper`,
-  prints `hello world`, and imports the macOS frameworks planned for later
-  backend work.
+- The scaffold initially compiled as a stub binary named
+  `resteyes-macos-helper`; later IPC work replaced the placeholder output with
+  the helper protocol loop.
 - Added `helpers/macos-helper/.build/debug/resteyes-macos-helper` as the real
   Make target, with `make macos-helper-build` as its convenience alias. It
   builds the helper on Darwin and skips successfully on other operating

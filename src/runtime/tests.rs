@@ -1,7 +1,7 @@
 use super::run_with_backend;
 use crate::backend::{Backend, BackendCommand, DisableRequest, RuntimeEvent};
 use crate::config::{BreakTypeConfig, Breaks, Config, ConfigError, LockConfig, SyncConfig};
-use crate::scheduler::{BreakOrigin, ScheduledBreak};
+use crate::scheduler::{BreakOrigin, BreakSchedule, ScheduledBreak};
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
@@ -9,7 +9,7 @@ use std::time::Duration;
 fn shutdown_exits_cleanly_after_scheduler_setup() {
     let mut backend = ScriptedBackend::new([RuntimeEvent::Shutdown]);
 
-    assert_eq!(run_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
     assert!(backend.commands.is_empty());
 }
 
@@ -20,7 +20,7 @@ fn active_time_event_starts_expected_configured_break() {
         RuntimeEvent::Shutdown,
     ]);
 
-    assert_eq!(run_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
     assert_eq!(
         backend.commands,
         vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
@@ -36,7 +36,7 @@ fn break_finished_allows_next_scheduled_break_to_advance() {
         RuntimeEvent::Shutdown,
     ]);
 
-    assert_eq!(run_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
     assert_eq!(
         backend.commands,
         vec![
@@ -57,7 +57,7 @@ fn autolock_break_completion_requests_local_lock() {
         RuntimeEvent::Shutdown,
     ]);
 
-    assert_eq!(run_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
     assert_eq!(
         backend.commands,
         vec![
@@ -78,7 +78,7 @@ fn lock_after_current_break_request_locks_after_non_autolock_break() {
         RuntimeEvent::Shutdown,
     ]);
 
-    assert_eq!(run_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
     assert_eq!(
         backend.commands,
         vec![
@@ -97,7 +97,7 @@ fn stale_lock_after_current_break_request_before_break_is_ignored() {
         RuntimeEvent::Shutdown,
     ]);
 
-    assert_eq!(run_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
     assert_eq!(
         backend.commands,
         vec![
@@ -120,7 +120,7 @@ fn lock_after_current_break_request_clears_after_break_finishes() {
         RuntimeEvent::Shutdown,
     ]);
 
-    assert_eq!(run_with_backend(config, &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(config, &mut backend), Ok(()));
     assert_eq!(
         backend.commands,
         vec![
@@ -140,7 +140,7 @@ fn disable_clears_pending_backend_break_without_locking() {
         RuntimeEvent::Shutdown,
     ]);
 
-    assert_eq!(run_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
     assert_eq!(
         backend.commands,
         vec![
@@ -164,7 +164,7 @@ fn disable_clears_lock_after_current_break_request() {
         RuntimeEvent::Shutdown,
     ]);
 
-    assert_eq!(run_with_backend(config, &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(config, &mut backend), Ok(()));
     assert_eq!(
         backend.commands,
         vec![
@@ -188,7 +188,7 @@ fn finite_disable_suppresses_active_time_and_reenables_after_elapsed() {
         RuntimeEvent::Shutdown,
     ]);
 
-    assert_eq!(run_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
     assert_eq!(
         backend.commands,
         vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
@@ -207,7 +207,7 @@ fn disable_until_restart_stays_disabled_until_explicit_enable() {
         RuntimeEvent::Shutdown,
     ]);
 
-    assert_eq!(run_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
     assert_eq!(
         backend.commands,
         vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
@@ -225,7 +225,7 @@ fn manual_break_event_starts_configured_break_without_advancing_slots() {
         RuntimeEvent::Shutdown,
     ]);
 
-    assert_eq!(run_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
     assert_eq!(
         backend.commands,
         vec![
@@ -246,7 +246,7 @@ fn manual_break_event_works_while_disabled_and_preserves_disable() {
         RuntimeEvent::Shutdown,
     ]);
 
-    assert_eq!(run_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
     assert_eq!(
         backend.commands,
         vec![
@@ -267,7 +267,7 @@ fn timed_disable_can_expire_during_manual_break() {
         RuntimeEvent::Shutdown,
     ]);
 
-    assert_eq!(run_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
     assert_eq!(
         backend.commands,
         vec![
@@ -286,7 +286,7 @@ fn unknown_manual_break_event_is_ignored() {
         RuntimeEvent::Shutdown,
     ]);
 
-    assert_eq!(run_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
     assert_eq!(
         backend.commands,
         vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
@@ -300,9 +300,18 @@ fn scheduler_setup_error_is_returned() {
     let mut backend = ScriptedBackend::new([RuntimeEvent::Shutdown]);
 
     assert_eq!(
-        run_with_backend(config, &mut backend),
+        run_config_with_backend(config, &mut backend),
         Err(ConfigError::EmptyBreakTypes)
     );
+}
+
+fn run_config_with_backend<B>(config: Config, backend: &mut B) -> Result<(), ConfigError>
+where
+    B: Backend,
+{
+    let schedule = BreakSchedule::try_from(config.breaks)?;
+    run_with_backend(schedule, backend);
+    Ok(())
 }
 
 struct ScriptedBackend {

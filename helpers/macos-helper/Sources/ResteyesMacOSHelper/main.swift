@@ -1,5 +1,3 @@
-import AppKit
-import CoreGraphics
 import Darwin
 import Foundation
 
@@ -8,25 +6,10 @@ private let directInvocationExitCode: Int32 = 2
 private let directInvocationMessage =
     "resteyes-macos-helper is an internal Resteyes helper. Start Resteyes with the main resteyes binary; do not run this helper directly."
 
-private struct HelperContext {
-    let appType: NSApplication.Type
-    let mainDisplayID: CGDirectDisplayID
-    let processID: Int32
-}
-
-private let context = HelperContext(
-    appType: NSApplication.self,
-    mainDisplayID: CGMainDisplayID(),
-    processID: ProcessInfo.processInfo.processIdentifier
-)
-
-_ = context
-
 private enum ProtocolError: Error, CustomStringConvertible {
     case invalidJSON
     case invalidMessage
     case incompatibleVersion(Int)
-    case unexpectedFirstMessage(String)
     case outputEncodingFailed
 
     var description: String {
@@ -37,8 +20,6 @@ private enum ProtocolError: Error, CustomStringConvertible {
             return "invalid protocol message"
         case .incompatibleVersion(let version):
             return "incompatible protocol version \(version)"
-        case .unexpectedFirstMessage(let type):
-            return "expected hello as first message, got \(type)"
         case .outputEncodingFailed:
             return "failed to encode helper output"
         }

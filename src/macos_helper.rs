@@ -1,4 +1,4 @@
-use crate::backend::{Backend, BackendCommand, DisableRequest, RuntimeEvent};
+use crate::backend::{Backend, BackendCommand, RuntimeEvent};
 use crate::scheduler::{BreakOrigin, ScheduledBreak};
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -31,11 +31,11 @@ impl MacOSHelperBackend {
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| MacOSHelperError::process("helper stdin was unavailable"))?;
+            .ok_or_else(|| MacOSHelperError::new("helper stdin was unavailable"))?;
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| MacOSHelperError::process("helper stdout was unavailable"))?;
+            .ok_or_else(|| MacOSHelperError::new("helper stdout was unavailable"))?;
 
         if let Some(stderr) = child.stderr.take() {
             spawn_stderr_mirror(&path, stderr);
@@ -56,12 +56,25 @@ impl MacOSHelperBackend {
     }
 
     fn shutdown_helper(&mut self) -> Result<(), MacOSHelperError> {
+        let mut first_error = None;
+
         if !self.shutdown_sent {
-            self.session.send_shutdown()?;
-            self.shutdown_sent = true;
+            match self.session.send_shutdown() {
+                Ok(()) => {
+                    self.shutdown_sent = true;
+                }
+                Err(error) => remember_first_error(&mut first_error, error),
+            }
         }
 
-        self.wait_for_helper_exit()
+        if let Err(error) = self.wait_for_helper_exit() {
+            remember_first_error(&mut first_error, error);
+        }
+
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     fn wait_for_helper_exit(&mut self) -> Result<(), MacOSHelperError> {
@@ -69,7 +82,7 @@ impl MacOSHelperBackend {
 
         while started.elapsed() < HELPER_SHUTDOWN_TIMEOUT {
             if let Some(status) = self.child.try_wait().map_err(|error| {
-                MacOSHelperError::process(format!("failed to poll helper exit: {error}"))
+                MacOSHelperError::new(format!("failed to poll helper exit: {error}"))
             })? {
                 trace!(%status, "macOS helper exited");
                 return Ok(());
@@ -78,14 +91,29 @@ impl MacOSHelperBackend {
             thread::sleep(HELPER_SHUTDOWN_POLL);
         }
 
-        self.child.kill().map_err(|error| {
-            MacOSHelperError::process(format!("failed to kill unresponsive helper: {error}"))
-        })?;
-        let _ = self.child.wait();
-        Err(MacOSHelperError::process(format!(
+        let mut first_error = Some(MacOSHelperError::new(format!(
             "helper did not exit within {} ms after shutdown",
             duration_millis(HELPER_SHUTDOWN_TIMEOUT)
-        )))
+        )));
+
+        if let Err(error) = self.child.kill() {
+            remember_first_error(
+                &mut first_error,
+                MacOSHelperError::new(format!("failed to kill unresponsive helper: {error}")),
+            );
+        }
+
+        if let Err(error) = self.child.wait() {
+            remember_first_error(
+                &mut first_error,
+                MacOSHelperError::new(format!("failed to reap helper after timeout: {error}")),
+            );
+        }
+
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 }
 
@@ -115,13 +143,7 @@ pub(crate) struct MacOSHelperError {
 }
 
 impl MacOSHelperError {
-    fn process(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
-
-    fn protocol(message: impl Into<String>) -> Self {
+    fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
         }
@@ -160,15 +182,15 @@ where
 
         match self.receive()? {
             HelperMessage::Ready { version } if version == PROTOCOL_VERSION => Ok(()),
-            HelperMessage::Ready { version } => Err(MacOSHelperError::protocol(format!(
+            HelperMessage::Ready { version } => Err(MacOSHelperError::new(format!(
                 "helper protocol version {version} is incompatible with daemon protocol version {PROTOCOL_VERSION}"
             ))),
-            HelperMessage::Error { message } => Err(MacOSHelperError::protocol(format!(
+            HelperMessage::Error { message } => Err(MacOSHelperError::new(format!(
                 "helper reported handshake error: {message}"
             ))),
-            message => Err(MacOSHelperError::protocol(format!(
+            HelperMessage::ShutdownComplete => Err(MacOSHelperError::new(format!(
                 "expected helper ready message during handshake, got {}",
-                message.message_type()
+                HelperMessage::ShutdownComplete.message_type()
             ))),
         }
     }
@@ -183,30 +205,30 @@ where
 
     fn send(&mut self, message: &DaemonMessage) -> Result<(), MacOSHelperError> {
         serde_json::to_writer(&mut self.writer, message).map_err(|error| {
-            MacOSHelperError::protocol(format!("failed to encode helper message: {error}"))
+            MacOSHelperError::new(format!("failed to encode helper message: {error}"))
         })?;
         self.writer.write_all(b"\n").map_err(|error| {
-            MacOSHelperError::process(format!("failed to write helper message: {error}"))
+            MacOSHelperError::new(format!("failed to write helper message: {error}"))
         })?;
         self.writer.flush().map_err(|error| {
-            MacOSHelperError::process(format!("failed to flush helper message: {error}"))
+            MacOSHelperError::new(format!("failed to flush helper message: {error}"))
         })
     }
 
     fn receive(&mut self) -> Result<HelperMessage, MacOSHelperError> {
         let mut line = String::new();
         let bytes = self.reader.read_line(&mut line).map_err(|error| {
-            MacOSHelperError::process(format!("failed to read helper message: {error}"))
+            MacOSHelperError::new(format!("failed to read helper message: {error}"))
         })?;
 
         if bytes == 0 {
-            return Err(MacOSHelperError::process(
+            return Err(MacOSHelperError::new(
                 "helper closed protocol output before sending a message",
             ));
         }
 
         serde_json::from_str(line.trim_end()).map_err(|error| {
-            MacOSHelperError::protocol(format!("failed to decode helper message: {error}"))
+            MacOSHelperError::new(format!("failed to decode helper message: {error}"))
         })
     }
 }
@@ -278,19 +300,10 @@ impl From<BreakOrigin> for WireBreakOrigin {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum HelperMessage {
     Ready { version: u16 },
-    ActiveTimeElapsed { duration_ms: u64 },
-    WallClockElapsed { duration_ms: u64 },
-    BreakFinished,
-    LockAfterCurrentBreak,
-    StartManualBreak { name: String },
-    DisableFor { duration_ms: u64 },
-    DisableUntilRestart,
-    Enable,
     ShutdownComplete,
     Error { message: String },
 }
@@ -299,60 +312,22 @@ impl HelperMessage {
     const fn message_type(&self) -> &'static str {
         match self {
             Self::Ready { .. } => "ready",
-            Self::ActiveTimeElapsed { .. } => "activeTimeElapsed",
-            Self::WallClockElapsed { .. } => "wallClockElapsed",
-            Self::BreakFinished => "breakFinished",
-            Self::LockAfterCurrentBreak => "lockAfterCurrentBreak",
-            Self::StartManualBreak { .. } => "startManualBreak",
-            Self::DisableFor { .. } => "disableFor",
-            Self::DisableUntilRestart => "disableUntilRestart",
-            Self::Enable => "enable",
             Self::ShutdownComplete => "shutdownComplete",
             Self::Error { .. } => "error",
         }
     }
 }
 
-impl TryFrom<HelperMessage> for RuntimeEvent {
-    type Error = MacOSHelperError;
-
-    fn try_from(message: HelperMessage) -> Result<Self, Self::Error> {
-        match message {
-            HelperMessage::ActiveTimeElapsed { duration_ms } => {
-                Ok(Self::ActiveTimeElapsed(Duration::from_millis(duration_ms)))
-            }
-            HelperMessage::WallClockElapsed { duration_ms } => {
-                Ok(Self::WallClockElapsed(Duration::from_millis(duration_ms)))
-            }
-            HelperMessage::BreakFinished => Ok(Self::BreakFinished),
-            HelperMessage::LockAfterCurrentBreak => Ok(Self::LockAfterCurrentBreak),
-            HelperMessage::StartManualBreak { name } => Ok(Self::StartManualBreak(name)),
-            HelperMessage::DisableFor { duration_ms } => Ok(Self::Disable(DisableRequest::For(
-                Duration::from_millis(duration_ms),
-            ))),
-            HelperMessage::DisableUntilRestart => Ok(Self::Disable(DisableRequest::UntilRestart)),
-            HelperMessage::Enable => Ok(Self::Enable),
-            HelperMessage::ShutdownComplete => Ok(Self::Shutdown),
-            HelperMessage::Error { message } => Err(MacOSHelperError::protocol(format!(
-                "helper reported error: {message}"
-            ))),
-            HelperMessage::Ready { .. } => Err(MacOSHelperError::protocol(
-                "unexpected helper ready message after handshake",
-            )),
-        }
-    }
-}
-
 fn spawn_helper(path: &Path) -> Result<Child, MacOSHelperError> {
     let metadata = fs::metadata(path).map_err(|error| {
-        MacOSHelperError::process(format!(
+        MacOSHelperError::new(format!(
             "failed to find helper at {}: {error}",
             path.display()
         ))
     })?;
 
     if !metadata.is_file() {
-        return Err(MacOSHelperError::process(format!(
+        return Err(MacOSHelperError::new(format!(
             "helper path is not a file: {}",
             path.display()
         )));
@@ -364,7 +339,7 @@ fn spawn_helper(path: &Path) -> Result<Child, MacOSHelperError> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command.spawn().map_err(|error| {
-        MacOSHelperError::process(format!(
+        MacOSHelperError::new(format!(
             "failed to start helper at {}: {error}",
             path.display()
         ))
@@ -417,6 +392,14 @@ fn helper_path() -> PathBuf {
 
 fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn remember_first_error(first_error: &mut Option<MacOSHelperError>, error: MacOSHelperError) {
+    if first_error.is_none() {
+        *first_error = Some(error);
+    } else {
+        warn!(%error, "additional macOS helper shutdown error");
+    }
 }
 
 #[cfg(test)]
@@ -500,21 +483,11 @@ mod tests {
     }
 
     #[test]
-    fn helper_events_convert_to_runtime_events() -> Result<(), Box<dyn std::error::Error>> {
-        assert_eq!(
-            RuntimeEvent::try_from(HelperMessage::ActiveTimeElapsed { duration_ms: 250 })?,
-            RuntimeEvent::ActiveTimeElapsed(Duration::from_millis(250))
-        );
-        assert_eq!(
-            RuntimeEvent::try_from(HelperMessage::DisableFor {
-                duration_ms: 30_000
-            })?,
-            RuntimeEvent::Disable(DisableRequest::For(Duration::from_secs(30)))
-        );
-        assert_eq!(
-            RuntimeEvent::try_from(HelperMessage::ShutdownComplete)?,
-            RuntimeEvent::Shutdown
-        );
+    fn shutdown_complete_message_is_decoded() -> Result<(), Box<dyn std::error::Error>> {
+        let input = Cursor::new(br#"{"type":"shutdownComplete"}"#.to_vec());
+        let mut session = HelperSession::new(input, Vec::new());
+
+        assert_eq!(session.receive()?, HelperMessage::ShutdownComplete);
         Ok(())
     }
 

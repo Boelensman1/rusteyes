@@ -1,5 +1,5 @@
 use crate::backend::{Backend, BackendCommand, DisableRequest, RuntimeEvent};
-use crate::config::{Config, ConfigError};
+use crate::config::Config;
 #[cfg(target_os = "macos")]
 use crate::macos_helper::MacOSHelperBackend;
 use crate::scheduler::{BreakSchedule, BreakScheduler, ScheduledBreak};
@@ -9,19 +9,21 @@ use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 pub(crate) fn run() -> Result<(), crate::Error> {
-    let config = Config::load()?;
-    let mut backend = X11ActivityBackend::connect(config.lock.clone())?;
+    let Config { breaks, lock, .. } = Config::load()?;
+    let schedule = BreakSchedule::try_from(breaks)?;
+    let mut backend = X11ActivityBackend::connect(lock)?;
 
-    run_with_backend(config, &mut backend)?;
+    run_with_backend(schedule, &mut backend);
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
 pub(crate) fn run() -> Result<(), crate::Error> {
-    let config = Config::load()?;
+    let Config { breaks, .. } = Config::load()?;
+    let schedule = BreakSchedule::try_from(breaks)?;
     let mut backend = MacOSHelperBackend::connect()?;
 
-    run_with_backend(config, &mut backend)?;
+    run_with_backend(schedule, &mut backend);
     Ok(())
 }
 
@@ -30,11 +32,10 @@ pub(crate) fn run() -> Result<(), crate::Error> {
     Err(crate::Error::unsupported_platform())
 }
 
-fn run_with_backend<B>(config: Config, backend: &mut B) -> Result<(), ConfigError>
+fn run_with_backend<B>(schedule: BreakSchedule, backend: &mut B)
 where
     B: Backend,
 {
-    let schedule = BreakSchedule::try_from(config.breaks)?;
     let scheduler = BreakScheduler::new(schedule);
     let mut daemon = DaemonRuntime {
         scheduler,
@@ -44,7 +45,6 @@ where
     };
 
     daemon.run();
-    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

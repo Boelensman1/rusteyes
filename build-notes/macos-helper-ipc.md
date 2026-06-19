@@ -9,14 +9,18 @@
   unsupported platform; Linux/X11 behavior is unchanged.
 - Added version 1 daemon-to-helper messages for `hello`, `startBreak`,
   `finishBreak`, `clearBreak`, and `shutdown`.
-- Added version 1 helper-to-daemon messages for `ready`, future runtime events,
-  `shutdownComplete`, and `error`.
+- Added version 1 helper-to-daemon messages for `ready`, `shutdownComplete`,
+  and `error`; future activity/control events remain for `macos-activity`.
 - The Swift helper now reserves stdout for JSON Lines protocol messages,
   validates the initial `hello` message, sends `ready`, accepts no-op break
   commands, exits after `shutdown`, and prints a human-facing stderr message
   when launched without the daemon's initial `hello`.
 - `make run` now depends on the helper artifact on Darwin so local macOS runs
   rebuild the helper first.
+- Follow-up cleanup validates the break schedule before starting any platform
+  backend, always attempts to reap the helper during shutdown, trims unused
+  future helper events from the Rust IPC model, and removes unused Swift scaffold
+  imports/context.
 
 ## Decisions
 
@@ -65,6 +69,10 @@
 - An incompatible `hello` version returned a JSON `error` message.
 - `make run` still starts the helper and exits cleanly through the macOS helper
   handshake path.
+- `make check` passed after the follow-up cleanup.
+- `make macos-helper-build` rebuilt the simplified Swift helper successfully.
+- `make run` initially failed in the sandbox because the Nix daemon socket was
+  unavailable, then passed with approved Nix daemon access.
 
 ## Follow-up
 

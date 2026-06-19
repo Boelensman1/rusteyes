@@ -81,12 +81,13 @@
   settings with a validated 32-character minimum shared secret for enabled
   sync, redacted shared-secret debug output, and no configured peer ID.
 - Completed `macos-helper-scaffold`: a standalone SwiftPM macOS helper package
-  now builds a stub `resteyes-macos-helper` executable that prints
-  `hello world`, with an explicit Make artifact target and `macos-helper-build`
-  alias that build on Darwin and skip successfully elsewhere.
+  builds `resteyes-macos-helper`, with an explicit Make artifact target and
+  `macos-helper-build` alias that build on Darwin and skip successfully
+  elsewhere.
 - Completed `macos-helper-ipc`: macOS production runs now start the Swift
   helper, complete a versioned stdio JSON Lines handshake, define command and
-  event framing for later macOS backend work, and shut the helper down cleanly.
+  shutdown framing for later macOS backend work, and shut the helper down
+  cleanly.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
