@@ -88,6 +88,10 @@
   helper, complete a versioned stdio JSON Lines handshake, define command and
   shutdown framing for later macOS backend work, and shut the helper down
   cleanly.
+- Completed `macos-activity`: macOS production runs now keep the helper-backed
+  daemon loop alive after handshake, poll CoreGraphics any-input idle time once
+  per second through protocol version 2, and emit wall-clock and active-time
+  runtime events with the same activity interpretation as X11.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -100,7 +104,13 @@
 - `make build` passes.
 - `make macos-helper-build` passes on macOS with SwiftPM available.
 - `make run` on macOS starts the helper, completes the IPC handshake, and exits
-  cleanly because macOS activity events are not implemented yet.
+  cleanly in older helper-IPC verification before activity polling existed.
+- A bounded `timeout 3s make run` on macOS now stays alive until terminated by
+  `timeout`, confirming the helper-backed activity polling loop is running.
+- macOS helper protocol smoke tests returned `ready`, `activitySample`, and
+  `shutdownComplete` for a valid version 2 session, returned a structured error
+  for an unknown message, and returned a structured error for an incompatible
+  version.
 - `nix build` passes.
 - `.codex/hooks/rustfmt.sh` runs successfully.
 - On unsupported targets, `make run` prints
@@ -112,7 +122,7 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next planned increment is `macos-activity`.
+- The next planned increment is `macos-overlay`.
 - The later build order now brings macOS backend parity before sync protocol,
   then separates sync protocol, LAN discovery, authenticated peer transport,
   synced break/disable behavior, tray UI, and synced lock-after-break behavior.

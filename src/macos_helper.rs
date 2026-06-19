@@ -1,6 +1,7 @@
 use crate::backend::{Backend, BackendCommand, RuntimeEvent};
 use crate::scheduler::{BreakOrigin, ScheduledBreak};
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::env;
 use std::fmt;
 use std::fs;
@@ -11,16 +12,18 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{trace, warn};
 
-const PROTOCOL_VERSION: u16 = 1;
+const PROTOCOL_VERSION: u16 = 2;
 const HELPER_PATH_ENV: &str = "RESTEYES_MACOS_HELPER";
 const DEVELOPMENT_HELPER_PATH: &str = "helpers/macos-helper/.build/debug/resteyes-macos-helper";
 const HELPER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const HELPER_SHUTDOWN_POLL: Duration = Duration::from_millis(20);
+const ACTIVITY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 #[allow(clippy::module_name_repetitions)]
 pub(crate) struct MacOSHelperBackend {
     child: Child,
     session: HelperSession<ChildStdout, ChildStdin>,
+    poller: ActivityPoller,
     shutdown_sent: bool,
 }
 
@@ -51,6 +54,7 @@ impl MacOSHelperBackend {
         Ok(Self {
             child,
             session,
+            poller: ActivityPoller::new(ACTIVITY_POLL_INTERVAL),
             shutdown_sent: false,
         })
     }
@@ -119,7 +123,23 @@ impl MacOSHelperBackend {
 
 impl Backend for MacOSHelperBackend {
     fn next_event(&mut self) -> RuntimeEvent {
-        RuntimeEvent::Shutdown
+        loop {
+            if let Some(event) = self.poller.next_event() {
+                return event;
+            }
+
+            thread::sleep(self.poller.poll_interval());
+
+            match self.session.poll_activity() {
+                Ok(sample) => {
+                    self.poller.queue_sample(sample);
+                }
+                Err(error) => {
+                    warn!(%error, "failed to poll macOS activity");
+                    return RuntimeEvent::Shutdown;
+                }
+            }
+        }
     }
 
     fn handle_command(&mut self, command: BackendCommand) {
@@ -185,6 +205,10 @@ where
             HelperMessage::Ready { version } => Err(MacOSHelperError::new(format!(
                 "helper protocol version {version} is incompatible with daemon protocol version {PROTOCOL_VERSION}"
             ))),
+            message @ HelperMessage::ActivitySample { .. } => Err(MacOSHelperError::new(format!(
+                "expected helper ready message during handshake, got {}",
+                message.message_type()
+            ))),
             HelperMessage::Error { message } => Err(MacOSHelperError::new(format!(
                 "helper reported handshake error: {message}"
             ))),
@@ -197,6 +221,23 @@ where
 
     fn send_command(&mut self, command: BackendCommand) -> Result<(), MacOSHelperError> {
         self.send(&DaemonMessage::from(command))
+    }
+
+    fn poll_activity(&mut self) -> Result<ActivitySample, MacOSHelperError> {
+        self.send(&DaemonMessage::PollActivity)?;
+
+        match self.receive()? {
+            HelperMessage::ActivitySample { idle_ms } => {
+                Ok(ActivitySample::new(Duration::from_millis(idle_ms)))
+            }
+            HelperMessage::Error { message } => Err(MacOSHelperError::new(format!(
+                "helper reported activity error: {message}"
+            ))),
+            message => Err(MacOSHelperError::new(format!(
+                "expected helper activity sample, got {}",
+                message.message_type()
+            ))),
+        }
     }
 
     fn send_shutdown(&mut self) -> Result<(), MacOSHelperError> {
@@ -247,6 +288,7 @@ enum DaemonMessage {
         lock_after: bool,
     },
     ClearBreak,
+    PollActivity,
     Shutdown,
 }
 
@@ -303,15 +345,24 @@ impl From<BreakOrigin> for WireBreakOrigin {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum HelperMessage {
-    Ready { version: u16 },
+    Ready {
+        version: u16,
+    },
+    ActivitySample {
+        #[serde(rename = "idleMs")]
+        idle_ms: u64,
+    },
     ShutdownComplete,
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 impl HelperMessage {
     const fn message_type(&self) -> &'static str {
         match self {
             Self::Ready { .. } => "ready",
+            Self::ActivitySample { .. } => "activitySample",
             Self::ShutdownComplete => "shutdownComplete",
             Self::Error { .. } => "error",
         }
@@ -394,6 +445,77 @@ fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
+#[derive(Debug)]
+struct ActivityPoller {
+    poll_interval: Duration,
+    events: VecDeque<RuntimeEvent>,
+}
+
+impl ActivityPoller {
+    fn new(poll_interval: Duration) -> Self {
+        Self {
+            poll_interval,
+            events: VecDeque::new(),
+        }
+    }
+
+    const fn poll_interval(&self) -> Duration {
+        self.poll_interval
+    }
+
+    fn queue_sample(&mut self, sample: ActivitySample) -> ActivityState {
+        let state = sample.state_for(self.poll_interval);
+        trace!(
+            idle_for = ?sample.idle_for,
+            ?state,
+            poll_interval = ?self.poll_interval,
+            "sampled macOS activity"
+        );
+
+        self.queue_event(RuntimeEvent::WallClockElapsed(self.poll_interval));
+
+        if state == ActivityState::Active {
+            self.queue_event(RuntimeEvent::ActiveTimeElapsed(self.poll_interval));
+        }
+
+        state
+    }
+
+    fn queue_event(&mut self, event: RuntimeEvent) {
+        trace!(?event, "queued runtime event");
+        self.events.push_back(event);
+    }
+
+    fn next_event(&mut self) -> Option<RuntimeEvent> {
+        self.events.pop_front()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActivitySample {
+    idle_for: Duration,
+}
+
+impl ActivitySample {
+    const fn new(idle_for: Duration) -> Self {
+        Self { idle_for }
+    }
+
+    fn state_for(self, poll_interval: Duration) -> ActivityState {
+        if self.idle_for <= poll_interval {
+            ActivityState::Active
+        } else {
+            ActivityState::Idle
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActivityState {
+    Active,
+    Idle,
+}
+
 fn remember_first_error(first_error: &mut Option<MacOSHelperError>, error: MacOSHelperError) {
     if first_error.is_none() {
         *first_error = Some(error);
@@ -409,7 +531,7 @@ mod tests {
 
     #[test]
     fn handshake_writes_hello_and_accepts_ready() -> Result<(), Box<dyn std::error::Error>> {
-        let input = Cursor::new(br#"{"type":"ready","version":1}"#.to_vec());
+        let input = Cursor::new(br#"{"type":"ready","version":2}"#.to_vec());
         let mut output = Vec::new();
 
         {
@@ -428,7 +550,7 @@ mod tests {
 
     #[test]
     fn handshake_rejects_incompatible_version() {
-        let input = Cursor::new(br#"{"type":"ready","version":2}"#.to_vec());
+        let input = Cursor::new(br#"{"type":"ready","version":3}"#.to_vec());
         let mut output = Vec::new();
         let mut session = HelperSession::new(input, &mut output);
 
@@ -440,6 +562,56 @@ mod tests {
             error.to_string().contains("incompatible"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn poll_activity_writes_request_and_decodes_sample() -> Result<(), Box<dyn std::error::Error>> {
+        let input = Cursor::new(br#"{"type":"activitySample","idleMs":750}"#.to_vec());
+        let mut output = Vec::new();
+        let sample = {
+            let mut session = HelperSession::new(input, &mut output);
+            session.poll_activity()?
+        };
+
+        assert_eq!(sample.idle_for, Duration::from_millis(750));
+        assert_eq!(daemon_messages(&output)?, vec![DaemonMessage::PollActivity]);
+        Ok(())
+    }
+
+    #[test]
+    fn active_sample_queues_wall_clock_before_active_time() {
+        let poll_interval = Duration::from_secs(1);
+        let mut poller = ActivityPoller::new(poll_interval);
+
+        assert_eq!(
+            poller.queue_sample(ActivitySample::new(Duration::from_millis(500))),
+            ActivityState::Active
+        );
+        assert_eq!(
+            poller.next_event(),
+            Some(RuntimeEvent::WallClockElapsed(poll_interval))
+        );
+        assert_eq!(
+            poller.next_event(),
+            Some(RuntimeEvent::ActiveTimeElapsed(poll_interval))
+        );
+        assert_eq!(poller.next_event(), None);
+    }
+
+    #[test]
+    fn idle_sample_queues_only_wall_clock_time() {
+        let poll_interval = Duration::from_secs(1);
+        let mut poller = ActivityPoller::new(poll_interval);
+
+        assert_eq!(
+            poller.queue_sample(ActivitySample::new(Duration::from_millis(1_001))),
+            ActivityState::Idle
+        );
+        assert_eq!(
+            poller.next_event(),
+            Some(RuntimeEvent::WallClockElapsed(poll_interval))
+        );
+        assert_eq!(poller.next_event(), None);
     }
 
     #[test]
@@ -488,6 +660,18 @@ mod tests {
         let mut session = HelperSession::new(input, Vec::new());
 
         assert_eq!(session.receive()?, HelperMessage::ShutdownComplete);
+        Ok(())
+    }
+
+    #[test]
+    fn activity_sample_message_is_decoded() -> Result<(), Box<dyn std::error::Error>> {
+        let input = Cursor::new(br#"{"type":"activitySample","idleMs":1000}"#.to_vec());
+        let mut session = HelperSession::new(input, Vec::new());
+
+        assert_eq!(
+            session.receive()?,
+            HelperMessage::ActivitySample { idle_ms: 1_000 }
+        );
         Ok(())
     }
 

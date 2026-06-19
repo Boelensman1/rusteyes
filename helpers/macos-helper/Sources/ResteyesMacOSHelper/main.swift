@@ -1,15 +1,18 @@
 import Darwin
 import Foundation
+import CoreGraphics
 
-private let protocolVersion = 1
+private let protocolVersion = 2
 private let directInvocationExitCode: Int32 = 2
 private let directInvocationMessage =
     "resteyes-macos-helper is an internal Resteyes helper. Start Resteyes with the main resteyes binary; do not run this helper directly."
+private let anyInputEventType = CGEventType(rawValue: UInt32.max)!
 
 private enum ProtocolError: Error, CustomStringConvertible {
     case invalidJSON
     case invalidMessage
     case incompatibleVersion(Int)
+    case invalidActivitySample
     case outputEncodingFailed
 
     var description: String {
@@ -20,6 +23,8 @@ private enum ProtocolError: Error, CustomStringConvertible {
             return "invalid protocol message"
         case .incompatibleVersion(let version):
             return "incompatible protocol version \(version)"
+        case .invalidActivitySample:
+            return "invalid activity sample"
         case .outputEncodingFailed:
             return "failed to encode helper output"
         }
@@ -77,6 +82,22 @@ private func handleHello(_ message: [String: Any]) throws {
     try writeMessage(["type": "ready", "version": protocolVersion])
 }
 
+private func handlePollActivity() throws {
+    let idleSeconds = CGEventSource.secondsSinceLastEventType(
+        .combinedSessionState,
+        eventType: anyInputEventType
+    )
+    guard idleSeconds.isFinite, idleSeconds >= 0 else {
+        throw ProtocolError.invalidActivitySample
+    }
+
+    let idleMilliseconds = min(idleSeconds * 1000, Double(UInt64.max))
+    try writeMessage([
+        "type": "activitySample",
+        "idleMs": UInt64(idleMilliseconds),
+    ])
+}
+
 private func readInitialHelloMessage() -> [String: Any] {
     if isatty(STDIN_FILENO) != 0 {
         exitAfterDirectInvocationMessage()
@@ -115,6 +136,8 @@ private func runProtocolLoop() {
             switch try messageType(message) {
             case "startBreak", "finishBreak", "clearBreak":
                 continue
+            case "pollActivity":
+                try handlePollActivity()
             case "shutdown":
                 try writeMessage(["type": "shutdownComplete"])
                 return
