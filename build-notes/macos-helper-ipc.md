@@ -21,6 +21,10 @@
   backend, always attempts to reap the helper during shutdown, trims unused
   future helper events from the Rust IPC model, and removes unused Swift scaffold
   imports/context.
+- Follow-up cleanup now waits for explicit helper `commandComplete`
+  acknowledgements for break/control commands before updating Rust backend
+  break state, and shares one helper shutdown wait/kill/reap path for normal
+  drop and startup failures.
 
 ## Decisions
 
@@ -73,6 +77,9 @@
 - `make macos-helper-build` rebuilt the simplified Swift helper successfully.
 - `make run` initially failed in the sandbox because the Nix daemon socket was
   unavailable, then passed with approved Nix daemon access.
+- `make check` passed after adding command acknowledgements and consolidating
+  helper shutdown cleanup.
+- `make macos-helper-build` passed after adding command acknowledgements.
 
 ## Follow-up
 

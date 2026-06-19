@@ -14,6 +14,8 @@
   interval.
 - The Rust activity sample interpretation and regular activity trace output now
   use the same shared activity module as X11.
+- Follow-up cleanup moved break timer logic into the shared activity module so
+  macOS and X11 use the same countdown behavior.
 - Helper protocol or activity sampling failures are logged and shut the daemon
   loop down cleanly.
 
@@ -41,6 +43,8 @@
 - A bounded `RUST_LOG=trace make run` smoke run prints shared `sampled
   activity` and `queued runtime event` traces on macOS.
 - `make check` passed.
+- `make check` passed after moving break timer logic into the shared activity
+  module.
 
 ## Follow-up
 

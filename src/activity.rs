@@ -79,6 +79,38 @@ pub(crate) enum ActivityState {
     Idle,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BreakTimer {
+    remaining: Duration,
+}
+
+impl BreakTimer {
+    pub(crate) const fn new(duration: Duration) -> Self {
+        Self {
+            remaining: duration,
+        }
+    }
+
+    pub(crate) fn advance(&mut self, elapsed: Duration) -> bool {
+        if self.remaining.is_zero() {
+            return false;
+        }
+
+        if elapsed >= self.remaining {
+            self.remaining = Duration::ZERO;
+            true
+        } else {
+            self.remaining -= elapsed;
+            false
+        }
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) const fn remaining(self) -> Duration {
+        self.remaining
+    }
+}
+
 pub(crate) fn break_elapsed_for_sample(
     sample: ActivitySample,
     poll_interval: Duration,

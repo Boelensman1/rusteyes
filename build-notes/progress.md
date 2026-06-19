@@ -99,17 +99,18 @@
 - Completed `macos-overlay`: macOS break commands now create helper-owned black
   AppKit overlay windows on every `NSScreen`, render the first configured break
   message, suppress active-time events while visible, advance break duration
-  only on idle helper samples, and clear overlays on finish, clear, shutdown,
-  or helper EOF.
+  only on idle helper samples through the shared break timer, and clear
+  overlays on finish, clear, shutdown, or helper EOF.
 - Completed `macos-input-blocking`: macOS break startup now creates a
   helper-owned Quartz session event tap before showing overlay windows, drops
   normal keyboard and pointer input while the overlay is visible, disables the
   tap on overlay cleanup, and reports a structured helper error instead of
   showing an unblocked overlay when macOS refuses event tap creation.
-- Completed `macos-permission-preflight`: macOS helper protocol version 3 now
+- Completed `macos-permission-preflight`: macOS helper protocol version 4 now
   has a startup permission preflight that explicitly requests Accessibility
   trust, checks Input Monitoring trust, fails startup before scheduling when
-  either permission is missing, and keeps the break-time event tap failure path
+  either permission is missing, acknowledges break/control commands before Rust
+  updates backend break state, and keeps the break-time event tap failure path
   as a defense against permissions revoked later.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
@@ -140,12 +141,16 @@
   event-tap permission error for `startBreak`, and `shutdownComplete`,
   confirming the helper does not show an unblocked overlay when required macOS
   permissions are unavailable.
-- macOS helper protocol version 3 tests cover permission preflight framing,
-  `preflightResult` decoding, and startup error text for missing Accessibility,
-  missing Input Monitoring, and both permissions missing.
+- macOS helper protocol version 4 tests cover permission preflight framing,
+  `preflightResult` decoding, command acknowledgements, command error handling,
+  and startup error text for missing Accessibility, missing Input Monitoring,
+  and both permissions missing.
 - A macOS helper protocol version 3 smoke test returned `ready` and
-  `shutdownComplete` for `hello` followed by `shutdown`.
+  `shutdownComplete` for `hello` followed by `shutdown`; current Rust unit
+  tests cover protocol version 4 framing.
 - `make macos-helper-build` passes after adding the permission preflight.
+- `make macos-helper-build` passes after adding protocol version 4 command
+  acknowledgements.
 - A bounded `timeout 3s make run` on macOS stays alive until terminated by
   `timeout` and no longer emits helper stderr during startup after AppKit setup
   was made lazy.

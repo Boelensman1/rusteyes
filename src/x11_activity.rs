@@ -1,4 +1,4 @@
-use crate::activity::{ActivityPoller, ActivitySample, break_elapsed_for_sample};
+use crate::activity::{ActivityPoller, ActivitySample, BreakTimer, break_elapsed_for_sample};
 use crate::backend::{Backend, BackendCommand, RuntimeEvent};
 use crate::config::LockConfig;
 use crate::scheduler::ScheduledBreak;
@@ -404,37 +404,6 @@ impl ActiveBreak {
 struct BreakAdvance {
     finished: bool,
     lock_after_break_requested: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BreakTimer {
-    remaining: Duration,
-}
-
-impl BreakTimer {
-    const fn new(duration: Duration) -> Self {
-        Self {
-            remaining: duration,
-        }
-    }
-
-    fn advance(&mut self, elapsed: Duration) -> bool {
-        if self.remaining.is_zero() {
-            return false;
-        }
-
-        if elapsed >= self.remaining {
-            self.remaining = Duration::ZERO;
-            true
-        } else {
-            self.remaining -= elapsed;
-            false
-        }
-    }
-
-    const fn remaining(self) -> Duration {
-        self.remaining
-    }
 }
 
 struct X11Activity {

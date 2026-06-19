@@ -1,4 +1,4 @@
-use super::{ActivityPoller, ActivitySample, ActivityState, break_elapsed_for_sample};
+use super::{ActivityPoller, ActivitySample, ActivityState, BreakTimer, break_elapsed_for_sample};
 use crate::backend::RuntimeEvent;
 use std::time::Duration;
 
@@ -89,4 +89,37 @@ fn idle_overlay_sample_counts_down_break_time() {
     );
 
     assert_eq!(elapsed, poll_interval);
+}
+
+#[test]
+fn break_timer_advances_without_finishing() {
+    let mut timer = BreakTimer::new(Duration::from_secs(1));
+
+    assert!(!timer.advance(Duration::from_millis(500)));
+    assert_eq!(timer.remaining(), Duration::from_millis(500));
+}
+
+#[test]
+fn break_timer_finishes_on_exact_remaining_elapsed() {
+    let mut timer = BreakTimer::new(Duration::from_secs(1));
+
+    assert!(timer.advance(Duration::from_secs(1)));
+    assert_eq!(timer.remaining(), Duration::ZERO);
+}
+
+#[test]
+fn break_timer_finishes_when_elapsed_overshoots_remaining() {
+    let mut timer = BreakTimer::new(Duration::from_secs(1));
+
+    assert!(timer.advance(Duration::from_secs(2)));
+    assert_eq!(timer.remaining(), Duration::ZERO);
+}
+
+#[test]
+fn break_timer_does_not_finish_again_after_reaching_zero() {
+    let mut timer = BreakTimer::new(Duration::from_secs(1));
+
+    assert!(timer.advance(Duration::from_secs(1)));
+    assert!(!timer.advance(Duration::from_secs(1)));
+    assert_eq!(timer.remaining(), Duration::ZERO);
 }

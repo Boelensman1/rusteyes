@@ -1,23 +1,6 @@
-use super::{BreakTimer, LockCommand, lock_process, spawn_lock_command};
+use super::{LockCommand, lock_process, spawn_lock_command};
 use crate::config::LockConfig;
 use std::time::Duration;
-
-#[test]
-fn break_timer_finishes_once_duration_elapses() {
-    let mut timer = BreakTimer::new(Duration::from_secs(2));
-
-    assert!(!timer.advance(Duration::from_secs(1)));
-    assert!(timer.advance(Duration::from_secs(1)));
-    assert!(!timer.advance(Duration::from_secs(1)));
-}
-
-#[test]
-fn break_timer_finishes_when_elapsed_time_overshoots_duration() {
-    let mut timer = BreakTimer::new(Duration::from_secs(2));
-
-    assert!(timer.advance(Duration::from_secs(3)));
-    assert_eq!(timer.remaining, Duration::ZERO);
-}
 
 #[test]
 fn lock_command_splits_program_and_args() {

@@ -2,7 +2,8 @@
 
 ## Summary
 
-- macOS helper IPC now uses protocol version 3.
+- macOS helper IPC now uses protocol version 4. Version 3 introduced permission
+  preflight; the later protocol bump added helper command acknowledgements.
 - Added a `preflightPermissions` daemon-to-helper message and a
   `preflightResult` helper-to-daemon response with Accessibility and Input
   Monitoring trust booleans.
@@ -13,8 +14,8 @@
   Input Monitoring with `CGPreflightListenEventAccess`, and keeps stdout
   JSON-protocol-only.
 - Missing permissions fail startup with an error naming the missing permission,
-  the System Settings privacy pane, the development helper executable name, and
-  the need to restart Resteyes after granting access.
+  the System Settings Privacy & Security area, the development helper
+  executable name, and the need to restart Resteyes after granting access.
 - The existing break-time event tap failure path remains in place for
   permissions revoked after startup.
 
@@ -41,6 +42,9 @@
   returned `ready` and `shutdownComplete`.
 - A helper smoke test for `preflightPermissions` was not run because it would
   intentionally trigger the macOS Accessibility prompt.
+- `make check` passed after clarifying the missing-permission guidance and
+  updating protocol tests for version 4.
+- `make macos-helper-build` passed after the protocol version 4 update.
 
 ## Follow-up
 

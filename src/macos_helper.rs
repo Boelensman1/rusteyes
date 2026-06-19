@@ -1,4 +1,4 @@
-use crate::activity::{ActivityPoller, ActivitySample, break_elapsed_for_sample};
+use crate::activity::{ActivityPoller, ActivitySample, BreakTimer, break_elapsed_for_sample};
 use crate::backend::{Backend, BackendCommand, RuntimeEvent};
 use crate::scheduler::{BreakOrigin, ScheduledBreak};
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{trace, warn};
 
-const PROTOCOL_VERSION: u16 = 3;
+const PROTOCOL_VERSION: u16 = 4;
 const HELPER_PATH_ENV: &str = "RESTEYES_MACOS_HELPER";
 const DEVELOPMENT_HELPER_PATH: &str = "helpers/macos-helper/.build/debug/resteyes-macos-helper";
 const HELPER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -119,20 +119,22 @@ impl MacOSHelperBackend {
     }
 
     fn finish_break(&mut self, lock_after: bool) {
-        self.active_break = None;
-        _ = self.send_backend_command(BackendCommand::FinishBreak { lock_after });
+        if self.send_backend_command(BackendCommand::FinishBreak { lock_after }) {
+            self.active_break = None;
+        }
     }
 
     fn clear_break(&mut self) {
-        self.active_break = None;
-        _ = self.send_backend_command(BackendCommand::ClearBreak);
+        if self.send_backend_command(BackendCommand::ClearBreak) {
+            self.active_break = None;
+        }
     }
 
     fn send_backend_command(&mut self, command: BackendCommand) -> bool {
         match self.session.send_command(command) {
             Ok(()) => true,
             Err(error) => {
-                warn!(%error, "failed to send command to macOS helper");
+                warn!(%error, "failed to complete command with macOS helper");
                 self.poller.queue_event(RuntimeEvent::Shutdown);
                 false
             }
@@ -140,64 +142,11 @@ impl MacOSHelperBackend {
     }
 
     fn shutdown_helper(&mut self) -> Result<(), MacOSHelperError> {
-        let mut first_error = None;
-
-        if !self.shutdown_sent {
-            match self.session.send_shutdown() {
-                Ok(()) => {
-                    self.shutdown_sent = true;
-                }
-                Err(error) => remember_first_error(&mut first_error, error),
-            }
-        }
-
-        if let Err(error) = self.wait_for_helper_exit() {
-            remember_first_error(&mut first_error, error);
-        }
-
-        match first_error {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
-    }
-
-    fn wait_for_helper_exit(&mut self) -> Result<(), MacOSHelperError> {
-        let started = Instant::now();
-
-        while started.elapsed() < HELPER_SHUTDOWN_TIMEOUT {
-            if let Some(status) = self.child.try_wait().map_err(|error| {
-                MacOSHelperError::new(format!("failed to poll helper exit: {error}"))
-            })? {
-                trace!(%status, "macOS helper exited");
-                return Ok(());
-            }
-
-            thread::sleep(HELPER_SHUTDOWN_POLL);
-        }
-
-        let mut first_error = Some(MacOSHelperError::new(format!(
-            "helper did not exit within {} ms after shutdown",
-            duration_millis(HELPER_SHUTDOWN_TIMEOUT)
-        )));
-
-        if let Err(error) = self.child.kill() {
-            remember_first_error(
-                &mut first_error,
-                MacOSHelperError::new(format!("failed to kill unresponsive helper: {error}")),
-            );
-        }
-
-        if let Err(error) = self.child.wait() {
-            remember_first_error(
-                &mut first_error,
-                MacOSHelperError::new(format!("failed to reap helper after timeout: {error}")),
-            );
-        }
-
-        match first_error {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+        shutdown_helper_process(
+            &mut self.child,
+            Some(&mut self.session),
+            &mut self.shutdown_sent,
+        )
     }
 }
 
@@ -241,33 +190,6 @@ impl ActiveBreak {
 
     fn advance(&mut self, elapsed: Duration) -> bool {
         self.timer.advance(elapsed)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BreakTimer {
-    remaining: Duration,
-}
-
-impl BreakTimer {
-    const fn new(duration: Duration) -> Self {
-        Self {
-            remaining: duration,
-        }
-    }
-
-    fn advance(&mut self, elapsed: Duration) -> bool {
-        if self.remaining.is_zero() {
-            return false;
-        }
-
-        if elapsed >= self.remaining {
-            self.remaining = Duration::ZERO;
-            true
-        } else {
-            self.remaining -= elapsed;
-            false
-        }
     }
 }
 
@@ -322,67 +244,81 @@ where
             version: PROTOCOL_VERSION,
         })?;
 
-        match self.receive()? {
-            HelperMessage::Ready { version } if version == PROTOCOL_VERSION => Ok(()),
-            HelperMessage::Ready { version } => Err(MacOSHelperError::new(format!(
+        let version = self.receive_expected(
+            "helper ready message during handshake",
+            "handshake",
+            |message| match message {
+                HelperMessage::Ready { version } => Ok(version),
+                message => Err(message),
+            },
+        )?;
+
+        if version == PROTOCOL_VERSION {
+            Ok(())
+        } else {
+            Err(MacOSHelperError::new(format!(
                 "helper protocol version {version} is incompatible with daemon protocol version {PROTOCOL_VERSION}"
-            ))),
-            message @ (HelperMessage::ActivitySample { .. }
-            | HelperMessage::PreflightResult { .. }) => Err(MacOSHelperError::new(format!(
-                "expected helper ready message during handshake, got {}",
-                message.message_type()
-            ))),
-            HelperMessage::Error { message } => Err(MacOSHelperError::new(format!(
-                "helper reported handshake error: {message}"
-            ))),
-            HelperMessage::ShutdownComplete => Err(MacOSHelperError::new(format!(
-                "expected helper ready message during handshake, got {}",
-                HelperMessage::ShutdownComplete.message_type()
-            ))),
+            )))
         }
     }
 
     fn send_command(&mut self, command: BackendCommand) -> Result<(), MacOSHelperError> {
-        self.send(&DaemonMessage::from(command))
+        let expected_command = HelperCommand::from_backend_command(&command);
+        self.send(&DaemonMessage::from(command))?;
+
+        let error_context = format!("{} command", expected_command.as_str());
+        let command =
+            self.receive_expected("helper command completion", &error_context, |message| {
+                match message {
+                    HelperMessage::CommandComplete { command } => Ok(command),
+                    message => Err(message),
+                }
+            })?;
+
+        if command == expected_command {
+            Ok(())
+        } else {
+            Err(MacOSHelperError::new(format!(
+                "expected helper command completion for {}, got {}",
+                expected_command.as_str(),
+                command.as_str()
+            )))
+        }
     }
 
     fn preflight_permissions(&mut self) -> Result<(), MacOSHelperError> {
         self.send(&DaemonMessage::PreflightPermissions)?;
 
-        match self.receive()? {
-            HelperMessage::PreflightResult {
-                accessibility_trusted,
-                input_monitoring_trusted,
-            } => PermissionPreflight {
-                accessibility_trusted,
-                input_monitoring_trusted,
-            }
-            .ensure_trusted(),
-            HelperMessage::Error { message } => Err(MacOSHelperError::new(format!(
-                "helper reported permission preflight error: {message}"
-            ))),
-            message => Err(MacOSHelperError::new(format!(
-                "expected helper permission preflight result, got {}",
-                message.message_type()
-            ))),
-        }
+        self.receive_expected(
+            "helper permission preflight result",
+            "permission preflight",
+            |message| match message {
+                HelperMessage::PreflightResult {
+                    accessibility_trusted,
+                    input_monitoring_trusted,
+                } => Ok(PermissionPreflight {
+                    accessibility_trusted,
+                    input_monitoring_trusted,
+                }),
+                message => Err(message),
+            },
+        )?
+        .ensure_trusted()
     }
 
     fn poll_activity(&mut self) -> Result<ActivitySample, MacOSHelperError> {
         self.send(&DaemonMessage::PollActivity)?;
 
-        match self.receive()? {
-            HelperMessage::ActivitySample { idle_ms } => {
-                Ok(ActivitySample::new(Duration::from_millis(idle_ms)))
-            }
-            HelperMessage::Error { message } => Err(MacOSHelperError::new(format!(
-                "helper reported activity error: {message}"
-            ))),
-            message => Err(MacOSHelperError::new(format!(
-                "expected helper activity sample, got {}",
-                message.message_type()
-            ))),
-        }
+        self.receive_expected(
+            "helper activity sample",
+            "activity",
+            |message| match message {
+                HelperMessage::ActivitySample { idle_ms } => {
+                    Ok(ActivitySample::new(Duration::from_millis(idle_ms)))
+                }
+                message => Err(message),
+            },
+        )
     }
 
     fn send_shutdown(&mut self) -> Result<(), MacOSHelperError> {
@@ -416,6 +352,26 @@ where
         serde_json::from_str(line.trim_end()).map_err(|error| {
             MacOSHelperError::new(format!("failed to decode helper message: {error}"))
         })
+    }
+
+    fn receive_expected<T>(
+        &mut self,
+        expected: &str,
+        helper_error_context: &str,
+        decode: impl FnOnce(HelperMessage) -> Result<T, HelperMessage>,
+    ) -> Result<T, MacOSHelperError> {
+        let message = self.receive()?;
+        match message {
+            HelperMessage::Error { message } => Err(MacOSHelperError::new(format!(
+                "helper reported {helper_error_context} error: {message}"
+            ))),
+            message => decode(message).map_err(|message| {
+                MacOSHelperError::new(format!(
+                    "expected {expected}, got {}",
+                    message.message_type()
+                ))
+            }),
+        }
     }
 }
 
@@ -488,6 +444,35 @@ impl From<BreakOrigin> for WireBreakOrigin {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum HelperCommand {
+    #[serde(rename = "startBreak")]
+    Start,
+    #[serde(rename = "finishBreak")]
+    Finish,
+    #[serde(rename = "clearBreak")]
+    Clear,
+}
+
+impl HelperCommand {
+    const fn from_backend_command(command: &BackendCommand) -> Self {
+        match command {
+            BackendCommand::StartBreak(_) => Self::Start,
+            BackendCommand::FinishBreak { .. } => Self::Finish,
+            BackendCommand::ClearBreak => Self::Clear,
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Start => "startBreak",
+            Self::Finish => "finishBreak",
+            Self::Clear => "clearBreak",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum HelperMessage {
@@ -504,6 +489,9 @@ enum HelperMessage {
         #[serde(rename = "inputMonitoringTrusted")]
         input_monitoring_trusted: bool,
     },
+    CommandComplete {
+        command: HelperCommand,
+    },
     ShutdownComplete,
     Error {
         message: String,
@@ -516,6 +504,7 @@ impl HelperMessage {
             Self::Ready { .. } => "ready",
             Self::ActivitySample { .. } => "activitySample",
             Self::PreflightResult { .. } => "preflightResult",
+            Self::CommandComplete { .. } => "commandComplete",
             Self::ShutdownComplete => "shutdownComplete",
             Self::Error { .. } => "error",
         }
@@ -546,7 +535,7 @@ impl PermissionPreflight {
         let plural = if missing.len() == 1 { "" } else { "s" };
         let missing_permissions = permission_list(&missing);
         Err(MacOSHelperError::new(format!(
-            "missing macOS privacy permission{plural}: {missing_permissions}. Open System Settings > Privacy & Security > {missing_permissions} and grant Resteyes access, then restart Resteyes. Development builds may appear as resteyes-macos-helper."
+            "missing macOS privacy permission{plural}: {missing_permissions}. Open System Settings > Privacy & Security and grant the listed permission{plural} to Resteyes, then restart Resteyes. Development builds may appear as resteyes-macos-helper."
         )))
     }
 }
@@ -592,30 +581,82 @@ fn shutdown_helper_after_startup_error(
     child: &mut Child,
     session: &mut HelperSession<ChildStdout, ChildStdin>,
 ) {
-    if let Err(error) = session.send_shutdown() {
-        warn!(%error, "failed to send shutdown to macOS helper after startup error");
+    let mut shutdown_sent = false;
+    if let Err(error) = shutdown_helper_process(child, Some(session), &mut shutdown_sent) {
+        warn!(%error, "failed to shut down macOS helper after startup error");
+    }
+}
+
+fn shutdown_helper_process(
+    child: &mut Child,
+    session: Option<&mut HelperSession<ChildStdout, ChildStdin>>,
+    shutdown_sent: &mut bool,
+) -> Result<(), MacOSHelperError> {
+    let mut first_error = None;
+
+    if !*shutdown_sent {
+        match session {
+            Some(session) => match session.send_shutdown() {
+                Ok(()) => {
+                    *shutdown_sent = true;
+                }
+                Err(error) => remember_first_error(&mut first_error, error),
+            },
+            None => remember_first_error(
+                &mut first_error,
+                MacOSHelperError::new("helper shutdown requested without a protocol session"),
+            ),
+        }
     }
 
+    if let Err(error) = wait_for_helper_exit_or_kill(child) {
+        remember_first_error(&mut first_error, error);
+    }
+
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+fn wait_for_helper_exit_or_kill(child: &mut Child) -> Result<(), MacOSHelperError> {
     let started = Instant::now();
     while started.elapsed() < HELPER_SHUTDOWN_TIMEOUT {
         match child.try_wait() {
             Ok(Some(status)) => {
-                trace!(%status, "macOS helper exited after startup error");
-                return;
+                trace!(%status, "macOS helper exited");
+                return Ok(());
             }
             Ok(None) => thread::sleep(HELPER_SHUTDOWN_POLL),
             Err(error) => {
-                warn!(%error, "failed to poll helper exit after startup error");
-                break;
+                return Err(MacOSHelperError::new(format!(
+                    "failed to poll helper exit: {error}"
+                )));
             }
         }
     }
 
+    let mut first_error = Some(MacOSHelperError::new(format!(
+        "helper did not exit within {} ms after shutdown",
+        duration_millis(HELPER_SHUTDOWN_TIMEOUT)
+    )));
+
     if let Err(error) = child.kill() {
-        warn!(%error, "failed to kill macOS helper after startup error");
+        remember_first_error(
+            &mut first_error,
+            MacOSHelperError::new(format!("failed to kill unresponsive helper: {error}")),
+        );
     }
     if let Err(error) = child.wait() {
-        warn!(%error, "failed to reap macOS helper after startup error");
+        remember_first_error(
+            &mut first_error,
+            MacOSHelperError::new(format!("failed to reap helper after timeout: {error}")),
+        );
+    }
+
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }
 
@@ -682,7 +723,7 @@ mod tests {
 
     #[test]
     fn handshake_writes_hello_and_accepts_ready() -> Result<(), Box<dyn std::error::Error>> {
-        let input = Cursor::new(br#"{"type":"ready","version":3}"#.to_vec());
+        let input = Cursor::new(br#"{"type":"ready","version":4}"#.to_vec());
         let mut output = Vec::new();
 
         {
@@ -735,6 +776,7 @@ mod tests {
         assert!(message.contains("Accessibility"));
         assert!(!message.contains("Input Monitoring."));
         assert!(message.contains("System Settings > Privacy & Security"));
+        assert!(message.contains("listed permission"));
         assert!(message.contains("resteyes-macos-helper"));
     }
 
@@ -753,6 +795,7 @@ mod tests {
         assert!(message.contains("Input Monitoring"));
         assert!(!message.contains("Accessibility."));
         assert!(message.contains("System Settings > Privacy & Security"));
+        assert!(message.contains("listed permission"));
         assert!(message.contains("resteyes-macos-helper"));
     }
 
@@ -770,12 +813,13 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("Accessibility and Input Monitoring"));
         assert!(message.contains("missing macOS privacy permissions"));
+        assert!(message.contains("listed permissions"));
         assert!(message.contains("restart Resteyes"));
     }
 
     #[test]
     fn handshake_rejects_incompatible_version() {
-        let input = Cursor::new(br#"{"type":"ready","version":4}"#.to_vec());
+        let input = Cursor::new(br#"{"type":"ready","version":5}"#.to_vec());
         let mut output = Vec::new();
         let mut session = HelperSession::new(input, &mut output);
 
@@ -804,27 +848,11 @@ mod tests {
     }
 
     #[test]
-    fn active_break_finishes_once_idle_elapsed_reaches_duration() {
-        let mut active_break = ActiveBreak::new(Duration::from_secs(1));
-
-        assert!(!active_break.advance(Duration::from_millis(500)));
-        assert!(active_break.advance(Duration::from_millis(500)));
-        assert!(!active_break.advance(Duration::from_millis(500)));
-    }
-
-    #[test]
-    fn active_break_finishes_when_idle_elapsed_overshoots_duration() {
-        let mut active_break = ActiveBreak::new(Duration::from_secs(1));
-
-        assert!(active_break.advance(Duration::from_secs(2)));
-        assert_eq!(active_break.timer.remaining, Duration::ZERO);
-    }
-
-    #[test]
     fn start_break_command_uses_millisecond_wire_duration() -> Result<(), Box<dyn std::error::Error>>
     {
+        let input = Cursor::new(br#"{"type":"commandComplete","command":"startBreak"}"#.to_vec());
         let mut output = Vec::new();
-        let mut session = HelperSession::new(Cursor::new(Vec::new()), &mut output);
+        let mut session = HelperSession::new(input, &mut output);
 
         session.send_command(BackendCommand::StartBreak(ScheduledBreak {
             name: String::from("short"),
@@ -851,8 +879,9 @@ mod tests {
 
     #[test]
     fn finish_break_command_is_framed() -> Result<(), Box<dyn std::error::Error>> {
+        let input = Cursor::new(br#"{"type":"commandComplete","command":"finishBreak"}"#.to_vec());
         let mut output = Vec::new();
-        let mut session = HelperSession::new(Cursor::new(Vec::new()), &mut output);
+        let mut session = HelperSession::new(input, &mut output);
 
         session.send_command(BackendCommand::FinishBreak { lock_after: true })?;
 
@@ -865,13 +894,52 @@ mod tests {
 
     #[test]
     fn clear_break_command_is_framed() -> Result<(), Box<dyn std::error::Error>> {
+        let input = Cursor::new(br#"{"type":"commandComplete","command":"clearBreak"}"#.to_vec());
         let mut output = Vec::new();
-        let mut session = HelperSession::new(Cursor::new(Vec::new()), &mut output);
+        let mut session = HelperSession::new(input, &mut output);
 
         session.send_command(BackendCommand::ClearBreak)?;
 
         assert_eq!(daemon_messages(&output)?, vec![DaemonMessage::ClearBreak]);
         Ok(())
+    }
+
+    #[test]
+    fn command_error_is_reported_with_command_context() -> Result<(), Box<dyn std::error::Error>> {
+        let input = Cursor::new(br#"{"type":"error","message":"event tap unavailable"}"#.to_vec());
+        let mut output = Vec::new();
+        let mut session = HelperSession::new(input, &mut output);
+
+        let Err(error) = session.send_command(BackendCommand::StartBreak(ScheduledBreak {
+            name: String::from("short"),
+            origin: BreakOrigin::Manual,
+            duration: Duration::from_millis(1_500),
+            messages: vec![String::from("Rest your eyes")],
+            autolock: false,
+        })) else {
+            panic!("helper command error must fail");
+        };
+
+        let message = error.to_string();
+        assert!(message.contains("startBreak command"));
+        assert!(message.contains("event tap unavailable"));
+        assert_eq!(daemon_messages(&output)?.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn mismatched_command_completion_is_rejected() {
+        let input = Cursor::new(br#"{"type":"commandComplete","command":"finishBreak"}"#.to_vec());
+        let mut output = Vec::new();
+        let mut session = HelperSession::new(input, &mut output);
+
+        let Err(error) = session.send_command(BackendCommand::ClearBreak) else {
+            panic!("wrong command completion must fail");
+        };
+
+        let message = error.to_string();
+        assert!(message.contains("expected helper command completion for clearBreak"));
+        assert!(message.contains("got finishBreak"));
     }
 
     #[test]
@@ -902,6 +970,20 @@ mod tests {
         assert_eq!(
             session.receive()?,
             HelperMessage::ActivitySample { idle_ms: 1_000 }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn command_complete_message_is_decoded() -> Result<(), Box<dyn std::error::Error>> {
+        let input = Cursor::new(br#"{"type":"commandComplete","command":"startBreak"}"#.to_vec());
+        let mut session = HelperSession::new(input, Vec::new());
+
+        assert_eq!(
+            session.receive()?,
+            HelperMessage::CommandComplete {
+                command: HelperCommand::Start,
+            }
         );
         Ok(())
     }

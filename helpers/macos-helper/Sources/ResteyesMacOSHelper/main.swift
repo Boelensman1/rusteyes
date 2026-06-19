@@ -4,7 +4,7 @@ import CoreGraphics
 import Darwin
 import Foundation
 
-private let protocolVersion = 3
+private let protocolVersion = 4
 private let directInvocationExitCode: Int32 = 2
 private let directInvocationMessage =
     "resteyes-macos-helper is an internal Resteyes helper. Start Resteyes with the main resteyes binary; do not run this helper directly."
@@ -317,6 +317,10 @@ private func writeError(_ error: Error) {
     try? writeMessage(message)
 }
 
+private func writeCommandComplete(_ command: String) throws {
+    try writeMessage(["type": "commandComplete", "command": command])
+}
+
 private func writeStandardErrorLine(_ line: String) {
     FileHandle.standardError.write(Data((line + "\n").utf8))
 }
@@ -461,8 +465,13 @@ private func runProtocolLoop(overlay: BreakOverlayController) {
                 try handlePreflightPermissions()
             case "startBreak":
                 try handleStartBreak(message, overlay: overlay)
-            case "finishBreak", "clearBreak":
+                try writeCommandComplete("startBreak")
+            case "finishBreak":
                 clearBreakOverlay(overlay)
+                try writeCommandComplete("finishBreak")
+            case "clearBreak":
+                clearBreakOverlay(overlay)
+                try writeCommandComplete("clearBreak")
             case "pollActivity":
                 try handlePollActivity()
             case "shutdown":
