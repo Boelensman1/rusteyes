@@ -2,7 +2,7 @@
 use crate::backend::NoopBackend;
 use crate::backend::{Backend, BackendCommand, DisableRequest, RuntimeEvent};
 use crate::config::{Config, ConfigError};
-use crate::scheduler::{BreakSchedule, BreakScheduler};
+use crate::scheduler::{BreakSchedule, BreakScheduler, ScheduledBreak};
 #[cfg(target_os = "linux")]
 use crate::x11_activity::X11ActivityBackend;
 use std::time::Duration;
@@ -35,7 +35,7 @@ where
         scheduler,
         backend,
         disable_mode: DisableMode::Enabled,
-        current_break_should_lock: None,
+        current_break: None,
     };
 
     daemon.run();
@@ -56,7 +56,7 @@ where
     scheduler: BreakScheduler,
     backend: &'a mut B,
     disable_mode: DisableMode,
-    current_break_should_lock: Option<bool>,
+    current_break: Option<CurrentBreakState>,
 }
 
 impl<B> DaemonRuntime<'_, B>
@@ -90,22 +90,28 @@ where
 
     fn advance_active(&mut self, elapsed: Duration) {
         if let Some(scheduled_break) = self.scheduler.advance_active(elapsed) {
-            self.current_break_should_lock = Some(scheduled_break.autolock);
-            self.handle_command(BackendCommand::StartBreak(scheduled_break));
+            self.start_break(scheduled_break);
         }
     }
 
     fn start_manual_break(&mut self, name: &str) {
         if let Some(scheduled_break) = self.scheduler.start_manual_break(name) {
-            self.current_break_should_lock = Some(scheduled_break.autolock);
-            self.handle_command(BackendCommand::StartBreak(scheduled_break));
+            self.start_break(scheduled_break);
         }
     }
 
-    fn finish_break(&mut self) {
-        let should_lock = self.current_break_should_lock.take().unwrap_or(false);
+    fn start_break(&mut self, scheduled_break: ScheduledBreak) {
+        self.current_break = Some(CurrentBreakState::for_break(&scheduled_break));
+        self.handle_command(BackendCommand::StartBreak(scheduled_break));
+    }
 
-        if self.scheduler.finish_break().is_some() {
+    fn finish_break(&mut self) {
+        let should_lock = self
+            .current_break
+            .take()
+            .is_some_and(CurrentBreakState::lock_after);
+
+        if self.scheduler.finish_break() {
             self.handle_command(BackendCommand::FinishBreak {
                 lock_after: should_lock,
             });
@@ -113,8 +119,8 @@ where
     }
 
     fn request_lock_after_current_break(&mut self) {
-        if let Some(current_break_should_lock) = &mut self.current_break_should_lock {
-            *current_break_should_lock = true;
+        if let Some(current_break) = &mut self.current_break {
+            current_break.request_lock_after();
         }
     }
 
@@ -144,15 +150,36 @@ where
     }
 
     fn disable_scheduler(&mut self) {
-        self.current_break_should_lock = None;
+        self.current_break = None;
 
-        if self.scheduler.disable().is_some() {
+        if self.scheduler.disable() {
             self.handle_command(BackendCommand::ClearBreak);
         }
     }
 
     fn handle_command(&mut self, command: BackendCommand) {
         self.backend.handle_command(command);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CurrentBreakState {
+    lock_after: bool,
+}
+
+impl CurrentBreakState {
+    const fn for_break(scheduled_break: &ScheduledBreak) -> Self {
+        Self {
+            lock_after: scheduled_break.autolock,
+        }
+    }
+
+    fn request_lock_after(&mut self) {
+        self.lock_after = true;
+    }
+
+    const fn lock_after(self) -> bool {
+        self.lock_after
     }
 }
 

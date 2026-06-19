@@ -34,6 +34,9 @@
 - Follow-up cleanup: overlay windows now select only the consumed exposure and
   button-press events, and pure overlay layout/text helpers are grouped under a
   private layout module.
+- Follow-up cleanup: lock-control hit testing now depends only on the active
+  control bounds, and the break timer stores remaining duration without a
+  separate finished flag.
 
 ## Commands
 
@@ -41,6 +44,8 @@
 - `make check`
 - `make test` after the lock-control hit-test fix.
 - `make check` after the lock-control hit-test fix.
+- `make test` after follow-up cleanup.
+- `make check` after follow-up cleanup.
 
 ## Follow-up
 

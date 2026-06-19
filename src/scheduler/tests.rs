@@ -14,7 +14,7 @@ fn default_config_schedules_short_and_long_break_slots() {
     assert_eq!(first.messages, vec![String::from("Rest your eyes")]);
     assert!(!first.autolock);
 
-    assert_eq!(scheduler.finish_break(), Some(first));
+    assert!(scheduler.finish_break());
 
     let second = started_break(scheduler.advance_active(DEFAULT_BREAK_AFTER_ACTIVE));
     assert_eq!(second.name, "long");
@@ -23,7 +23,7 @@ fn default_config_schedules_short_and_long_break_slots() {
     assert_eq!(second.messages, vec![String::from("Take a longer break")]);
     assert!(second.autolock);
 
-    assert_eq!(scheduler.finish_break(), Some(second));
+    assert!(scheduler.finish_break());
 
     let third = started_break(scheduler.advance_active(DEFAULT_BREAK_AFTER_ACTIVE));
     assert_eq!(third.name, "short");
@@ -41,28 +41,19 @@ fn largest_due_interval_wins_for_the_slot() {
         started_break(scheduler.advance_active(Duration::from_secs(10))).name,
         "blink"
     );
-    assert_eq!(
-        scheduler.finish_break().map(|break_| break_.name),
-        Some(String::from("blink"))
-    );
+    assert!(scheduler.finish_break());
 
     assert_eq!(
         started_break(scheduler.advance_active(Duration::from_secs(10))).name,
         "short"
     );
-    assert_eq!(
-        scheduler.finish_break().map(|break_| break_.name),
-        Some(String::from("short"))
-    );
+    assert!(scheduler.finish_break());
 
     assert_eq!(
         started_break(scheduler.advance_active(Duration::from_secs(10))).name,
         "blink"
     );
-    assert_eq!(
-        scheduler.finish_break().map(|break_| break_.name),
-        Some(String::from("blink"))
-    );
+    assert!(scheduler.finish_break());
 
     let fourth = started_break(scheduler.advance_active(Duration::from_secs(10)));
     assert_eq!(fourth.name, "long");
@@ -75,7 +66,6 @@ fn empty_slots_are_skipped_until_a_break_type_is_due() {
     let mut scheduler = scheduler(custom_breaks(10, &[("short", 3, 20), ("long", 5, 300)]));
 
     assert_eq!(scheduler.advance_active(Duration::from_secs(20)), None);
-    assert_eq!(scheduler.pending_break(), None);
 
     let third = started_break(scheduler.advance_active(Duration::from_secs(10)));
     assert_eq!(third.name, "short");
@@ -92,7 +82,7 @@ fn large_active_delta_starts_only_the_first_due_break() {
 
     assert_eq!(scheduler.advance_active(DEFAULT_BREAK_AFTER_ACTIVE), None);
 
-    assert_eq!(scheduler.finish_break(), Some(first));
+    assert!(scheduler.finish_break());
 
     let second = started_break(scheduler.advance_active(DEFAULT_BREAK_AFTER_ACTIVE));
     assert_eq!(second.name, "long");
@@ -105,15 +95,13 @@ fn pending_break_blocks_active_time_accumulation() {
 
     let first = started_break(scheduler.advance_active(DEFAULT_BREAK_AFTER_ACTIVE));
     assert_eq!(first.name, "short");
-    assert_eq!(scheduler.pending_break(), Some(&first));
 
     assert_eq!(
         scheduler.advance_active(DEFAULT_BREAK_AFTER_ACTIVE * 10),
         None
     );
-    assert_eq!(scheduler.pending_break(), Some(&first));
 
-    assert_eq!(scheduler.finish_break(), Some(first));
+    assert!(scheduler.finish_break());
 
     let second = started_break(scheduler.advance_active(DEFAULT_BREAK_AFTER_ACTIVE));
     assert_eq!(second.name, "long");
@@ -127,7 +115,7 @@ fn finish_break_restarts_active_accumulation_from_zero() {
     let first = started_break(scheduler.advance_active(Duration::from_secs(10)));
     assert_eq!(first.origin, BreakOrigin::Scheduled { slot: 1 });
 
-    assert_eq!(scheduler.finish_break(), Some(first));
+    assert!(scheduler.finish_break());
 
     assert_eq!(scheduler.advance_active(Duration::from_secs(9)), None);
 
@@ -139,7 +127,7 @@ fn finish_break_restarts_active_accumulation_from_zero() {
 fn disabled_scheduler_ignores_active_time() {
     let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20)]));
 
-    assert_eq!(scheduler.disable(), None);
+    assert!(!scheduler.disable());
 
     assert!(scheduler.is_disabled());
     assert_eq!(scheduler.advance_active(Duration::from_secs(100)), None);
@@ -159,7 +147,7 @@ fn disable_resets_partial_active_time() {
 
     assert_eq!(scheduler.advance_active(Duration::from_secs(9)), None);
 
-    assert_eq!(scheduler.disable(), None);
+    assert!(!scheduler.disable());
     scheduler.enable();
 
     assert_eq!(scheduler.advance_active(Duration::from_secs(1)), None);
@@ -172,7 +160,7 @@ fn disable_resets_partial_active_time() {
 fn enable_requires_fresh_active_interval_before_break() {
     let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20)]));
 
-    assert_eq!(scheduler.disable(), None);
+    assert!(!scheduler.disable());
     scheduler.enable();
 
     assert_eq!(scheduler.advance_active(Duration::from_secs(9)), None);
@@ -188,12 +176,10 @@ fn disable_clears_pending_break_without_rewinding_slots() {
     let first = started_break(scheduler.advance_active(DEFAULT_BREAK_AFTER_ACTIVE));
     assert_eq!(first.name, "short");
     assert_eq!(first.origin, BreakOrigin::Scheduled { slot: 1 });
-    assert_eq!(scheduler.pending_break(), Some(&first));
 
-    assert_eq!(scheduler.disable(), Some(first));
+    assert!(scheduler.disable());
 
     assert!(scheduler.is_disabled());
-    assert_eq!(scheduler.pending_break(), None);
     assert_eq!(scheduler.advance_active(DEFAULT_BREAK_AFTER_ACTIVE), None);
 
     scheduler.enable();
@@ -207,8 +193,8 @@ fn disable_clears_pending_break_without_rewinding_slots() {
 fn disable_and_enable_are_idempotent() {
     let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20)]));
 
-    assert_eq!(scheduler.disable(), None);
-    assert_eq!(scheduler.disable(), None);
+    assert!(!scheduler.disable());
+    assert!(!scheduler.disable());
 
     assert!(scheduler.is_disabled());
     assert_eq!(scheduler.advance_active(Duration::from_secs(10)), None);
@@ -230,7 +216,7 @@ fn manual_break_can_start_while_enabled() {
     assert_eq!(manual.origin, BreakOrigin::Manual);
     assert_eq!(manual.duration, Duration::from_secs(300));
 
-    assert_eq!(scheduler.finish_break(), Some(manual));
+    assert!(scheduler.finish_break());
 
     let next_break = started_break(scheduler.advance_active(Duration::from_secs(10)));
     assert_eq!(next_break.name, "short");
@@ -241,13 +227,13 @@ fn manual_break_can_start_while_enabled() {
 fn manual_break_can_start_while_disabled_and_resumes_disabled() {
     let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20)]));
 
-    assert_eq!(scheduler.disable(), None);
+    assert!(!scheduler.disable());
 
     let manual = started_break(scheduler.start_manual_break("short"));
     assert_eq!(manual.origin, BreakOrigin::Manual);
     assert!(scheduler.is_disabled());
 
-    assert_eq!(scheduler.finish_break(), Some(manual));
+    assert!(scheduler.finish_break());
     assert!(scheduler.is_disabled());
     assert_eq!(scheduler.advance_active(Duration::from_secs(100)), None);
 
@@ -261,13 +247,14 @@ fn manual_break_can_start_while_disabled_and_resumes_disabled() {
 fn enable_during_disabled_manual_break_resumes_active_after_finish() {
     let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20)]));
 
-    assert_eq!(scheduler.disable(), None);
+    assert!(!scheduler.disable());
     let manual = started_break(scheduler.start_manual_break("short"));
+    assert_eq!(manual.origin, BreakOrigin::Manual);
 
     scheduler.enable();
 
     assert!(!scheduler.is_disabled());
-    assert_eq!(scheduler.finish_break(), Some(manual));
+    assert!(scheduler.finish_break());
 
     let next_break = started_break(scheduler.advance_active(Duration::from_secs(10)));
     assert_eq!(next_break.origin, BreakOrigin::Scheduled { slot: 1 });
@@ -293,7 +280,7 @@ fn manual_break_resets_active_accumulation_without_advancing_slots() {
 
     assert_eq!(manual.name, "long");
     assert_eq!(manual.origin, BreakOrigin::Manual);
-    assert_eq!(scheduler.finish_break(), Some(manual));
+    assert!(scheduler.finish_break());
     assert_eq!(scheduler.advance_active(Duration::from_secs(1)), None);
 
     let next_break = started_break(scheduler.advance_active(Duration::from_secs(9)));

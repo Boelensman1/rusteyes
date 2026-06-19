@@ -19,6 +19,9 @@
   finish, unless the disable period expires during the break.
 - Runtime starts manual breaks through the existing `StartBreak` command and
   finishes them through the existing `FinishBreak { lock_after }` command.
+- Follow-up cleanup removed the scheduler's cloned pending break payload; the
+  scheduler now reports whether finish/disable affected a pending break, and
+  runtime owns the named current-break lock state.
 
 ## Decisions
 
@@ -34,6 +37,8 @@
 - `make check` initially failed on Clippy `similar_names` in new tests; renamed
   local variables.
 - `make check`
+- `make test` after follow-up cleanup.
+- `make check` after follow-up cleanup.
 
 ## Follow-up
 

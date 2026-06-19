@@ -348,12 +348,7 @@ impl X11Overlay {
             return false;
         }
 
-        if lock_control_contains_root_position(
-            &self.windows,
-            event.root_x,
-            event.root_y,
-            self.lock_after_break,
-        ) {
+        if lock_control_contains_root_position(&self.windows, event.root_x, event.root_y) {
             self.lock_after_break = true;
             true
         } else {
@@ -714,13 +709,12 @@ mod layout {
         windows: &[OverlayWindow],
         root_x: i16,
         root_y: i16,
-        lock_after_break: bool,
     ) -> bool {
         windows.iter().any(|window| {
             let local_x = i32::from(root_x).saturating_sub(i32::from(window.monitor.x));
             let local_y = i32::from(root_y).saturating_sub(i32::from(window.monitor.y));
 
-            lock_control_layout(&window.monitor, lock_after_break)
+            lock_control_layout(&window.monitor, false)
                 .bounds
                 .contains(local_x, local_y)
         })

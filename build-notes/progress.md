@@ -61,7 +61,8 @@
 - Completed `x11-ui-improvements`: X11 break overlays now render remaining
   break time and a lock-after-break control, and runtime tracks current-break
   lock state from configured autolock or that control before requesting the
-  local lock command after the break finishes.
+  local lock command after the break finishes. Follow-up cleanup simplified
+  lock-control hit testing and break timer state.
 - Completed `logging`: the binary now initializes `tracing` output with a
   warning-level default and `RUST_LOG` override support, X11 backend errors use
   tracing events, high-frequency X11 activity and overlay samples are available
@@ -71,6 +72,8 @@
 - Completed `manual-break-control`: runtime events can now start configured
   named breaks on demand, manual breaks are marked separately from scheduled
   slot breaks, and manual starts work while local scheduling is disabled.
+  Follow-up cleanup simplified scheduler pending state and runtime
+  current-break lock state.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.

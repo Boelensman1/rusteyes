@@ -18,14 +18,14 @@ impl BreakSchedule {
         self.rules
             .iter()
             .find(|rule| slot % rule.interval == 0)
-            .map(|rule| rule.scheduled_break(slot))
+            .map(|rule| rule.to_break(BreakOrigin::Scheduled { slot }))
     }
 
     fn manual_break(&self, name: &str) -> Option<ScheduledBreak> {
         self.rules
             .iter()
             .find(|rule| rule.name == name)
-            .map(BreakRule::manual_break)
+            .map(|rule| rule.to_break(BreakOrigin::Manual))
     }
 }
 
@@ -73,20 +73,10 @@ impl BreakRule {
         }
     }
 
-    fn scheduled_break(&self, slot: usize) -> ScheduledBreak {
+    fn to_break(&self, origin: BreakOrigin) -> ScheduledBreak {
         ScheduledBreak {
             name: self.name.clone(),
-            origin: BreakOrigin::Scheduled { slot },
-            duration: self.duration,
-            messages: self.messages.clone(),
-            autolock: self.autolock,
-        }
-    }
-
-    fn manual_break(&self) -> ScheduledBreak {
-        ScheduledBreak {
-            name: self.name.clone(),
-            origin: BreakOrigin::Manual,
+            origin,
             duration: self.duration,
             messages: self.messages.clone(),
             autolock: self.autolock,
@@ -128,7 +118,6 @@ impl BreakScheduler {
             if let Some(scheduled_break) = self.schedule.due_break(self.slot) {
                 self.active_elapsed = Duration::ZERO;
                 self.state = SchedulerState::Pending {
-                    scheduled_break: scheduled_break.clone(),
                     resume: SchedulerMode::Active,
                 };
                 return Some(scheduled_break);
@@ -146,14 +135,11 @@ impl BreakScheduler {
         let scheduled_break = self.schedule.manual_break(name)?;
 
         self.active_elapsed = Duration::ZERO;
-        self.state = SchedulerState::Pending {
-            scheduled_break: scheduled_break.clone(),
-            resume,
-        };
+        self.state = SchedulerState::Pending { resume };
         Some(scheduled_break)
     }
 
-    pub(crate) fn finish_break(&mut self) -> Option<ScheduledBreak> {
+    pub(crate) fn finish_break(&mut self) -> bool {
         let previous = std::mem::replace(
             &mut self.state,
             SchedulerState::Ready(SchedulerMode::Active),
@@ -161,22 +147,19 @@ impl BreakScheduler {
         self.active_elapsed = Duration::ZERO;
 
         match previous {
-            SchedulerState::Pending {
-                scheduled_break,
-                resume,
-            } => {
+            SchedulerState::Pending { resume } => {
                 self.state = SchedulerState::Ready(resume);
-                Some(scheduled_break)
+                true
             }
             SchedulerState::Ready(SchedulerMode::Disabled) => {
                 self.state = SchedulerState::Ready(SchedulerMode::Disabled);
-                None
+                false
             }
-            SchedulerState::Ready(SchedulerMode::Active) => None,
+            SchedulerState::Ready(SchedulerMode::Active) => false,
         }
     }
 
-    pub(crate) fn disable(&mut self) -> Option<ScheduledBreak> {
+    pub(crate) fn disable(&mut self) -> bool {
         let previous = std::mem::replace(
             &mut self.state,
             SchedulerState::Ready(SchedulerMode::Disabled),
@@ -184,10 +167,8 @@ impl BreakScheduler {
         self.active_elapsed = Duration::ZERO;
 
         match previous {
-            SchedulerState::Pending {
-                scheduled_break, ..
-            } => Some(scheduled_break),
-            SchedulerState::Ready(SchedulerMode::Active | SchedulerMode::Disabled) => None,
+            SchedulerState::Pending { .. } => true,
+            SchedulerState::Ready(SchedulerMode::Active | SchedulerMode::Disabled) => false,
         }
     }
 
@@ -206,30 +187,15 @@ impl BreakScheduler {
             SchedulerState::Ready(SchedulerMode::Disabled)
                 | SchedulerState::Pending {
                     resume: SchedulerMode::Disabled,
-                    ..
                 }
         )
-    }
-
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn pending_break(&self) -> Option<&ScheduledBreak> {
-        match &self.state {
-            SchedulerState::Pending {
-                scheduled_break, ..
-            } => Some(scheduled_break),
-            SchedulerState::Ready(_) => None,
-        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SchedulerState {
     Ready(SchedulerMode),
-    Pending {
-        scheduled_break: ScheduledBreak,
-        resume: SchedulerMode,
-    },
+    Pending { resume: SchedulerMode },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

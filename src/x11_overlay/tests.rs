@@ -134,13 +134,12 @@ fn lock_control_hit_testing_uses_root_coordinates_across_monitors() {
     let root_y = right_monitor.y + right_control.bounds.y + 1;
 
     assert!(lock_control_contains_root_position(
-        &windows, root_x, root_y, false
+        &windows, root_x, root_y
     ));
     assert!(!lock_control_contains_root_position(
         &windows,
         right_monitor.x + right_control.bounds.x - 1,
         root_y,
-        false
     ));
 }
 

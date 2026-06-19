@@ -409,25 +409,22 @@ struct BreakAdvance {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BreakTimer {
     remaining: Duration,
-    finished: bool,
 }
 
 impl BreakTimer {
     const fn new(duration: Duration) -> Self {
         Self {
             remaining: duration,
-            finished: false,
         }
     }
 
     fn advance(&mut self, elapsed: Duration) -> bool {
-        if self.finished {
+        if self.remaining.is_zero() {
             return false;
         }
 
         if elapsed >= self.remaining {
             self.remaining = Duration::ZERO;
-            self.finished = true;
             true
         } else {
             self.remaining -= elapsed;
