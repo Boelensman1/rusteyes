@@ -30,10 +30,15 @@ RestEyes is an as-simple-as-possible SafeEyes replacement focused on reliable br
 - Use LAN discovery to find peers.
 - Authenticate peer messages with a configured shared secret.
 - Generate a transient sender identity at daemon startup for message
-  attribution and deduplication; it does not need to be configured or
-  persisted.
+  attribution; it does not need to be configured or persisted.
+- Broadcast active-time increments across authenticated peers so activity on
+  multiple computers contributes to the same break cadence.
+- Treat synced active time as additive for v1: remote active-time increments
+  are applied like local active-time increments, and simultaneous activity on
+  multiple peers can make breaks arrive faster.
 - Allow any authenticated peer to broadcast that a break is due.
-- Apply break starts, disable/snooze periods, and lock-after-break decisions across authenticated peers.
+- Apply break starts, disable/snooze periods, and lock-after-break decisions
+  across authenticated peers.
 - Each machine runs its own local lock mechanism when a synced lock-after-break decision applies.
 
 ## Architecture
@@ -123,10 +128,12 @@ step note when implementation begins.
 23. `lan-discovery`: discover authenticated peers on the LAN.
 24. `authenticated-peer-transport`: exchange authenticated sync messages with
     discovered peers.
-25. `break-disable-sync`: broadcast and apply break starts and disable periods
+25. `active-time-sync`: broadcast and apply active-time increments across
+    authenticated peers.
+26. `break-disable-sync`: broadcast and apply break starts and disable periods
     across peers.
-26. `notification-tray-ui`: add pre-break notifications and tray/menu actions.
-27. `synced-lock-after-break`: apply synced lock-after-break decisions using
+27. `notification-tray-ui`: add pre-break notifications and tray/menu actions.
+28. `synced-lock-after-break`: apply synced lock-after-break decisions using
     the local platform lock hook.
 
 Deferred later work:

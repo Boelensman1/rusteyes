@@ -181,6 +181,7 @@
 - The next planned increment is `macos-ui-improvements`.
 - The later build order now brings macOS backend parity before sync protocol,
   then separates sync protocol, LAN discovery, authenticated peer transport,
-  synced break/disable behavior, tray UI, and synced lock-after-break behavior.
+  active-time sync, synced break/disable behavior, tray UI, and synced
+  lock-after-break behavior.
 - Step-specific notes belong in `build-notes/$step.md`.
 - Update this file whenever a step is completed or the project state changes.
