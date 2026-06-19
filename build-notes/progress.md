@@ -45,8 +45,9 @@
 - Completed `x11-overlay`: Linux/X11 break commands now create unmanaged
   `override_redirect` overlay windows over connected monitor geometries, render
   the first configured break message, keep overlays raised/redrawn during the
-  break, suppress active-time polling while the break is visible, and clear the
-  overlays when the runtime finishes or clears the break.
+  break, suppress active-time polling while the break is visible, count down
+  break duration only on idle overlay samples, and clear the overlays when the
+  runtime finishes or clears the break.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.

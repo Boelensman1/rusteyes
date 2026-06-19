@@ -50,9 +50,11 @@ impl X11ActivityBackend {
     fn poll_overlay_once(&mut self) -> Result<(), X11ActivityError> {
         thread::sleep(OVERLAY_TICK_INTERVAL);
 
+        let sample = self.activity.sample()?;
+        let break_elapsed = break_elapsed_for_sample(sample, OVERLAY_TICK_INTERVAL);
         let finished = match &mut self.active_break {
             Some(active_break) => active_break
-                .advance(&self.activity.connection, OVERLAY_TICK_INTERVAL)
+                .advance(&self.activity.connection, break_elapsed)
                 .map_err(|error| X11ActivityError::overlay(&error))?,
             None => false,
         };
@@ -346,6 +348,13 @@ impl ActivitySample {
 enum ActivityState {
     Active,
     Idle,
+}
+
+fn break_elapsed_for_sample(sample: ActivitySample, poll_interval: Duration) -> Duration {
+    match sample.state_for(poll_interval) {
+        ActivityState::Active => Duration::ZERO,
+        ActivityState::Idle => poll_interval,
+    }
 }
 
 #[cfg(test)]

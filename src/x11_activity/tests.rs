@@ -1,4 +1,4 @@
-use super::{ActivityPoller, ActivitySample, ActivityState, BreakTimer};
+use super::{ActivityPoller, ActivitySample, ActivityState, BreakTimer, break_elapsed_for_sample};
 use crate::backend::RuntimeEvent;
 use std::time::Duration;
 
@@ -87,4 +87,23 @@ fn break_timer_finishes_when_elapsed_time_overshoots_duration() {
 
     assert!(timer.advance(Duration::from_secs(3)));
     assert_eq!(timer.remaining, Duration::ZERO);
+}
+
+#[test]
+fn active_overlay_sample_does_not_count_down_break_time() {
+    let poll_interval = Duration::from_millis(500);
+    let elapsed = break_elapsed_for_sample(ActivitySample::new(Duration::ZERO), poll_interval);
+
+    assert_eq!(elapsed, Duration::ZERO);
+}
+
+#[test]
+fn idle_overlay_sample_counts_down_break_time() {
+    let poll_interval = Duration::from_millis(500);
+    let elapsed = break_elapsed_for_sample(
+        ActivitySample::new(Duration::from_millis(501)),
+        poll_interval,
+    );
+
+    assert_eq!(elapsed, poll_interval);
 }

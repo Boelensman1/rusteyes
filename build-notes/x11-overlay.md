@@ -21,8 +21,9 @@
   temporary diagnostic wrapper and stderr command printing were removed.
 - The Linux backend now handles break commands: `StartBreak` shows overlays and
   suppresses active-time polling while a break is visible, wall-clock time
-  continues, `BreakFinished` is emitted after the configured duration, and
-  `ClearBreak` destroys overlay resources.
+  continues, the break countdown advances only while the latest XScreenSaver
+  sample is idle, `BreakFinished` is emitted after the configured idle break
+  duration, and `ClearBreak` destroys overlay resources.
 
 ## Decisions
 
@@ -30,6 +31,9 @@
   blocking remains the next X11 step.
 - One deterministic message is shown: the first configured message for the due
   break type. Message randomization or cycling remains deferred.
+- Break duration is enforced as idle time while the overlay is visible, not
+  raw wall-clock time; continued keyboard or pointer activity keeps the break
+  visible.
 - Overlay failures during backend command handling are logged and cause the
   backend to shut down, because backend commands are currently fire-and-forget.
 - X11 connection teardown still provides a fallback cleanup path for server-side
@@ -40,6 +44,7 @@
 - `make test`
 - `make lint`
 - `make check`
+- `make check` after changing break countdown to require idle overlay samples.
 
 ## Follow-up
 
