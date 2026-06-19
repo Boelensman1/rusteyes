@@ -48,6 +48,8 @@
   break, suppress active-time polling while the break is visible, count down
   break duration only on idle overlay samples, and clear the overlays when the
   runtime finishes or clears the break.
+- Added `test-break-config`: `test-configs/ten-second-break.yaml` starts a 10
+  second test break after 10 seconds of active time for manual testing.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
