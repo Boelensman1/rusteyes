@@ -7,6 +7,7 @@ use std::fmt;
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
+use tracing::{error, trace};
 use x11rb::connection::Connection;
 use x11rb::protocol::screensaver::ConnectionExt;
 use x11rb::rust_connection::RustConnection;
@@ -56,6 +57,13 @@ impl X11ActivityBackend {
 
         let sample = self.activity.sample()?;
         let break_elapsed = break_elapsed_for_sample(sample, OVERLAY_TICK_INTERVAL);
+        trace!(
+            idle_for = ?sample.idle_for,
+            state = ?sample.state_for(OVERLAY_TICK_INTERVAL),
+            ?break_elapsed,
+            break_time_advanced = !break_elapsed.is_zero(),
+            "sampled X11 activity during break overlay"
+        );
         let finished = match &mut self.active_break {
             Some(active_break) => active_break
                 .advance(&self.activity.connection, break_elapsed)
@@ -107,7 +115,7 @@ impl X11ActivityBackend {
     }
 
     fn queue_backend_error(&mut self, error: &X11ActivityError) {
-        eprintln!("resteyes: {error}");
+        error!(%error, "backend error");
         self.poller.queue_event(RuntimeEvent::Shutdown);
     }
 }
@@ -120,7 +128,7 @@ impl Backend for X11ActivityBackend {
             }
 
             if let Err(error) = self.poll_once() {
-                eprintln!("resteyes: {error}");
+                error!(%error, "backend error");
                 return RuntimeEvent::Shutdown;
             }
         }
@@ -375,6 +383,12 @@ impl ActivityPoller {
 
     fn queue_sample(&mut self, sample: ActivitySample) -> ActivityState {
         let state = sample.state_for(self.poll_interval);
+        trace!(
+            idle_for = ?sample.idle_for,
+            ?state,
+            poll_interval = ?self.poll_interval,
+            "sampled X11 activity"
+        );
 
         self.queue_event(RuntimeEvent::WallClockElapsed(self.poll_interval));
 
@@ -386,6 +400,7 @@ impl ActivityPoller {
     }
 
     fn queue_event(&mut self, event: RuntimeEvent) {
+        trace!(?event, "queued runtime event");
         self.events.push_back(event);
     }
 

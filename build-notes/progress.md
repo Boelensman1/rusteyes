@@ -55,6 +55,10 @@
 - Completed `x11-lock-after-break`: config now has a `lock.command` argv list
   defaulting to `loginctl lock-session`, and Linux/X11 production runs spawn the
   configured command after an autolock break finishes.
+- Completed `logging`: the binary now initializes `tracing` output with a
+  warning-level default and `RUST_LOG` override support, X11 backend errors use
+  tracing events, high-frequency X11 activity and overlay samples are available
+  at trace level, and top-level startup errors remain visible on stderr.
 - Added `test-break-config`: `test-configs/ten-second-break.yaml` starts a 10
   second test break after 10 seconds of active time for manual testing.
 - Cargo is the Rust build system; `make` is the project task runner.
@@ -69,14 +73,13 @@
 - `make build` passes.
 - `nix build` passes.
 - `.codex/hooks/rustfmt.sh` runs successfully.
-- Manual X11 overlay and input-blocking verification is still pending because
-  this environment does not provide usable X server access.
+- Manual X11 overlay, input-blocking, and trace-output verification is still
+  pending because this environment does not provide usable X server access.
 
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next planned increment is `x11-ui-improvements`, followed by
-  `x11-break-integration`.
+- The next planned increment is `x11-ui-improvements`.
 - The later build order now separates manual break control, sync
   configuration/authentication, sync protocol, LAN discovery, authenticated
   peer transport, and synced break/disable behavior.

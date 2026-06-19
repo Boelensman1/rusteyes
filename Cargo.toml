@@ -9,6 +9,8 @@ publish = false
 humantime = "2.3.0"
 serde = { version = "1.0", features = ["derive"] }
 serde-saphyr = { version = "0.0.27", default-features = false, features = ["deserialize"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.13.2", default-features = false, features = ["randr", "screensaver"] }
