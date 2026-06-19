@@ -12,7 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{trace, warn};
 
-const PROTOCOL_VERSION: u16 = 2;
+const PROTOCOL_VERSION: u16 = 3;
 const HELPER_PATH_ENV: &str = "RESTEYES_MACOS_HELPER";
 const DEVELOPMENT_HELPER_PATH: &str = "helpers/macos-helper/.build/debug/resteyes-macos-helper";
 const HELPER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -50,6 +50,10 @@ impl MacOSHelperBackend {
         if let Err(error) = session.handshake() {
             let _ = child.kill();
             let _ = child.wait();
+            return Err(error);
+        }
+        if let Err(error) = session.preflight_permissions() {
+            shutdown_helper_after_startup_error(&mut child, &mut session);
             return Err(error);
         }
 
@@ -323,7 +327,8 @@ where
             HelperMessage::Ready { version } => Err(MacOSHelperError::new(format!(
                 "helper protocol version {version} is incompatible with daemon protocol version {PROTOCOL_VERSION}"
             ))),
-            message @ HelperMessage::ActivitySample { .. } => Err(MacOSHelperError::new(format!(
+            message @ (HelperMessage::ActivitySample { .. }
+            | HelperMessage::PreflightResult { .. }) => Err(MacOSHelperError::new(format!(
                 "expected helper ready message during handshake, got {}",
                 message.message_type()
             ))),
@@ -339,6 +344,28 @@ where
 
     fn send_command(&mut self, command: BackendCommand) -> Result<(), MacOSHelperError> {
         self.send(&DaemonMessage::from(command))
+    }
+
+    fn preflight_permissions(&mut self) -> Result<(), MacOSHelperError> {
+        self.send(&DaemonMessage::PreflightPermissions)?;
+
+        match self.receive()? {
+            HelperMessage::PreflightResult {
+                accessibility_trusted,
+                input_monitoring_trusted,
+            } => PermissionPreflight {
+                accessibility_trusted,
+                input_monitoring_trusted,
+            }
+            .ensure_trusted(),
+            HelperMessage::Error { message } => Err(MacOSHelperError::new(format!(
+                "helper reported permission preflight error: {message}"
+            ))),
+            message => Err(MacOSHelperError::new(format!(
+                "expected helper permission preflight result, got {}",
+                message.message_type()
+            ))),
+        }
     }
 
     fn poll_activity(&mut self) -> Result<ActivitySample, MacOSHelperError> {
@@ -398,6 +425,7 @@ enum DaemonMessage {
     Hello {
         version: u16,
     },
+    PreflightPermissions,
     StartBreak {
         #[serde(rename = "break")]
         break_info: WireBreak,
@@ -470,6 +498,12 @@ enum HelperMessage {
         #[serde(rename = "idleMs")]
         idle_ms: u64,
     },
+    PreflightResult {
+        #[serde(rename = "accessibilityTrusted")]
+        accessibility_trusted: bool,
+        #[serde(rename = "inputMonitoringTrusted")]
+        input_monitoring_trusted: bool,
+    },
     ShutdownComplete,
     Error {
         message: String,
@@ -481,9 +515,48 @@ impl HelperMessage {
         match self {
             Self::Ready { .. } => "ready",
             Self::ActivitySample { .. } => "activitySample",
+            Self::PreflightResult { .. } => "preflightResult",
             Self::ShutdownComplete => "shutdownComplete",
             Self::Error { .. } => "error",
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PermissionPreflight {
+    accessibility_trusted: bool,
+    input_monitoring_trusted: bool,
+}
+
+impl PermissionPreflight {
+    fn ensure_trusted(self) -> Result<(), MacOSHelperError> {
+        let mut missing = Vec::new();
+
+        if !self.accessibility_trusted {
+            missing.push("Accessibility");
+        }
+        if !self.input_monitoring_trusted {
+            missing.push("Input Monitoring");
+        }
+
+        if missing.is_empty() {
+            return Ok(());
+        }
+
+        let plural = if missing.len() == 1 { "" } else { "s" };
+        let missing_permissions = permission_list(&missing);
+        Err(MacOSHelperError::new(format!(
+            "missing macOS privacy permission{plural}: {missing_permissions}. Open System Settings > Privacy & Security > {missing_permissions} and grant Resteyes access, then restart Resteyes. Development builds may appear as resteyes-macos-helper."
+        )))
+    }
+}
+
+fn permission_list(permissions: &[&str]) -> String {
+    match permissions {
+        [] => String::new(),
+        [permission] => (*permission).to_string(),
+        [first, second] => format!("{first} and {second}"),
+        _ => permissions.join(", "),
     }
 }
 
@@ -513,6 +586,37 @@ fn spawn_helper(path: &Path) -> Result<Child, MacOSHelperError> {
             path.display()
         ))
     })
+}
+
+fn shutdown_helper_after_startup_error(
+    child: &mut Child,
+    session: &mut HelperSession<ChildStdout, ChildStdin>,
+) {
+    if let Err(error) = session.send_shutdown() {
+        warn!(%error, "failed to send shutdown to macOS helper after startup error");
+    }
+
+    let started = Instant::now();
+    while started.elapsed() < HELPER_SHUTDOWN_TIMEOUT {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                trace!(%status, "macOS helper exited after startup error");
+                return;
+            }
+            Ok(None) => thread::sleep(HELPER_SHUTDOWN_POLL),
+            Err(error) => {
+                warn!(%error, "failed to poll helper exit after startup error");
+                break;
+            }
+        }
+    }
+
+    if let Err(error) = child.kill() {
+        warn!(%error, "failed to kill macOS helper after startup error");
+    }
+    if let Err(error) = child.wait() {
+        warn!(%error, "failed to reap macOS helper after startup error");
+    }
 }
 
 fn spawn_stderr_mirror(path: &Path, stderr: ChildStderr) {
@@ -578,7 +682,7 @@ mod tests {
 
     #[test]
     fn handshake_writes_hello_and_accepts_ready() -> Result<(), Box<dyn std::error::Error>> {
-        let input = Cursor::new(br#"{"type":"ready","version":2}"#.to_vec());
+        let input = Cursor::new(br#"{"type":"ready","version":3}"#.to_vec());
         let mut output = Vec::new();
 
         {
@@ -596,8 +700,82 @@ mod tests {
     }
 
     #[test]
+    fn preflight_permissions_writes_request_and_accepts_trusted_result()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let input = Cursor::new(
+            br#"{"type":"preflightResult","accessibilityTrusted":true,"inputMonitoringTrusted":true}"#
+                .to_vec(),
+        );
+        let mut output = Vec::new();
+
+        {
+            let mut session = HelperSession::new(input, &mut output);
+            session.preflight_permissions()?;
+        }
+
+        assert_eq!(
+            daemon_messages(&output)?,
+            vec![DaemonMessage::PreflightPermissions]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn preflight_permissions_errors_when_accessibility_is_missing() {
+        let result = PermissionPreflight {
+            accessibility_trusted: false,
+            input_monitoring_trusted: true,
+        }
+        .ensure_trusted();
+        let Err(error) = result else {
+            panic!("missing Accessibility must fail preflight");
+        };
+
+        let message = error.to_string();
+        assert!(message.contains("Accessibility"));
+        assert!(!message.contains("Input Monitoring."));
+        assert!(message.contains("System Settings > Privacy & Security"));
+        assert!(message.contains("resteyes-macos-helper"));
+    }
+
+    #[test]
+    fn preflight_permissions_errors_when_input_monitoring_is_missing() {
+        let result = PermissionPreflight {
+            accessibility_trusted: true,
+            input_monitoring_trusted: false,
+        }
+        .ensure_trusted();
+        let Err(error) = result else {
+            panic!("missing Input Monitoring must fail preflight");
+        };
+
+        let message = error.to_string();
+        assert!(message.contains("Input Monitoring"));
+        assert!(!message.contains("Accessibility."));
+        assert!(message.contains("System Settings > Privacy & Security"));
+        assert!(message.contains("resteyes-macos-helper"));
+    }
+
+    #[test]
+    fn preflight_permissions_errors_when_both_permissions_are_missing() {
+        let result = PermissionPreflight {
+            accessibility_trusted: false,
+            input_monitoring_trusted: false,
+        }
+        .ensure_trusted();
+        let Err(error) = result else {
+            panic!("missing permissions must fail preflight");
+        };
+
+        let message = error.to_string();
+        assert!(message.contains("Accessibility and Input Monitoring"));
+        assert!(message.contains("missing macOS privacy permissions"));
+        assert!(message.contains("restart Resteyes"));
+    }
+
+    #[test]
     fn handshake_rejects_incompatible_version() {
-        let input = Cursor::new(br#"{"type":"ready","version":3}"#.to_vec());
+        let input = Cursor::new(br#"{"type":"ready","version":4}"#.to_vec());
         let mut output = Vec::new();
         let mut session = HelperSession::new(input, &mut output);
 

@@ -1,9 +1,10 @@
 import AppKit
+import ApplicationServices
 import CoreGraphics
 import Darwin
 import Foundation
 
-private let protocolVersion = 2
+private let protocolVersion = 3
 private let directInvocationExitCode: Int32 = 2
 private let directInvocationMessage =
     "resteyes-macos-helper is an internal Resteyes helper. Start Resteyes with the main resteyes binary; do not run this helper directly."
@@ -334,6 +335,23 @@ private func handleHello(_ message: [String: Any]) throws {
     try writeMessage(["type": "ready", "version": protocolVersion])
 }
 
+private func handlePreflightPermissions() throws {
+    let accessibilityTrusted = requestAccessibilityTrust()
+    let inputMonitoringTrusted = CGPreflightListenEventAccess()
+
+    try writeMessage([
+        "type": "preflightResult",
+        "accessibilityTrusted": accessibilityTrusted,
+        "inputMonitoringTrusted": inputMonitoringTrusted,
+    ])
+}
+
+private func requestAccessibilityTrust() -> Bool {
+    let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+    let options = [promptKey: true] as CFDictionary
+    return AXIsProcessTrustedWithOptions(options)
+}
+
 private func handleStartBreak(_ message: [String: Any], overlay: BreakOverlayController) throws {
     let message = try selectedBreakMessage(from: message)
     try runThrowingOnMain {
@@ -439,6 +457,8 @@ private func runProtocolLoop(overlay: BreakOverlayController) {
         do {
             let message = try parseMessage(line)
             switch try messageType(message) {
+            case "preflightPermissions":
+                try handlePreflightPermissions()
             case "startBreak":
                 try handleStartBreak(message, overlay: overlay)
             case "finishBreak", "clearBreak":
