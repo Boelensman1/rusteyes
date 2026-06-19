@@ -1,8 +1,8 @@
 use super::{
-    MAX_X11_TEXT_BYTES, MonitorGeometry, check_grab_status, lock_control_label,
-    lock_control_layout, normalize_monitor_geometries, output_has_monitor, overlay_layout,
-    overlay_window_event_mask, pointer_grab_event_mask, remaining_time_text,
-    selected_break_message, x11_text_bytes,
+    MAX_X11_TEXT_BYTES, MonitorGeometry, OverlayWindow, check_grab_status,
+    lock_control_contains_root_position, lock_control_label, lock_control_layout,
+    normalize_monitor_geometries, output_has_monitor, overlay_layout, overlay_window_event_mask,
+    pointer_grab_event_mask, remaining_time_text, selected_break_message, x11_text_bytes,
 };
 use crate::scheduler::ScheduledBreak;
 use std::time::Duration;
@@ -97,12 +97,49 @@ fn overlay_layout_stacks_message_time_and_lock_control() {
 fn lock_control_hit_testing_uses_button_bounds() {
     let monitor = MonitorGeometry::new(0, 0, 800, 600);
     let control = lock_control_layout(&monitor, false);
-    let inside_x = control.bounds.x + 1;
-    let inside_y = control.bounds.y + 1;
+    let inside_x = i32::from(control.bounds.x) + 1;
+    let inside_y = i32::from(control.bounds.y) + 1;
 
     assert!(control.bounds.contains(inside_x, inside_y));
-    assert!(!control.bounds.contains(control.bounds.x - 1, inside_y));
-    assert!(!control.bounds.contains(inside_x, control.bounds.y - 1));
+    assert!(
+        !control
+            .bounds
+            .contains(i32::from(control.bounds.x) - 1, inside_y)
+    );
+    assert!(
+        !control
+            .bounds
+            .contains(inside_x, i32::from(control.bounds.y) - 1)
+    );
+}
+
+#[test]
+fn lock_control_hit_testing_uses_root_coordinates_across_monitors() {
+    let left_monitor = MonitorGeometry::new(0, 0, 1920, 1080);
+    let right_monitor = MonitorGeometry::new(1920, 0, 1280, 1024);
+    let right_control = lock_control_layout(&right_monitor, false);
+    let windows = vec![
+        OverlayWindow {
+            window: 1,
+            monitor: left_monitor,
+        },
+        OverlayWindow {
+            window: 2,
+            monitor: right_monitor.clone(),
+        },
+    ];
+    let root_x = right_monitor.x + right_control.bounds.x + 1;
+    let root_y = right_monitor.y + right_control.bounds.y + 1;
+
+    assert!(lock_control_contains_root_position(
+        &windows, root_x, root_y, false
+    ));
+    assert!(!lock_control_contains_root_position(
+        &windows,
+        right_monitor.x + right_control.bounds.x - 1,
+        root_y,
+        false
+    ));
 }
 
 #[test]
@@ -110,14 +147,14 @@ fn lock_control_label_reflects_requested_state() {
     let monitor = MonitorGeometry::new(0, 0, 800, 600);
 
     assert_eq!(lock_control_label(false), "Lock after break");
-    assert_eq!(lock_control_label(true), "Lock after break requested");
+    assert_eq!(lock_control_label(true), "Locking after break");
     assert_eq!(
         lock_control_layout(&monitor, false).label.text,
         b"Lock after break"
     );
     assert_eq!(
         lock_control_layout(&monitor, true).label.text,
-        b"Lock after break requested"
+        b"Locking after break"
     );
 }
 

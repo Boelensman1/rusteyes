@@ -25,7 +25,7 @@ const CONTROL_PADDING_X_PIXELS: i32 = 14;
 const CONTROL_HEIGHT_PIXELS: u16 = 32;
 const CONTROL_TEXT_BASELINE_OFFSET_PIXELS: i32 = 21;
 const LOCK_CONTROL_LABEL: &str = "Lock after break";
-const LOCK_CONTROL_REQUESTED_LABEL: &str = "Lock after break requested";
+const LOCK_CONTROL_REQUESTED_LABEL: &str = "Locking after break";
 const MAX_X11_TEXT_BYTES: usize = 255;
 
 #[allow(clippy::module_name_repetitions)]
@@ -162,6 +162,7 @@ impl X11Overlay {
                 Some(Event::ButtonPress(event)) => {
                     if self.handle_button_press(&event) {
                         lock_after_break_requested = true;
+                        self.draw(connection)?;
                     }
                 }
                 Some(_) => {}
@@ -349,16 +350,12 @@ impl X11Overlay {
             return false;
         }
 
-        let Some(window) = self
-            .windows
-            .iter()
-            .find(|window| window.window == event.event)
-        else {
-            return false;
-        };
-
-        let control = lock_control_layout(&window.monitor, self.lock_after_break);
-        if control.bounds.contains(event.event_x, event.event_y) {
+        if lock_control_contains_root_position(
+            &self.windows,
+            event.root_x,
+            event.root_y,
+            self.lock_after_break,
+        ) {
             self.lock_after_break = true;
             true
         } else {
@@ -695,9 +692,7 @@ struct ControlBounds {
 }
 
 impl ControlBounds {
-    fn contains(self, x: i16, y: i16) -> bool {
-        let x = i32::from(x);
-        let y = i32::from(y);
+    fn contains(self, x: i32, y: i32) -> bool {
         let left = i32::from(self.x);
         let top = i32::from(self.y);
         let right = left.saturating_add(i32::from(self.width));
@@ -705,6 +700,22 @@ impl ControlBounds {
 
         x >= left && x < right && y >= top && y < bottom
     }
+}
+
+fn lock_control_contains_root_position(
+    windows: &[OverlayWindow],
+    root_x: i16,
+    root_y: i16,
+    lock_after_break: bool,
+) -> bool {
+    windows.iter().any(|window| {
+        let local_x = i32::from(root_x).saturating_sub(i32::from(window.monitor.x));
+        let local_y = i32::from(root_y).saturating_sub(i32::from(window.monitor.y));
+
+        lock_control_layout(&window.monitor, lock_after_break)
+            .bounds
+            .contains(local_x, local_y)
+    })
 }
 
 fn overlay_layout(

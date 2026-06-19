@@ -28,11 +28,16 @@
   dependency; richer fonts or toolkit UI remain out of scope.
 - Lock requests are queued before `BreakFinished` when both happen in the same
   overlay polling tick, so a final-tick click applies to that break.
+- Follow-up fix: lock-control clicks use root coordinates across all overlay
+  windows instead of the grabbed event window's local coordinates, and accepted
+  clicks redraw immediately so the requested state is visible.
 
 ## Commands
 
 - `make test`
 - `make check`
+- `make test` after the lock-control hit-test fix.
+- `make check` after the lock-control hit-test fix.
 
 ## Follow-up
 
