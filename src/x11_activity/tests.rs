@@ -1,4 +1,4 @@
-use super::{ActivityPoller, ActivitySample, ActivityState, format_diagnostic_sample};
+use super::{ActivityPoller, ActivitySample, ActivityState, BreakTimer};
 use crate::backend::RuntimeEvent;
 use std::time::Duration;
 
@@ -73,15 +73,18 @@ fn idle_sample_queues_only_wall_clock_time() {
 }
 
 #[test]
-fn diagnostic_line_is_formatted_from_classified_state() {
-    let line = format_diagnostic_sample(
-        ActivitySample::new(Duration::from_millis(250)),
-        ActivityState::Active,
-        Duration::from_secs(1),
-    );
+fn break_timer_finishes_once_duration_elapses() {
+    let mut timer = BreakTimer::new(Duration::from_secs(2));
 
-    assert_eq!(
-        line,
-        "resteyes: x11 activity state=active idle_ms=250 tick_ms=1000"
-    );
+    assert!(!timer.advance(Duration::from_secs(1)));
+    assert!(timer.advance(Duration::from_secs(1)));
+    assert!(!timer.advance(Duration::from_secs(1)));
+}
+
+#[test]
+fn break_timer_finishes_when_elapsed_time_overshoots_duration() {
+    let mut timer = BreakTimer::new(Duration::from_secs(2));
+
+    assert!(timer.advance(Duration::from_secs(3)));
+    assert_eq!(timer.remaining, Duration::ZERO);
 }

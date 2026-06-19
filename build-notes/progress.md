@@ -39,9 +39,14 @@
   command handling default to no-op for backends that do not handle commands.
 - Completed `x11-activity`: Linux production runs now use a permanent
   crate-internal X11 activity backend backed by XScreenSaver idle time. It emits
-  wall-clock ticks and active-time increments into the runtime, while a
-  temporary diagnostic wrapper exposes sampled activity and backend commands for
-  manual verification.
+  wall-clock ticks and active-time increments into the runtime. This step
+  initially used a temporary diagnostic wrapper, which was removed by
+  `x11-overlay`.
+- Completed `x11-overlay`: Linux/X11 break commands now create unmanaged
+  `override_redirect` overlay windows over connected monitor geometries, render
+  the first configured break message, keep overlays raised/redrawn during the
+  break, suppress active-time polling while the break is visible, and clear the
+  overlays when the runtime finishes or clears the break.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -54,10 +59,12 @@
 - `make build` passes.
 - `nix build` passes.
 - `.codex/hooks/rustfmt.sh` runs successfully.
+- Manual X11 overlay verification is still pending because this environment
+  does not provide usable X server access.
 
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next increment should be `x11-overlay`.
+- The next increment should be `x11-input-blocking`.
 - Step-specific notes belong in `build-notes/$step.md`.
 - Update this file whenever a step is completed or the project state changes.

@@ -7,6 +7,8 @@ mod runtime;
 pub(crate) mod scheduler;
 #[cfg(target_os = "linux")]
 mod x11_activity;
+#[cfg(target_os = "linux")]
+mod x11_overlay;
 
 /// Application-level errors returned by Resteyes.
 #[derive(Debug)]

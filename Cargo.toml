@@ -11,7 +11,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde-saphyr = { version = "0.0.27", default-features = false, features = ["deserialize"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-x11rb = { version = "0.13.2", default-features = false, features = ["screensaver"] }
+x11rb = { version = "0.13.2", default-features = false, features = ["randr", "screensaver"] }
 
 [lints.rust]
 unsafe_code = "forbid"

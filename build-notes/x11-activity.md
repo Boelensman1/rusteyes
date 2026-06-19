@@ -40,6 +40,6 @@
 
 ## Follow-up
 
-- Remove temporary console diagnostics after X11 overlay/input integration gives
-  visible behavior.
-- Continue with `x11-overlay`.
+- Fulfilled by `x11-overlay`: removed temporary console diagnostics after break
+  commands gained visible overlay behavior.
+- Continue with `x11-input-blocking`.

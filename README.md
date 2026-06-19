@@ -14,8 +14,9 @@ make run
 ```
 
 On Linux/X11, the current daemon loads configuration, initializes the scheduler,
-polls X11 activity, and prints temporary activity diagnostics until interrupted.
-Display overlays, input blocking, and break UI are added in later increments.
+polls X11 activity, and shows unmanaged monitor-covering break overlays when a
+break is due. Input blocking, tray controls, and richer break UI are added in
+later increments.
 
 ## Common Commands
 
