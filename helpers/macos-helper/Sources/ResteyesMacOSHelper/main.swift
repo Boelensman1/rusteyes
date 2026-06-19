@@ -154,6 +154,7 @@ private final class BreakOverlayController {
             windows.append(window)
             window.orderFrontRegardless()
         }
+        NSCursor.arrow.set()
     }
 
     func update(remainingMs: UInt64, lockAfterBreak: Bool) {
@@ -316,6 +317,10 @@ private final class BreakOverlayView: NSView {
 
     override var isOpaque: Bool {
         true
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .arrow)
     }
 
     func update(state: BreakOverlayState) {

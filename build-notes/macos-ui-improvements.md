@@ -14,6 +14,10 @@
   `lockAfter` in the JSON wire format. The helper previously rejected
   `updateBreak` as an invalid protocol message because Rust emitted
   `lock_after`.
+- Follow-up fix: the helper now forces the overlay cursor to the arrow cursor
+  when a break starts and registers an arrow cursor rect for the full overlay
+  view, so a pre-existing insertion cursor from another app does not remain
+  visible during an input-blocking break.
 
 ## Decisions
 
@@ -35,6 +39,8 @@
 - `make test` passed after adding raw JSON assertions for `lockAfter` command
   fields.
 - `make check` passed after fixing `lockAfter` command field serialization.
+- `make macos-helper-build` passed after fixing the overlay cursor.
+- `make check` passed after fixing the overlay cursor.
 
 ## Follow-up
 
