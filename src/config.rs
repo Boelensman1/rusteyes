@@ -24,12 +24,14 @@ pub(crate) const DEFAULT_DISABLE_PRESETS: [Duration; 4] = [
     Duration::from_secs(2 * 60 * 60),
     Duration::from_secs(3 * 60 * 60),
 ];
+pub(crate) const DEFAULT_LOCK_COMMAND: [&str; 2] = ["loginctl", "lock-session"];
 
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Config {
     pub(crate) breaks: Breaks,
     pub(crate) disable_presets: Vec<Duration>,
+    pub(crate) lock: LockConfig,
 }
 
 impl Config {
@@ -62,7 +64,8 @@ impl Config {
     /// Returns the first invalid value found.
     pub(crate) fn validate(&self) -> Result<(), ConfigError> {
         self.breaks.validate()?;
-        validate_disable_presets(&self.disable_presets)
+        validate_disable_presets(&self.disable_presets)?;
+        self.lock.validate()
     }
 
     fn load_from_env(
@@ -130,6 +133,7 @@ impl Default for Config {
         Self {
             breaks: Breaks::default(),
             disable_presets: DEFAULT_DISABLE_PRESETS.to_vec(),
+            lock: LockConfig::default(),
         }
     }
 }
@@ -296,6 +300,33 @@ impl BreakTypeConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LockConfig {
+    pub(crate) command: Vec<String>,
+}
+
+impl LockConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        let Some(program) = self.command.first() else {
+            return Err(ConfigError::EmptyLockCommand);
+        };
+
+        if program.trim().is_empty() {
+            return Err(ConfigError::BlankLockProgram);
+        }
+
+        Ok(())
+    }
+}
+
+impl Default for LockConfig {
+    fn default() -> Self {
+        Self {
+            command: DEFAULT_LOCK_COMMAND.into_iter().map(String::from).collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConfigPathMode {
     Required,
@@ -334,6 +365,8 @@ pub(crate) enum ConfigError {
     DuplicateDisablePreset {
         duration: Duration,
     },
+    EmptyLockCommand,
+    BlankLockProgram,
 }
 
 impl fmt::Display for ConfigError {
@@ -390,6 +423,8 @@ impl fmt::Display for ConfigError {
             Self::DuplicateDisablePreset { duration } => {
                 write!(formatter, "disable preset {duration:?} is duplicated")
             }
+            Self::EmptyLockCommand => formatter.write_str("lock command must not be empty"),
+            Self::BlankLockProgram => formatter.write_str("lock command program must not be blank"),
         }
     }
 }
@@ -401,6 +436,7 @@ impl std::error::Error for ConfigError {}
 struct PartialConfig {
     breaks: Option<PartialBreaks>,
     disable_presets: Option<Vec<ConfigDuration>>,
+    lock: Option<PartialLockConfig>,
 }
 
 impl PartialConfig {
@@ -414,6 +450,10 @@ impl PartialConfig {
                 .into_iter()
                 .map(ConfigDuration::into_duration)
                 .collect();
+        }
+
+        if let Some(lock) = self.lock {
+            lock.apply_to(&mut config.lock);
         }
     }
 }
@@ -457,6 +497,20 @@ impl YamlBreakTypeConfig {
             duration: self.duration.into_duration(),
             messages: self.messages,
             autolock: self.autolock,
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PartialLockConfig {
+    command: Option<Vec<String>>,
+}
+
+impl PartialLockConfig {
+    fn apply_to(self, lock: &mut LockConfig) {
+        if let Some(command) = self.command {
+            lock.command = command;
         }
     }
 }

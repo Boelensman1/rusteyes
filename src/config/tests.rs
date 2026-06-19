@@ -1,7 +1,8 @@
 use super::{
     BreakTypeConfig, Config, ConfigError, ConfigLoadError, DEFAULT_BREAK_AFTER_ACTIVE,
-    DEFAULT_DISABLE_PRESETS, DEFAULT_LONG_BREAK_DURATION, DEFAULT_LONG_BREAK_INTERVAL,
-    DEFAULT_SHORT_BREAK_DURATION, DEFAULT_SHORT_BREAK_INTERVAL,
+    DEFAULT_DISABLE_PRESETS, DEFAULT_LOCK_COMMAND, DEFAULT_LONG_BREAK_DURATION,
+    DEFAULT_LONG_BREAK_INTERVAL, DEFAULT_SHORT_BREAK_DURATION, DEFAULT_SHORT_BREAK_INTERVAL,
+    LockConfig,
 };
 use std::error::Error;
 use std::fs;
@@ -42,6 +43,19 @@ fn default_config_uses_expected_disable_presets() {
     let config = Config::default();
 
     assert_eq!(config.disable_presets, DEFAULT_DISABLE_PRESETS);
+}
+
+#[test]
+fn default_config_uses_expected_lock_command() {
+    let config = Config::default();
+
+    assert_eq!(
+        config.lock.command,
+        DEFAULT_LOCK_COMMAND
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -249,6 +263,22 @@ fn rejects_duplicate_disable_preset() {
 }
 
 #[test]
+fn rejects_empty_lock_command() {
+    let mut config = Config::default();
+    config.lock.command.clear();
+
+    assert_eq!(config.validate(), Err(ConfigError::EmptyLockCommand));
+}
+
+#[test]
+fn rejects_blank_lock_program() {
+    let mut config = Config::default();
+    config.lock.command[0] = String::from("   ");
+
+    assert_eq!(config.validate(), Err(ConfigError::BlankLockProgram));
+}
+
+#[test]
 fn load_uses_defaults_when_implicit_config_is_missing() -> Result<(), Box<dyn Error>> {
     let test_dir = TestDir::new("missing-implicit")?;
     let xdg_home = test_dir.path().join("xdg");
@@ -303,6 +333,7 @@ breaks:
     assert_eq!(config.breaks.after_active, Duration::from_secs(30 * 60));
     assert_eq!(config.breaks.types, Config::default().breaks.types);
     assert_eq!(config.disable_presets, DEFAULT_DISABLE_PRESETS);
+    assert_eq!(config.lock, LockConfig::default());
     Ok(())
 }
 
@@ -333,6 +364,8 @@ breaks:
         - Take a longer break
       autolock: true
 disable_presets: ['30m', '1h', '2h', '3h']
+lock:
+  command: ['test-locker', '--lock-now']
 ",
     )?;
 
@@ -355,6 +388,10 @@ disable_presets: ['30m', '1h', '2h', '3h']
             Duration::from_secs(2 * 60 * 60),
             Duration::from_secs(3 * 60 * 60)
         ]
+    );
+    assert_eq!(
+        config.lock.command,
+        vec![String::from("test-locker"), String::from("--lock-now")]
     );
     Ok(())
 }
@@ -447,6 +484,58 @@ breaks:
 
     assert!(config.breaks.types["lock-screen"].autolock);
     Ok(())
+}
+
+#[test]
+fn yaml_accepts_lock_command_override() -> Result<(), Box<dyn Error>> {
+    let config = Config::from_yaml_str(
+        r"
+lock:
+  command: ['xdg-screensaver', 'lock']
+",
+    )?;
+
+    assert_eq!(
+        config.lock.command,
+        vec![String::from("xdg-screensaver"), String::from("lock")]
+    );
+    Ok(())
+}
+
+#[test]
+fn yaml_rejects_empty_lock_command() {
+    let error = expected_config_error(Config::from_yaml_str(
+        r"
+lock:
+  command: []
+",
+    ));
+
+    assert!(matches!(
+        error,
+        ConfigLoadError::Invalid {
+            error: ConfigError::EmptyLockCommand,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn yaml_rejects_blank_lock_program() {
+    let error = expected_config_error(Config::from_yaml_str(
+        r#"
+lock:
+  command: ["   ", "lock"]
+"#,
+    ));
+
+    assert!(matches!(
+        error,
+        ConfigLoadError::Invalid {
+            error: ConfigError::BlankLockProgram,
+            ..
+        }
+    ));
 }
 
 #[test]

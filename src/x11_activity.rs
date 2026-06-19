@@ -1,8 +1,10 @@
 use crate::backend::{Backend, BackendCommand, RuntimeEvent};
+use crate::config::LockConfig;
 use crate::scheduler::ScheduledBreak;
 use crate::x11_overlay::{X11Overlay, X11OverlayError, X11Screen};
 use std::collections::VecDeque;
 use std::fmt;
+use std::process::Command;
 use std::thread;
 use std::time::Duration;
 use x11rb::connection::Connection;
@@ -19,14 +21,16 @@ pub(crate) struct X11ActivityBackend {
     activity: X11Activity,
     poller: ActivityPoller,
     active_break: Option<ActiveBreak>,
+    lock_command: LockCommand,
 }
 
 impl X11ActivityBackend {
-    pub(crate) fn connect() -> Result<Self, X11ActivityError> {
+    pub(crate) fn connect(lock_config: LockConfig) -> Result<Self, X11ActivityError> {
         Ok(Self {
             activity: X11Activity::connect()?,
             poller: ActivityPoller::new(POLL_INTERVAL),
             active_break: None,
+            lock_command: LockCommand::from(lock_config),
         })
     }
 
@@ -96,6 +100,12 @@ impl X11ActivityBackend {
         }
     }
 
+    fn request_lock(&mut self) {
+        if let Err(error) = run_lock_command(&self.lock_command) {
+            self.queue_backend_error(&error);
+        }
+    }
+
     fn queue_backend_error(&mut self, error: &X11ActivityError) {
         eprintln!("resteyes: {error}");
         self.poller.queue_event(RuntimeEvent::Shutdown);
@@ -124,7 +134,7 @@ impl Backend for X11ActivityBackend {
                     self.queue_backend_error(&error);
                 }
             }
-            BackendCommand::RequestLock => {}
+            BackendCommand::RequestLock => self.request_lock(),
         }
     }
 }
@@ -135,6 +145,58 @@ impl Drop for X11ActivityBackend {
             let _ = active_break.destroy(&self.activity.connection);
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LockCommand {
+    program: String,
+    args: Vec<String>,
+}
+
+impl LockCommand {
+    fn description(&self) -> String {
+        if self.args.is_empty() {
+            self.program.clone()
+        } else {
+            format!("{} {}", self.program, self.args.join(" "))
+        }
+    }
+}
+
+impl From<LockConfig> for LockCommand {
+    fn from(lock_config: LockConfig) -> Self {
+        let mut command = lock_config.command.into_iter();
+
+        Self {
+            program: command.next().unwrap_or_default(),
+            args: command.collect(),
+        }
+    }
+}
+
+fn run_lock_command(lock_command: &LockCommand) -> Result<(), X11ActivityError> {
+    let mut command = lock_process(lock_command);
+    let status = command.status().map_err(|error| {
+        X11ActivityError::lock(format!(
+            "failed to start {}: {error}",
+            lock_command.description()
+        ))
+    })?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(X11ActivityError::lock(format!(
+            "{} exited with {status}",
+            lock_command.description()
+        )))
+    }
+}
+
+fn lock_process(lock_command: &LockCommand) -> Command {
+    let mut command = Command::new(&lock_command.program);
+    command.args(&lock_command.args);
+    command
 }
 
 struct ActiveBreak {
@@ -274,6 +336,13 @@ impl X11ActivityError {
         Self {
             operation: "manage X11 break overlay",
             message: error.to_string(),
+        }
+    }
+
+    fn lock(message: String) -> Self {
+        Self {
+            operation: "request local lock",
+            message,
         }
     }
 }

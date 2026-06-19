@@ -10,7 +10,7 @@ use std::time::Duration;
 #[cfg(target_os = "linux")]
 pub(crate) fn run() -> Result<(), crate::Error> {
     let config = Config::load()?;
-    let mut backend = X11ActivityBackend::connect()?;
+    let mut backend = X11ActivityBackend::connect(config.lock.clone())?;
 
     run_with_backend(config, &mut backend)?;
     Ok(())

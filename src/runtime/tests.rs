@@ -1,6 +1,6 @@
 use super::run_with_backend;
 use crate::backend::{Backend, BackendCommand, DisableRequest, RuntimeEvent};
-use crate::config::{BreakTypeConfig, Breaks, Config, ConfigError};
+use crate::config::{BreakTypeConfig, Breaks, Config, ConfigError, LockConfig};
 use crate::scheduler::ScheduledBreak;
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
@@ -183,6 +183,7 @@ fn test_config() -> Config {
             .collect::<BTreeMap<_, _>>(),
         },
         disable_presets: vec![Duration::from_secs(30)],
+        lock: LockConfig::default(),
     }
 }
 

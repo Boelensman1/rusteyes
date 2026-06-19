@@ -52,6 +52,9 @@
   pointer and keyboard grabs while visible, keep pointer movement unconstrained,
   prevent grabbed input from reaching other X11 clients, and release grabs when
   overlays are cleared.
+- Completed `x11-lock-after-break`: config now has a `lock.command` argv list
+  defaulting to `loginctl lock-session`, and Linux/X11 production runs spawn the
+  configured command after an autolock break finishes.
 - Added `test-break-config`: `test-configs/ten-second-break.yaml` starts a 10
   second test break after 10 seconds of active time for manual testing.
 - Cargo is the Rust build system; `make` is the project task runner.
@@ -72,8 +75,8 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next planned increment is `x11-lock-after-break`, followed by
-  `x11-ui-improvements`.
+- The next planned increment is `x11-ui-improvements`, followed by
+  `x11-break-integration`.
 - The later build order now separates manual break control, sync
   configuration/authentication, sync protocol, LAN discovery, authenticated
   peer transport, and synced break/disable behavior.

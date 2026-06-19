@@ -1,5 +1,9 @@
-use super::{ActivityPoller, ActivitySample, ActivityState, BreakTimer, break_elapsed_for_sample};
+use super::{
+    ActivityPoller, ActivitySample, ActivityState, BreakTimer, LockCommand,
+    break_elapsed_for_sample, lock_process,
+};
 use crate::backend::RuntimeEvent;
+use crate::config::LockConfig;
 use std::time::Duration;
 
 #[test]
@@ -106,4 +110,41 @@ fn idle_overlay_sample_counts_down_break_time() {
     );
 
     assert_eq!(elapsed, poll_interval);
+}
+
+#[test]
+fn lock_command_splits_program_and_args() {
+    let lock_command = LockCommand::from(LockConfig {
+        command: vec![
+            String::from("locker"),
+            String::from("--now"),
+            String::from("--quiet"),
+        ],
+    });
+
+    assert_eq!(
+        lock_command,
+        LockCommand {
+            program: String::from("locker"),
+            args: vec![String::from("--now"), String::from("--quiet")]
+        }
+    );
+}
+
+#[test]
+fn lock_process_uses_configured_argv_without_shell() {
+    let lock_command = LockCommand {
+        program: String::from("locker"),
+        args: vec![String::from("--message"), String::from("lock now")],
+    };
+    let command = lock_process(&lock_command);
+
+    assert_eq!(command.get_program().to_str(), Some("locker"));
+    assert_eq!(
+        command
+            .get_args()
+            .map(std::ffi::OsStr::to_str)
+            .collect::<Vec<_>>(),
+        vec![Some("--message"), Some("lock now")]
+    );
 }
