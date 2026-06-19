@@ -346,8 +346,12 @@ impl SyncConfig {
 pub(crate) struct SharedSecret(String);
 
 impl SharedSecret {
-    fn new(value: String) -> Self {
+    pub(crate) fn new(value: String) -> Self {
         Self(value)
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
     }
 
     fn as_str(&self) -> &str {

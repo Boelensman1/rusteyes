@@ -128,6 +128,10 @@
   dictionary protocol parsing with typed `Codable` messages, made Rust validate
   helper shutdown completion, aligned macOS overlay event ordering with X11,
   and clarified helper hit-test point conversion.
+- Completed `sync-protocol`: crate-internal version 1 sync messages now carry
+  transient peer identity, sequence numbers, active-time increments, named
+  break starts, disable/enable controls, and lock-after-current-break requests,
+  authenticated with HMAC-SHA256 over canonical JSON payloads.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -185,6 +189,7 @@
 - `make macos-helper-build` passes after the typed macOS helper protocol
   cleanup.
 - `make check` passes after the macOS helper shutdown/event-order cleanup.
+- `make check` passes after adding authenticated sync protocol framing.
 - A bounded `timeout 3s make run` on macOS stays alive until terminated by
   `timeout` and no longer emits helper stderr during startup after AppKit setup
   was made lazy.
@@ -201,7 +206,7 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next planned increment is `sync-protocol`.
+- The next planned increment is `lan-discovery`.
 - The later build order now brings macOS backend parity before sync protocol,
   then separates sync protocol, LAN discovery, authenticated peer transport,
   active-time sync, synced break/disable behavior, tray UI, and synced

@@ -9,6 +9,8 @@ mod lock_command;
 mod macos_helper;
 mod runtime;
 pub(crate) mod scheduler;
+#[allow(dead_code)]
+pub(crate) mod sync_protocol;
 #[cfg(target_os = "linux")]
 mod x11_activity;
 #[cfg(target_os = "linux")]
