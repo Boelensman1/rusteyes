@@ -5,6 +5,8 @@ pub(crate) mod config;
 
 mod runtime;
 pub(crate) mod scheduler;
+#[cfg(target_os = "linux")]
+mod x11_activity;
 
 /// Application-level errors returned by Resteyes.
 #[derive(Debug)]
@@ -24,12 +26,21 @@ impl Error {
             kind: ErrorKind::Schedule(error),
         }
     }
+
+    #[cfg(target_os = "linux")]
+    const fn backend(error: x11_activity::X11ActivityError) -> Self {
+        Self {
+            kind: ErrorKind::Backend(error),
+        }
+    }
 }
 
 #[derive(Debug)]
 enum ErrorKind {
     Config(config::ConfigLoadError),
     Schedule(config::ConfigError),
+    #[cfg(target_os = "linux")]
+    Backend(x11_activity::X11ActivityError),
 }
 
 impl fmt::Display for Error {
@@ -37,6 +48,8 @@ impl fmt::Display for Error {
         match &self.kind {
             ErrorKind::Config(error) => write!(formatter, "{error}"),
             ErrorKind::Schedule(error) => write!(formatter, "invalid break schedule: {error}"),
+            #[cfg(target_os = "linux")]
+            ErrorKind::Backend(error) => write!(formatter, "{error}"),
         }
     }
 }
@@ -46,6 +59,8 @@ impl std::error::Error for Error {
         match &self.kind {
             ErrorKind::Config(error) => Some(error),
             ErrorKind::Schedule(error) => Some(error),
+            #[cfg(target_os = "linux")]
+            ErrorKind::Backend(error) => Some(error),
         }
     }
 }
@@ -59,6 +74,13 @@ impl From<config::ConfigLoadError> for Error {
 impl From<config::ConfigError> for Error {
     fn from(error: config::ConfigError) -> Self {
         Self::schedule(error)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl From<x11_activity::X11ActivityError> for Error {
+    fn from(error: x11_activity::X11ActivityError) -> Self {
+        Self::backend(error)
     }
 }
 

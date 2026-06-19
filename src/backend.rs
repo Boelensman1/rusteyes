@@ -32,8 +32,11 @@ pub(crate) enum BackendCommand {
     RequestLock,
 }
 
+#[cfg(any(test, not(target_os = "linux")))]
+#[allow(dead_code)]
 pub(crate) struct NoopBackend;
 
+#[cfg(any(test, not(target_os = "linux")))]
 impl Backend for NoopBackend {
     fn next_event(&mut self) -> RuntimeEvent {
         RuntimeEvent::Shutdown

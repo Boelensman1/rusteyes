@@ -1,8 +1,22 @@
-use crate::backend::{Backend, BackendCommand, DisableRequest, NoopBackend, RuntimeEvent};
+#[cfg(not(target_os = "linux"))]
+use crate::backend::NoopBackend;
+use crate::backend::{Backend, BackendCommand, DisableRequest, RuntimeEvent};
 use crate::config::{Config, ConfigError};
 use crate::scheduler::{BreakSchedule, BreakScheduler};
+#[cfg(target_os = "linux")]
+use crate::x11_activity::DiagnosticX11ActivityBackend;
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
+pub(crate) fn run() -> Result<(), crate::Error> {
+    let config = Config::load()?;
+    let mut backend = DiagnosticX11ActivityBackend::connect()?;
+
+    run_with_backend(config, &mut backend)?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
 pub(crate) fn run() -> Result<(), crate::Error> {
     let config = Config::load()?;
     let mut backend = NoopBackend;

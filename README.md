@@ -13,9 +13,9 @@ nix develop
 make run
 ```
 
-The current no-op daemon loads configuration, initializes the scheduler, and
-exits successfully. Platform activity and break backends are added in later
-increments.
+On Linux/X11, the current daemon loads configuration, initializes the scheduler,
+polls X11 activity, and prints temporary activity diagnostics until interrupted.
+Display overlays, input blocking, and break UI are added in later increments.
 
 ## Common Commands
 

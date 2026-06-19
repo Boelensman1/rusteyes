@@ -35,13 +35,19 @@
   for break start, break clear, and local lock requests. Follow-up cleanup made
   scheduler transitions return affected pending breaks so runtime does not
   inspect scheduler pending state to drive backend cleanup.
+- Completed `x11-activity`: Linux production runs now use a permanent
+  crate-internal X11 activity backend backed by XScreenSaver idle time. It emits
+  wall-clock ticks and active-time increments into the runtime, while a
+  temporary diagnostic wrapper exposes sampled activity and backend commands for
+  manual verification.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
 
 ## Verified
 
-- `make run` starts the no-op daemon and exits successfully.
+- A sandboxed `timeout 3s make run` reaches the X11 startup path but cannot
+  connect to X11 from this environment.
 - `make check` passes formatting, Clippy, and tests.
 - `make build` passes.
 - `nix build` passes.
@@ -50,6 +56,6 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next increment should be `x11-activity`.
+- The next increment should be `x11-overlay`.
 - Step-specific notes belong in `build-notes/$step.md`.
 - Update this file whenever a step is completed or the project state changes.
