@@ -68,6 +68,9 @@
   at trace level, and top-level startup errors remain visible on stderr.
 - Added `test-break-config`: `test-configs/ten-second-break.yaml` starts a 10
   second test break after 10 seconds of active time for manual testing.
+- Completed `manual-break-control`: runtime events can now start configured
+  named breaks on demand, manual breaks are marked separately from scheduled
+  slot breaks, and manual starts work while local scheduling is disabled.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -87,7 +90,7 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next planned increment is `manual-break-control`.
+- The next planned increment is `sync-config-auth`.
 - The later build order now separates manual break control, sync
   configuration/authentication, sync protocol, LAN discovery, authenticated
   peer transport, and synced break/disable behavior.

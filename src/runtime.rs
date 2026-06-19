@@ -78,6 +78,7 @@ where
             RuntimeEvent::WallClockElapsed(elapsed) => self.advance_wall_clock(elapsed),
             RuntimeEvent::BreakFinished => self.finish_break(),
             RuntimeEvent::LockAfterCurrentBreak => self.request_lock_after_current_break(),
+            RuntimeEvent::StartManualBreak(name) => self.start_manual_break(&name),
             RuntimeEvent::Disable(DisableRequest::For(duration)) => self.disable_for(duration),
             RuntimeEvent::Disable(DisableRequest::UntilRestart) => self.disable_until_restart(),
             RuntimeEvent::Enable => self.enable(),
@@ -89,6 +90,13 @@ where
 
     fn advance_active(&mut self, elapsed: Duration) {
         if let Some(scheduled_break) = self.scheduler.advance_active(elapsed) {
+            self.current_break_should_lock = Some(scheduled_break.autolock);
+            self.handle_command(BackendCommand::StartBreak(scheduled_break));
+        }
+    }
+
+    fn start_manual_break(&mut self, name: &str) {
+        if let Some(scheduled_break) = self.scheduler.start_manual_break(name) {
             self.current_break_should_lock = Some(scheduled_break.autolock);
             self.handle_command(BackendCommand::StartBreak(scheduled_break));
         }

@@ -7,13 +7,14 @@ pub(crate) trait Backend {
     fn handle_command(&mut self, _command: BackendCommand) {}
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub(crate) enum RuntimeEvent {
     ActiveTimeElapsed(Duration),
     WallClockElapsed(Duration),
     BreakFinished,
     LockAfterCurrentBreak,
+    StartManualBreak(String),
     Disable(DisableRequest),
     Enable,
     Shutdown,

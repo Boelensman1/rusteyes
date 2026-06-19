@@ -1,7 +1,7 @@
 use super::run_with_backend;
 use crate::backend::{Backend, BackendCommand, DisableRequest, RuntimeEvent};
 use crate::config::{BreakTypeConfig, Breaks, Config, ConfigError, LockConfig};
-use crate::scheduler::ScheduledBreak;
+use crate::scheduler::{BreakOrigin, ScheduledBreak};
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
@@ -215,6 +215,85 @@ fn disable_until_restart_stays_disabled_until_explicit_enable() {
 }
 
 #[test]
+fn manual_break_event_starts_configured_break_without_advancing_slots() {
+    let mut backend = ScriptedBackend::new([
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(9)),
+        RuntimeEvent::StartManualBreak(String::from("long")),
+        RuntimeEvent::BreakFinished,
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(1)),
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(9)),
+        RuntimeEvent::Shutdown,
+    ]);
+
+    assert_eq!(run_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(
+        backend.commands,
+        vec![
+            BackendCommand::StartBreak(manual_break("long", 300)),
+            BackendCommand::FinishBreak { lock_after: true },
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20))
+        ]
+    );
+}
+
+#[test]
+fn manual_break_event_works_while_disabled_and_preserves_disable() {
+    let mut backend = ScriptedBackend::new([
+        RuntimeEvent::Disable(DisableRequest::For(Duration::from_secs(30))),
+        RuntimeEvent::StartManualBreak(String::from("short")),
+        RuntimeEvent::BreakFinished,
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(100)),
+        RuntimeEvent::Shutdown,
+    ]);
+
+    assert_eq!(run_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(
+        backend.commands,
+        vec![
+            BackendCommand::StartBreak(manual_break("short", 20)),
+            BackendCommand::FinishBreak { lock_after: false }
+        ]
+    );
+}
+
+#[test]
+fn timed_disable_can_expire_during_manual_break() {
+    let mut backend = ScriptedBackend::new([
+        RuntimeEvent::Disable(DisableRequest::For(Duration::from_secs(30))),
+        RuntimeEvent::StartManualBreak(String::from("short")),
+        RuntimeEvent::WallClockElapsed(Duration::from_secs(30)),
+        RuntimeEvent::BreakFinished,
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
+        RuntimeEvent::Shutdown,
+    ]);
+
+    assert_eq!(run_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(
+        backend.commands,
+        vec![
+            BackendCommand::StartBreak(manual_break("short", 20)),
+            BackendCommand::FinishBreak { lock_after: false },
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20))
+        ]
+    );
+}
+
+#[test]
+fn unknown_manual_break_event_is_ignored() {
+    let mut backend = ScriptedBackend::new([
+        RuntimeEvent::StartManualBreak(String::from("missing")),
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
+        RuntimeEvent::Shutdown,
+    ]);
+
+    assert_eq!(run_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(
+        backend.commands,
+        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+    );
+}
+
+#[test]
 fn scheduler_setup_error_is_returned() {
     let mut config = test_config();
     config.breaks.types.clear();
@@ -292,7 +371,20 @@ fn break_type(
 fn scheduled_break(name: &str, slot: usize, duration_secs: u64) -> ScheduledBreak {
     ScheduledBreak {
         name: name.to_owned(),
-        slot,
+        origin: BreakOrigin::Scheduled { slot },
+        duration: Duration::from_secs(duration_secs),
+        messages: vec![match name {
+            "long" => String::from("Take a longer break"),
+            _ => String::from("Rest your eyes"),
+        }],
+        autolock: name == "long",
+    }
+}
+
+fn manual_break(name: &str, duration_secs: u64) -> ScheduledBreak {
+    ScheduledBreak {
+        name: name.to_owned(),
+        origin: BreakOrigin::Manual,
         duration: Duration::from_secs(duration_secs),
         messages: vec![match name {
             "long" => String::from("Take a longer break"),
