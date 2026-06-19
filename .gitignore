@@ -1,4 +1,6 @@
 /target/
 /result
 /.direnv/
+/helpers/macos-helper/.build/
+/helpers/macos-helper/.swiftpm/
 *.profraw

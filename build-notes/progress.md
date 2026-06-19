@@ -77,6 +77,10 @@
 - Completed `sync-config-auth`: config now has disabled-by-default sync
   settings with a validated 32-character minimum shared secret for enabled
   sync, redacted shared-secret debug output, and no configured peer ID.
+- Completed `macos-helper-scaffold`: a standalone SwiftPM macOS helper package
+  now builds a stub `resteyes-macos-helper` executable that prints
+  `hello world`, with an explicit Make artifact target and `macos-helper-build`
+  alias that build on Darwin and skip successfully elsewhere.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -87,6 +91,7 @@
   connect to X11 from this environment.
 - `make check` passes formatting, Clippy, and tests.
 - `make build` passes.
+- `make macos-helper-build` passes on macOS with SwiftPM available.
 - `nix build` passes.
 - `.codex/hooks/rustfmt.sh` runs successfully.
 - Manual X11 overlay, input-blocking, overlay UI, and trace-output verification
@@ -96,7 +101,7 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next planned increment is `macos-helper-scaffold`.
+- The next planned increment is `macos-helper-ipc`.
 - The later build order now brings macOS backend parity before sync protocol,
   then separates sync protocol, LAN discovery, authenticated peer transport,
   synced break/disable behavior, tray UI, and synced lock-after-break behavior.
