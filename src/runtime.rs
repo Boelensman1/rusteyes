@@ -98,11 +98,9 @@ where
         let should_lock = self.current_break_should_lock.take().unwrap_or(false);
 
         if self.scheduler.finish_break().is_some() {
-            self.handle_command(BackendCommand::ClearBreak);
-
-            if should_lock {
-                self.handle_command(BackendCommand::RequestLock);
-            }
+            self.handle_command(BackendCommand::FinishBreak {
+                lock_after: should_lock,
+            });
         }
     }
 

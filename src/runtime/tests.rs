@@ -41,7 +41,7 @@ fn break_finished_allows_next_scheduled_break_to_advance() {
         backend.commands,
         vec![
             BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
-            BackendCommand::ClearBreak,
+            BackendCommand::FinishBreak { lock_after: false },
             BackendCommand::StartBreak(scheduled_break("long", 2, 300))
         ]
     );
@@ -62,10 +62,9 @@ fn autolock_break_completion_requests_local_lock() {
         backend.commands,
         vec![
             BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
-            BackendCommand::ClearBreak,
+            BackendCommand::FinishBreak { lock_after: false },
             BackendCommand::StartBreak(scheduled_break("long", 2, 300)),
-            BackendCommand::ClearBreak,
-            BackendCommand::RequestLock
+            BackendCommand::FinishBreak { lock_after: true }
         ]
     );
 }
@@ -84,8 +83,7 @@ fn lock_after_current_break_request_locks_after_non_autolock_break() {
         backend.commands,
         vec![
             BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
-            BackendCommand::ClearBreak,
-            BackendCommand::RequestLock
+            BackendCommand::FinishBreak { lock_after: true }
         ]
     );
 }
@@ -104,7 +102,7 @@ fn stale_lock_after_current_break_request_before_break_is_ignored() {
         backend.commands,
         vec![
             BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
-            BackendCommand::ClearBreak
+            BackendCommand::FinishBreak { lock_after: false }
         ]
     );
 }
@@ -127,10 +125,9 @@ fn lock_after_current_break_request_clears_after_break_finishes() {
         backend.commands,
         vec![
             BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
-            BackendCommand::ClearBreak,
-            BackendCommand::RequestLock,
+            BackendCommand::FinishBreak { lock_after: true },
             BackendCommand::StartBreak(scheduled_break("short", 2, 20)),
-            BackendCommand::ClearBreak
+            BackendCommand::FinishBreak { lock_after: false }
         ]
     );
 }
@@ -174,7 +171,7 @@ fn disable_clears_lock_after_current_break_request() {
             BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
             BackendCommand::ClearBreak,
             BackendCommand::StartBreak(scheduled_break("short", 2, 20)),
-            BackendCommand::ClearBreak
+            BackendCommand::FinishBreak { lock_after: false }
         ]
     );
 }

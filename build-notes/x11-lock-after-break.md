@@ -13,8 +13,9 @@
   program.
 - Linux/X11 startup passes the validated lock command into the activity
   backend.
-- The X11 backend handles `BackendCommand::RequestLock` by starting the
-  configured command with `std::process::Command` and no shell.
+- The X11 backend handles lock-after-break intent during
+  `BackendCommand::FinishBreak` by starting the configured command with
+  `std::process::Command` and no shell.
 - Started lock commands are supervised on a background thread so foreground
   lockers can keep running without blocking X11 activity polling.
 - Lock command stdout is logged at trace level, stderr is mirrored to
@@ -24,6 +25,10 @@
   request definitely did not start.
 - Added tests for default and YAML lock command config, invalid lock config,
   X11 backend argv command construction, and lock command spawn failures.
+- Follow-up fix: break completion now carries lock intent as a single backend
+  command, so X11 can keep the overlay visible, release its own input grabs for
+  the locker, start the lock command, wait 250ms for handoff, and only then
+  destroy the overlay.
 
 ## Decisions
 
@@ -34,11 +39,16 @@
   can stay running until the screen is unlocked.
 - Do not add production dependencies.
 - Do not invoke a real locker from tests.
+- Preserve configurable locker behavior rather than adding platform-specific
+  locked-state observation in this increment.
+- Keep the 250ms handoff delay fixed and internal for now; it smooths over
+  asynchronous locker startup without adding config surface.
 
 ## Commands
 
 - `make test`
 - `make check`
+- `make check` after the lock handoff fix.
 
 ## Follow-up
 

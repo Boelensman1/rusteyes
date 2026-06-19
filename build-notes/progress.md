@@ -55,6 +55,9 @@
 - Completed `x11-lock-after-break`: config now has a `lock.command` argv list
   defaulting to `loginctl lock-session`, and Linux/X11 production runs start
   and supervise the configured command after a break requests local locking.
+  Follow-up fix keeps the overlay visible during lock handoff by finishing the
+  break and starting the lock command through one backend command before
+  destroying the overlay.
 - Completed `x11-ui-improvements`: X11 break overlays now render remaining
   break time and a lock-after-break control, and runtime tracks current-break
   lock state from configured autolock or that control before requesting the

@@ -185,6 +185,13 @@ impl X11Overlay {
         x11("flush raised overlay windows", connection.flush())
     }
 
+    pub(crate) fn release_input(
+        &mut self,
+        connection: &RustConnection,
+    ) -> Result<(), X11OverlayError> {
+        self.input_grab.release(connection)
+    }
+
     pub(crate) fn destroy(mut self, connection: &RustConnection) -> Result<(), X11OverlayError> {
         let mut first_error = self.input_grab.release(connection).err();
 

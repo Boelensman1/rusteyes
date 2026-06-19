@@ -16,6 +16,7 @@ use x11rb::rust_connection::RustConnection;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const OVERLAY_TICK_INTERVAL: Duration = Duration::from_millis(500);
+const LOCK_HANDOFF_DELAY: Duration = Duration::from_millis(250);
 const SCREENSAVER_CLIENT_MAJOR_VERSION: u8 = 1;
 const SCREENSAVER_CLIENT_MINOR_VERSION: u8 = 1;
 
@@ -114,9 +115,43 @@ impl X11ActivityBackend {
         }
     }
 
-    fn request_lock(&mut self) {
-        if let Err(error) = start_lock_command(&self.lock_command) {
+    fn finish_break(&mut self, lock_after: bool) {
+        let lock_result = if lock_after {
+            match self
+                .prepare_lock_handoff()
+                .and_then(|()| start_lock_command(&self.lock_command))
+            {
+                Ok(()) => {
+                    thread::sleep(LOCK_HANDOFF_DELAY);
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            Ok(())
+        };
+        let clear_result = self.clear_break();
+
+        let mut first_error = lock_result.err();
+        if let Err(error) = clear_result {
+            if first_error.is_none() {
+                first_error = Some(error);
+            } else {
+                error!(%error, "failed to clear break after lock handoff error");
+            }
+        }
+
+        if let Some(error) = first_error {
             self.queue_backend_error(&error);
+        }
+    }
+
+    fn prepare_lock_handoff(&mut self) -> Result<(), X11ActivityError> {
+        match &mut self.active_break {
+            Some(active_break) => active_break
+                .prepare_lock_handoff(&self.activity.connection)
+                .map_err(|error| X11ActivityError::overlay(&error)),
+            None => Ok(()),
         }
     }
 
@@ -143,12 +178,12 @@ impl Backend for X11ActivityBackend {
     fn handle_command(&mut self, command: BackendCommand) {
         match command {
             BackendCommand::StartBreak(scheduled_break) => self.start_break(&scheduled_break),
+            BackendCommand::FinishBreak { lock_after } => self.finish_break(lock_after),
             BackendCommand::ClearBreak => {
                 if let Err(error) = self.clear_break() {
                     self.queue_backend_error(&error);
                 }
             }
-            BackendCommand::RequestLock => self.request_lock(),
         }
     }
 }
@@ -353,6 +388,11 @@ impl ActiveBreak {
             finished,
             lock_after_break_requested,
         })
+    }
+
+    fn prepare_lock_handoff(&mut self, connection: &RustConnection) -> Result<(), X11OverlayError> {
+        self.overlay.raise(connection)?;
+        self.overlay.release_input(connection)
     }
 
     fn destroy(self, connection: &RustConnection) -> Result<(), X11OverlayError> {

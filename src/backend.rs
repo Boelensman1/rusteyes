@@ -27,10 +27,11 @@ pub(crate) enum DisableRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
 pub(crate) enum BackendCommand {
     StartBreak(ScheduledBreak),
+    FinishBreak { lock_after: bool },
     ClearBreak,
-    RequestLock,
 }
 
 #[cfg(any(test, not(target_os = "linux")))]
