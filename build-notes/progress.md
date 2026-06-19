@@ -72,6 +72,7 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next increment has not been selected yet.
+- The next planned increment is `x11-lock-after-break`, followed by
+  `x11-ui-improvements`.
 - Step-specific notes belong in `build-notes/$step.md`.
 - Update this file whenever a step is completed or the project state changes.
