@@ -1,7 +1,7 @@
+use crate::activity::{ActivityPoller, ActivitySample};
 use crate::backend::{Backend, BackendCommand, RuntimeEvent};
 use crate::scheduler::{BreakOrigin, ScheduledBreak};
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
 use std::env;
 use std::fmt;
 use std::fs;
@@ -445,77 +445,6 @@ fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-#[derive(Debug)]
-struct ActivityPoller {
-    poll_interval: Duration,
-    events: VecDeque<RuntimeEvent>,
-}
-
-impl ActivityPoller {
-    fn new(poll_interval: Duration) -> Self {
-        Self {
-            poll_interval,
-            events: VecDeque::new(),
-        }
-    }
-
-    const fn poll_interval(&self) -> Duration {
-        self.poll_interval
-    }
-
-    fn queue_sample(&mut self, sample: ActivitySample) -> ActivityState {
-        let state = sample.state_for(self.poll_interval);
-        trace!(
-            idle_for = ?sample.idle_for,
-            ?state,
-            poll_interval = ?self.poll_interval,
-            "sampled macOS activity"
-        );
-
-        self.queue_event(RuntimeEvent::WallClockElapsed(self.poll_interval));
-
-        if state == ActivityState::Active {
-            self.queue_event(RuntimeEvent::ActiveTimeElapsed(self.poll_interval));
-        }
-
-        state
-    }
-
-    fn queue_event(&mut self, event: RuntimeEvent) {
-        trace!(?event, "queued runtime event");
-        self.events.push_back(event);
-    }
-
-    fn next_event(&mut self) -> Option<RuntimeEvent> {
-        self.events.pop_front()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ActivitySample {
-    idle_for: Duration,
-}
-
-impl ActivitySample {
-    const fn new(idle_for: Duration) -> Self {
-        Self { idle_for }
-    }
-
-    fn state_for(self, poll_interval: Duration) -> ActivityState {
-        if self.idle_for <= poll_interval {
-            ActivityState::Active
-        } else {
-            ActivityState::Idle
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ActivityState {
-    Active,
-    Idle,
-}
-
 fn remember_first_error(first_error: &mut Option<MacOSHelperError>, error: MacOSHelperError) {
     if first_error.is_none() {
         *first_error = Some(error);
@@ -573,45 +502,9 @@ mod tests {
             session.poll_activity()?
         };
 
-        assert_eq!(sample.idle_for, Duration::from_millis(750));
+        assert_eq!(sample.idle_for(), Duration::from_millis(750));
         assert_eq!(daemon_messages(&output)?, vec![DaemonMessage::PollActivity]);
         Ok(())
-    }
-
-    #[test]
-    fn active_sample_queues_wall_clock_before_active_time() {
-        let poll_interval = Duration::from_secs(1);
-        let mut poller = ActivityPoller::new(poll_interval);
-
-        assert_eq!(
-            poller.queue_sample(ActivitySample::new(Duration::from_millis(500))),
-            ActivityState::Active
-        );
-        assert_eq!(
-            poller.next_event(),
-            Some(RuntimeEvent::WallClockElapsed(poll_interval))
-        );
-        assert_eq!(
-            poller.next_event(),
-            Some(RuntimeEvent::ActiveTimeElapsed(poll_interval))
-        );
-        assert_eq!(poller.next_event(), None);
-    }
-
-    #[test]
-    fn idle_sample_queues_only_wall_clock_time() {
-        let poll_interval = Duration::from_secs(1);
-        let mut poller = ActivityPoller::new(poll_interval);
-
-        assert_eq!(
-            poller.queue_sample(ActivitySample::new(Duration::from_millis(1_001))),
-            ActivityState::Idle
-        );
-        assert_eq!(
-            poller.next_event(),
-            Some(RuntimeEvent::WallClockElapsed(poll_interval))
-        );
-        assert_eq!(poller.next_event(), None);
     }
 
     #[test]

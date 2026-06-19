@@ -1,5 +1,6 @@
 use std::fmt;
 
+mod activity;
 mod backend;
 pub(crate) mod config;
 

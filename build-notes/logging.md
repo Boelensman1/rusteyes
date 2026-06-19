@@ -16,9 +16,15 @@
 - Keep fatal startup errors visible on stderr even after logging is initialized.
 - Replace internal backend diagnostic `eprintln!` calls with tracing events.
 - Add trace-level activity diagnostics for high-frequency polling:
-  - X11 idle duration and active/idle classification for each activity sample.
+  - Backend-agnostic idle duration and active/idle classification for each
+    regular activity sample.
   - Queued runtime events, including wall-clock and active-time events.
-  - Overlay-period samples and whether idle break time advanced.
+  - X11 overlay-period samples and whether idle break time advanced.
+- Shared regular activity sample diagnostics now live in the crate-internal
+  activity module so X11 and macOS emit the same `sampled activity` trace event.
+- The binary logger writes tracing events through fresh `/dev/stderr` handles
+  instead of the global Rust stderr writer; this avoids the macOS runtime
+  blocking while formatting the first activity trace event.
 
 ## Decisions
 
@@ -26,13 +32,15 @@
   structured fields and future span-based diagnostics.
 - Keep activity diagnostics at `trace` level because they run on every poll and
   would be too noisy for default or info-level output.
+- Keep platform names out of regular activity sample log messages. Backend
+  details belong in backend-specific traces such as X11 overlay diagnostics.
 
 ## Commands
 
 - `make check` passed.
+- `RUST_LOG=trace` macOS smoke runs now print shared activity traces.
 
 ## Follow-up
 
-- Manual trace-output verification with `RUST_LOG=resteyes=trace make run`
-  still needs a usable X11 session.
+- Manual X11 trace-output verification still needs a usable X11 session.
 - Continue with `x11-ui-improvements`.

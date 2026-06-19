@@ -1,8 +1,8 @@
+use crate::activity::{ActivityPoller, ActivitySample, break_elapsed_for_sample};
 use crate::backend::{Backend, BackendCommand, RuntimeEvent};
 use crate::config::LockConfig;
 use crate::scheduler::ScheduledBreak;
 use crate::x11_overlay::{X11Overlay, X11OverlayError, X11Screen};
-use std::collections::VecDeque;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
@@ -61,7 +61,7 @@ impl X11ActivityBackend {
         let sample = self.activity.sample()?;
         let break_elapsed = break_elapsed_for_sample(sample, OVERLAY_TICK_INTERVAL);
         trace!(
-            idle_for = ?sample.idle_for,
+            idle_for = ?sample.idle_for(),
             state = ?sample.state_for(OVERLAY_TICK_INTERVAL),
             ?break_elapsed,
             break_time_advanced = !break_elapsed.is_zero(),
@@ -533,84 +533,6 @@ impl fmt::Display for X11ActivityError {
 }
 
 impl std::error::Error for X11ActivityError {}
-
-#[derive(Debug)]
-struct ActivityPoller {
-    poll_interval: Duration,
-    events: VecDeque<RuntimeEvent>,
-}
-
-impl ActivityPoller {
-    fn new(poll_interval: Duration) -> Self {
-        Self {
-            poll_interval,
-            events: VecDeque::new(),
-        }
-    }
-
-    fn poll_interval(&self) -> Duration {
-        self.poll_interval
-    }
-
-    fn queue_sample(&mut self, sample: ActivitySample) -> ActivityState {
-        let state = sample.state_for(self.poll_interval);
-        trace!(
-            idle_for = ?sample.idle_for,
-            ?state,
-            poll_interval = ?self.poll_interval,
-            "sampled X11 activity"
-        );
-
-        self.queue_event(RuntimeEvent::WallClockElapsed(self.poll_interval));
-
-        if state == ActivityState::Active {
-            self.queue_event(RuntimeEvent::ActiveTimeElapsed(self.poll_interval));
-        }
-
-        state
-    }
-
-    fn queue_event(&mut self, event: RuntimeEvent) {
-        trace!(?event, "queued runtime event");
-        self.events.push_back(event);
-    }
-
-    fn next_event(&mut self) -> Option<RuntimeEvent> {
-        self.events.pop_front()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ActivitySample {
-    idle_for: Duration,
-}
-
-impl ActivitySample {
-    const fn new(idle_for: Duration) -> Self {
-        Self { idle_for }
-    }
-
-    fn state_for(self, poll_interval: Duration) -> ActivityState {
-        if self.idle_for <= poll_interval {
-            ActivityState::Active
-        } else {
-            ActivityState::Idle
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ActivityState {
-    Active,
-    Idle,
-}
-
-fn break_elapsed_for_sample(sample: ActivitySample, poll_interval: Duration) -> Duration {
-    match sample.state_for(poll_interval) {
-        ActivityState::Active => Duration::ZERO,
-        ActivityState::Idle => poll_interval,
-    }
-}
 
 #[cfg(test)]
 mod tests;

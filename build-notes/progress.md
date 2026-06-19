@@ -68,8 +68,11 @@
   lock-control hit testing and break timer state.
 - Completed `logging`: the binary now initializes `tracing` output with a
   warning-level default and `RUST_LOG` override support, X11 backend errors use
-  tracing events, high-frequency X11 activity and overlay samples are available
-  at trace level, and top-level startup errors remain visible on stderr.
+  tracing events, high-frequency regular activity samples are logged through a
+  backend-agnostic activity module, X11 overlay samples remain available at
+  trace level, and top-level startup errors remain visible on stderr. Follow-up
+  cleanup switched tracing writes away from the global Rust stderr writer so
+  macOS activity traces are not blocked before reaching the terminal.
 - Added `test-break-config`: `test-configs/ten-second-break.yaml` starts a 10
   second test break after 10 seconds of active time for manual testing.
 - Completed `manual-break-control`: runtime events can now start configured
@@ -91,7 +94,8 @@
 - Completed `macos-activity`: macOS production runs now keep the helper-backed
   daemon loop alive after handshake, poll CoreGraphics any-input idle time once
   per second through protocol version 2, and emit wall-clock and active-time
-  runtime events with the same activity interpretation as X11.
+  runtime events with the same shared activity interpretation and regular
+  activity trace output as X11.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -107,6 +111,8 @@
   cleanly in older helper-IPC verification before activity polling existed.
 - A bounded `timeout 3s make run` on macOS now stays alive until terminated by
   `timeout`, confirming the helper-backed activity polling loop is running.
+- A bounded `RUST_LOG=trace make run` on macOS prints shared `sampled activity`
+  and `queued runtime event` traces.
 - macOS helper protocol smoke tests returned `ready`, `activitySample`, and
   `shutdownComplete` for a valid version 2 session, returned a structured error
   for an unknown message, and returned a structured error for an incompatible

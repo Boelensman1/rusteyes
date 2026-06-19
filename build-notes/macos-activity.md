@@ -12,13 +12,15 @@
   activity once per second, emits `WallClockElapsed` every poll, and emits
   `ActiveTimeElapsed` when helper idle time is less than or equal to the poll
   interval.
+- The Rust activity sample interpretation and regular activity trace output now
+  use the same shared activity module as X11.
 - Helper protocol or activity sampling failures are logged and shut the daemon
   loop down cleanly.
 
 ## Decisions
 
-- Keep activity interpretation in Rust so the macOS backend matches the X11
-  event model.
+- Keep activity interpretation in shared Rust code so the macOS backend matches
+  the X11 event model and trace output.
 - Use a one-second activity poll interval for parity with X11.
 - Treat idle as the absence of active-time advancement; no scheduler-level idle
   input was added.
@@ -36,6 +38,8 @@
   shutdown.
 - `timeout 3s make run` stayed alive until `timeout` terminated it, confirming
   macOS no longer exits immediately after the helper handshake.
+- A bounded `RUST_LOG=trace make run` smoke run prints shared `sampled
+  activity` and `queued runtime event` traces on macOS.
 - `make check` passed.
 
 ## Follow-up
