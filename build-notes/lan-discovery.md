@@ -15,6 +15,12 @@
   the configured sync shared secret.
 - Added conversion from resolved mDNS services into crate-internal discovered
   peer records with peer ID, socket address, and observation time.
+- Added a temporary discovery smoke mode for manual verification:
+  `RESTEYES_DISCOVERY_SMOKE=1 RUST_LOG=info RESTEYES_CONFIG=test-configs/sync-discovery.yaml make run`.
+  It starts discovery without the platform backend, logs that it is searching,
+  and logs each authenticated peer it finds.
+- Added trace logging inside discovery startup and peer discovery so the same
+  visibility remains useful when the module is wired into runtime sync later.
 
 ## Decisions
 
@@ -24,12 +30,21 @@
 - Keep discovery as an internal capability only; no daemon runtime wiring,
   active-time transport, scheduler changes, or synced control behavior was
   added in this step.
+- The smoke mode is intentionally temporary and should be removed when
+  `authenticated-peer-transport` starts discovery from the normal daemon
+  runtime.
+- The smoke mode advertises a temporary default transport port, `47373`,
+  because the actual peer transport is still a later step. Override it with
+  `RESTEYES_DISCOVERY_SMOKE_PORT` if needed.
 - Treat discovery authentication as a filter only. Future peer transport must
   still authenticate every sync message because mDNS records can be replayed.
 
 ## Verification
 
 - `make check`
+- A bounded local two-process smoke run printed `started Resteyes LAN discovery
+  smoke test` from both instances and `found authenticated Resteyes peer` for
+  both advertised peers.
 
 ## Follow-up
 

@@ -2,7 +2,7 @@ use super::{
     DISCOVERY_VERSION, DiscoveredPeer, DiscoveryMetadata, DiscoveryPayload, KEY_MAC, KEY_PEER,
     KEY_PORT, KEY_VERSION, SERVICE_TYPE, SyncDiscoveryError, authenticate_payload,
     discovered_peer_from_resolved_service, discovery_txt_properties, encode_hex, host_name,
-    instance_name, service_address,
+    instance_name, parse_smoke_port, service_address, smoke_enabled_value,
 };
 use crate::config::SharedSecret;
 use crate::sync_protocol::PeerId;
@@ -16,6 +16,32 @@ const LOCAL_PEER: &str = "00112233445566778899aabbccddeeff";
 const REMOTE_PEER: &str = "ffeeddccbbaa99887766554433221100";
 const SHARED_SECRET: &str = "0123456789abcdef0123456789abcdef";
 const WRONG_SHARED_SECRET: &str = "fedcba9876543210fedcba9876543210";
+
+#[test]
+fn smoke_enabled_value_accepts_truthy_values() {
+    for value in ["1", "true", "yes", " smoke "] {
+        assert!(smoke_enabled_value(value));
+    }
+}
+
+#[test]
+fn smoke_enabled_value_rejects_empty_false_and_zero() {
+    for value in ["", " ", "0", "false", " FALSE "] {
+        assert!(!smoke_enabled_value(value));
+    }
+}
+
+#[test]
+fn smoke_port_parser_requires_non_zero_u16() {
+    assert_eq!(parse_smoke_port("47373"), Ok(47_373));
+    assert_eq!(parse_smoke_port("0"), Err(SyncDiscoveryError::ZeroPort));
+    assert_eq!(
+        parse_smoke_port("65536"),
+        Err(SyncDiscoveryError::InvalidSmokePort {
+            value: String::from("65536"),
+        })
+    );
+}
 
 #[test]
 fn discovery_txt_metadata_round_trips() -> Result<(), Box<dyn Error>> {

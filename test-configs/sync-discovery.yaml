@@ -1,0 +1,3 @@
+sync:
+  enabled: true
+  shared_secret: "0123456789abcdef0123456789abcdef"

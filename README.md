@@ -25,6 +25,17 @@ For a short manual X11 break cycle:
 RESTEYES_CONFIG=test-configs/ten-second-break.yaml make run
 ```
 
+For temporary LAN discovery smoke testing, run this on two machines using the
+same config:
+
+```sh
+RESTEYES_DISCOVERY_SMOKE=1 RUST_LOG=info RESTEYES_CONFIG=test-configs/sync-discovery.yaml make run
+```
+
+This bypasses the platform backend, starts only mDNS/DNS-SD discovery, and logs
+authenticated peers it finds. This smoke path should be removed once discovery
+is started by the normal authenticated peer transport/runtime code.
+
 ## Common Commands
 
 ```sh

@@ -136,7 +136,10 @@
   advertises a peer-specific Resteyes sync service, authenticates TXT metadata
   with the configured shared secret, and converts resolved authenticated
   services into discovered peer records without yet wiring peer transport or
-  runtime sync behavior.
+  runtime sync behavior. Follow-up verification support added a temporary
+  `RESTEYES_DISCOVERY_SMOKE=1` path to run discovery without the platform
+  backend and log authenticated peers found on the LAN; remove this smoke path
+  when authenticated peer transport starts discovery from normal runtime code.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.

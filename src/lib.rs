@@ -59,6 +59,12 @@ impl Error {
             },
         }
     }
+
+    const fn sync_discovery(error: sync_discovery::SyncDiscoveryError) -> Self {
+        Self {
+            kind: ErrorKind::SyncDiscovery(error),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -69,6 +75,7 @@ enum ErrorKind {
     Backend(x11_activity::X11ActivityError),
     #[cfg(target_os = "macos")]
     MacOSHelper(macos_helper::MacOSHelperError),
+    SyncDiscovery(sync_discovery::SyncDiscoveryError),
     #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
     UnsupportedPlatform {
         platform: &'static str,
@@ -84,6 +91,7 @@ impl fmt::Display for Error {
             ErrorKind::Backend(error) => write!(formatter, "{error}"),
             #[cfg(target_os = "macos")]
             ErrorKind::MacOSHelper(error) => write!(formatter, "{error}"),
+            ErrorKind::SyncDiscovery(error) => write!(formatter, "{error}"),
             #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
             ErrorKind::UnsupportedPlatform { platform } => {
                 write!(formatter, "no backend is available for {platform} yet")
@@ -101,6 +109,7 @@ impl std::error::Error for Error {
             ErrorKind::Backend(error) => Some(error),
             #[cfg(target_os = "macos")]
             ErrorKind::MacOSHelper(error) => Some(error),
+            ErrorKind::SyncDiscovery(error) => Some(error),
             #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
             ErrorKind::UnsupportedPlatform { .. } => None,
         }
@@ -140,6 +149,11 @@ impl From<macos_helper::MacOSHelperError> for Error {
 /// Returns an error when no platform backend is available, or when startup
 /// config loading or scheduler setup fails.
 pub fn run() -> Result<(), Error> {
+    if sync_discovery::smoke_enabled_from_env() {
+        let config = config::Config::load()?;
+        return sync_discovery::run_smoke(config.sync).map_err(Error::sync_discovery);
+    }
+
     runtime::run()
 }
 
