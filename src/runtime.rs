@@ -35,6 +35,7 @@ where
         scheduler,
         backend,
         disable_mode: DisableMode::Enabled,
+        lock_after_current_break: None,
     };
 
     daemon.run();
@@ -55,6 +56,7 @@ where
     scheduler: BreakScheduler,
     backend: &'a mut B,
     disable_mode: DisableMode,
+    lock_after_current_break: Option<bool>,
 }
 
 impl<B> DaemonRuntime<'_, B>
@@ -75,6 +77,7 @@ where
             RuntimeEvent::ActiveTimeElapsed(elapsed) => self.advance_active(elapsed),
             RuntimeEvent::WallClockElapsed(elapsed) => self.advance_wall_clock(elapsed),
             RuntimeEvent::BreakFinished => self.finish_break(),
+            RuntimeEvent::LockAfterCurrentBreak => self.lock_after_current_break(),
             RuntimeEvent::Disable(DisableRequest::For(duration)) => self.disable_for(duration),
             RuntimeEvent::Disable(DisableRequest::UntilRestart) => self.disable_until_restart(),
             RuntimeEvent::Enable => self.enable(),
@@ -86,17 +89,26 @@ where
 
     fn advance_active(&mut self, elapsed: Duration) {
         if let Some(scheduled_break) = self.scheduler.advance_active(elapsed) {
+            self.lock_after_current_break = Some(false);
             self.handle_command(BackendCommand::StartBreak(scheduled_break));
         }
     }
 
     fn finish_break(&mut self) {
+        let lock_after_current_break = self.lock_after_current_break.take().unwrap_or(false);
+
         if let Some(scheduled_break) = self.scheduler.finish_break() {
             self.handle_command(BackendCommand::ClearBreak);
 
-            if scheduled_break.autolock {
+            if scheduled_break.autolock || lock_after_current_break {
                 self.handle_command(BackendCommand::RequestLock);
             }
+        }
+    }
+
+    fn lock_after_current_break(&mut self) {
+        if let Some(lock_after_current_break) = &mut self.lock_after_current_break {
+            *lock_after_current_break = true;
         }
     }
 
@@ -126,6 +138,8 @@ where
     }
 
     fn disable_scheduler(&mut self) {
+        self.lock_after_current_break = None;
+
         if self.scheduler.disable().is_some() {
             self.handle_command(BackendCommand::ClearBreak);
         }

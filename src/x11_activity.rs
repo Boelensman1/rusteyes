@@ -64,17 +64,21 @@ impl X11ActivityBackend {
             break_time_advanced = !break_elapsed.is_zero(),
             "sampled X11 activity during break overlay"
         );
-        let finished = match &mut self.active_break {
+        let advance = match &mut self.active_break {
             Some(active_break) => active_break
                 .advance(&self.activity.connection, break_elapsed)
                 .map_err(|error| X11ActivityError::overlay(&error))?,
-            None => false,
+            None => BreakAdvance::default(),
         };
 
         self.poller
             .queue_event(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL));
 
-        if finished {
+        if advance.lock_after_break_requested {
+            self.poller.queue_event(RuntimeEvent::LockAfterCurrentBreak);
+        }
+
+        if advance.finished {
             self.poller.queue_event(RuntimeEvent::BreakFinished);
         }
 
@@ -224,16 +228,28 @@ impl ActiveBreak {
         &mut self,
         connection: &RustConnection,
         elapsed: Duration,
-    ) -> Result<bool, X11OverlayError> {
-        self.overlay.handle_pending_events(connection)?;
+    ) -> Result<BreakAdvance, X11OverlayError> {
+        let lock_after_break_requested = self.overlay.handle_pending_events(connection)?;
         self.overlay.raise(connection)?;
+        let finished = self.timer.advance(elapsed);
+        self.overlay
+            .update_remaining(connection, self.timer.remaining())?;
 
-        Ok(self.timer.advance(elapsed))
+        Ok(BreakAdvance {
+            finished,
+            lock_after_break_requested,
+        })
     }
 
     fn destroy(self, connection: &RustConnection) -> Result<(), X11OverlayError> {
         self.overlay.destroy(connection)
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct BreakAdvance {
+    finished: bool,
+    lock_after_break_requested: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,6 +279,10 @@ impl BreakTimer {
             self.remaining -= elapsed;
             false
         }
+    }
+
+    const fn remaining(self) -> Duration {
+        self.remaining
     }
 }
 

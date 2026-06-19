@@ -15,8 +15,9 @@ make run
 
 On Linux/X11, the current daemon loads configuration, initializes the scheduler,
 polls X11 activity, shows unmanaged monitor-covering break overlays when a
-break is due, and blocks keyboard/pointer input while the overlay is visible.
-Tray controls and richer break UI are added in later increments.
+break is due, blocks keyboard/pointer input while the overlay is visible, shows
+remaining break time, and lets the current break request local locking after it
+finishes. Tray controls are added in a later increment.
 
 For a short manual X11 break cycle:
 

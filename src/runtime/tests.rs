@@ -71,6 +71,71 @@ fn autolock_break_completion_requests_local_lock() {
 }
 
 #[test]
+fn lock_after_current_break_request_locks_after_non_autolock_break() {
+    let mut backend = ScriptedBackend::new([
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
+        RuntimeEvent::LockAfterCurrentBreak,
+        RuntimeEvent::BreakFinished,
+        RuntimeEvent::Shutdown,
+    ]);
+
+    assert_eq!(run_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(
+        backend.commands,
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::ClearBreak,
+            BackendCommand::RequestLock
+        ]
+    );
+}
+
+#[test]
+fn stale_lock_after_current_break_request_before_break_is_ignored() {
+    let mut backend = ScriptedBackend::new([
+        RuntimeEvent::LockAfterCurrentBreak,
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
+        RuntimeEvent::BreakFinished,
+        RuntimeEvent::Shutdown,
+    ]);
+
+    assert_eq!(run_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(
+        backend.commands,
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::ClearBreak
+        ]
+    );
+}
+
+#[test]
+fn lock_after_current_break_request_clears_after_break_finishes() {
+    let mut config = test_config();
+    _ = config.breaks.types.remove("long");
+    let mut backend = ScriptedBackend::new([
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
+        RuntimeEvent::LockAfterCurrentBreak,
+        RuntimeEvent::BreakFinished,
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
+        RuntimeEvent::BreakFinished,
+        RuntimeEvent::Shutdown,
+    ]);
+
+    assert_eq!(run_with_backend(config, &mut backend), Ok(()));
+    assert_eq!(
+        backend.commands,
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::ClearBreak,
+            BackendCommand::RequestLock,
+            BackendCommand::StartBreak(scheduled_break("short", 2, 20)),
+            BackendCommand::ClearBreak
+        ]
+    );
+}
+
+#[test]
 fn disable_clears_pending_backend_break_without_locking() {
     let mut backend = ScriptedBackend::new([
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
@@ -83,6 +148,32 @@ fn disable_clears_pending_backend_break_without_locking() {
         backend.commands,
         vec![
             BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::ClearBreak
+        ]
+    );
+}
+
+#[test]
+fn disable_clears_lock_after_current_break_request() {
+    let mut config = test_config();
+    _ = config.breaks.types.remove("long");
+    let mut backend = ScriptedBackend::new([
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
+        RuntimeEvent::LockAfterCurrentBreak,
+        RuntimeEvent::Disable(DisableRequest::For(Duration::from_secs(30))),
+        RuntimeEvent::WallClockElapsed(Duration::from_secs(30)),
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
+        RuntimeEvent::BreakFinished,
+        RuntimeEvent::Shutdown,
+    ]);
+
+    assert_eq!(run_with_backend(config, &mut backend), Ok(()));
+    assert_eq!(
+        backend.commands,
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::ClearBreak,
+            BackendCommand::StartBreak(scheduled_break("short", 2, 20)),
             BackendCommand::ClearBreak
         ]
     );

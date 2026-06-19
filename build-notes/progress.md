@@ -55,6 +55,10 @@
 - Completed `x11-lock-after-break`: config now has a `lock.command` argv list
   defaulting to `loginctl lock-session`, and Linux/X11 production runs spawn the
   configured command after an autolock break finishes.
+- Completed `x11-ui-improvements`: X11 break overlays now render remaining
+  break time and a lock-after-break control, and runtime honors that control as
+  a current-break-only request to run the configured local lock command after
+  the break finishes.
 - Completed `logging`: the binary now initializes `tracing` output with a
   warning-level default and `RUST_LOG` override support, X11 backend errors use
   tracing events, high-frequency X11 activity and overlay samples are available
@@ -73,13 +77,14 @@
 - `make build` passes.
 - `nix build` passes.
 - `.codex/hooks/rustfmt.sh` runs successfully.
-- Manual X11 overlay, input-blocking, and trace-output verification is still
-  pending because this environment does not provide usable X server access.
+- Manual X11 overlay, input-blocking, overlay UI, and trace-output verification
+  is still pending because this environment does not provide usable X server
+  access.
 
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next planned increment is `x11-ui-improvements`.
+- The next planned increment is `manual-break-control`.
 - The later build order now separates manual break control, sync
   configuration/authentication, sync protocol, LAN discovery, authenticated
   peer transport, and synced break/disable behavior.

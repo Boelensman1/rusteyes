@@ -1,7 +1,8 @@
 use super::{
-    MAX_X11_TEXT_BYTES, MonitorGeometry, check_grab_status, normalize_monitor_geometries,
-    output_has_monitor, overlay_window_event_mask, pointer_grab_event_mask, selected_break_message,
-    x11_text_bytes,
+    MAX_X11_TEXT_BYTES, MonitorGeometry, check_grab_status, lock_control_label,
+    lock_control_layout, normalize_monitor_geometries, output_has_monitor, overlay_layout,
+    overlay_window_event_mask, pointer_grab_event_mask, remaining_time_text,
+    selected_break_message, x11_text_bytes,
 };
 use crate::scheduler::ScheduledBreak;
 use std::time::Duration;
@@ -65,6 +66,59 @@ fn overlay_text_replaces_non_ascii_and_is_bounded_for_x11() {
 
     assert_eq!(text.len(), MAX_X11_TEXT_BYTES);
     assert!(text.iter().all(u8::is_ascii));
+}
+
+#[test]
+fn remaining_time_text_formats_minutes_and_hours() {
+    assert_eq!(remaining_time_text(Duration::ZERO), "0:00");
+    assert_eq!(remaining_time_text(Duration::from_secs(59)), "0:59");
+    assert_eq!(remaining_time_text(Duration::from_secs(60)), "1:00");
+    assert_eq!(remaining_time_text(Duration::from_secs(3_661)), "1:01:01");
+}
+
+#[test]
+fn remaining_time_text_rounds_subseconds_up() {
+    assert_eq!(remaining_time_text(Duration::from_millis(1)), "0:01");
+    assert_eq!(remaining_time_text(Duration::from_millis(1_001)), "0:02");
+}
+
+#[test]
+fn overlay_layout_stacks_message_time_and_lock_control() {
+    let monitor = MonitorGeometry::new(0, 0, 800, 600);
+    let layout = overlay_layout(&monitor, b"Rest your eyes", Duration::from_secs(90), false);
+
+    assert_eq!(layout.message.text, b"Rest your eyes");
+    assert_eq!(layout.remaining.text, b"1:30");
+    assert!(layout.message.y < layout.remaining.y);
+    assert!(layout.remaining.y < layout.lock_control.bounds.y);
+}
+
+#[test]
+fn lock_control_hit_testing_uses_button_bounds() {
+    let monitor = MonitorGeometry::new(0, 0, 800, 600);
+    let control = lock_control_layout(&monitor, false);
+    let inside_x = control.bounds.x + 1;
+    let inside_y = control.bounds.y + 1;
+
+    assert!(control.bounds.contains(inside_x, inside_y));
+    assert!(!control.bounds.contains(control.bounds.x - 1, inside_y));
+    assert!(!control.bounds.contains(inside_x, control.bounds.y - 1));
+}
+
+#[test]
+fn lock_control_label_reflects_requested_state() {
+    let monitor = MonitorGeometry::new(0, 0, 800, 600);
+
+    assert_eq!(lock_control_label(false), "Lock after break");
+    assert_eq!(lock_control_label(true), "Lock after break requested");
+    assert_eq!(
+        lock_control_layout(&monitor, false).label.text,
+        b"Lock after break"
+    );
+    assert_eq!(
+        lock_control_layout(&monitor, true).label.text,
+        b"Lock after break requested"
+    );
 }
 
 #[test]

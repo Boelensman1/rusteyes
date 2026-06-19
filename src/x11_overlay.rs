@@ -1,15 +1,16 @@
 use crate::scheduler::ScheduledBreak;
 use std::collections::BTreeSet;
 use std::fmt;
+use std::time::Duration;
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::randr::{
     Connection as RandrConnection, ConnectionExt as RandrConnectionExt, Crtc, Output,
 };
 use x11rb::protocol::xproto::{
-    ConfigureWindowAux, ConnectionExt as XprotoConnectionExt, CreateGCAux, CreateWindowAux,
-    CursorEnum, EventMask, Gcontext, GrabMode, GrabStatus, Rectangle, StackMode, Time, Timestamp,
-    Window, WindowClass,
+    ButtonPressEvent, ConfigureWindowAux, ConnectionExt as XprotoConnectionExt, CreateGCAux,
+    CreateWindowAux, CursorEnum, EventMask, Gcontext, GrabMode, GrabStatus, Rectangle, StackMode,
+    Time, Timestamp, Window, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::{COPY_FROM_PARENT, NONE};
@@ -18,6 +19,13 @@ const DEFAULT_BREAK_MESSAGE: &str = "Take a break";
 const TEXT_WIDTH_PIXELS: i32 = 6;
 const TEXT_MIN_X: i32 = 20;
 const TEXT_MIN_Y: i32 = 30;
+const LINE_HEIGHT_PIXELS: i32 = 28;
+const CONTROL_MARGIN_TOP_PIXELS: i32 = 22;
+const CONTROL_PADDING_X_PIXELS: i32 = 14;
+const CONTROL_HEIGHT_PIXELS: u16 = 32;
+const CONTROL_TEXT_BASELINE_OFFSET_PIXELS: i32 = 21;
+const LOCK_CONTROL_LABEL: &str = "Lock after break";
+const LOCK_CONTROL_REQUESTED_LABEL: &str = "Lock after break requested";
 const MAX_X11_TEXT_BYTES: usize = 255;
 
 #[allow(clippy::module_name_repetitions)]
@@ -66,6 +74,8 @@ pub(crate) struct X11Overlay {
     foreground_gc: Gcontext,
     input_grab: InputGrab,
     message: Vec<u8>,
+    remaining: Duration,
+    lock_after_break: bool,
 }
 
 impl X11Overlay {
@@ -107,6 +117,8 @@ impl X11Overlay {
             foreground_gc,
             input_grab: InputGrab::none(),
             message: x11_text_bytes(selected_break_message(scheduled_break)),
+            remaining: scheduled_break.duration,
+            lock_after_break: scheduled_break.autolock,
         };
 
         let result = (|| {
@@ -131,9 +143,11 @@ impl X11Overlay {
     }
 
     pub(crate) fn handle_pending_events(
-        &self,
+        &mut self,
         connection: &RustConnection,
-    ) -> Result<(), X11OverlayError> {
+    ) -> Result<bool, X11OverlayError> {
+        let mut lock_after_break_requested = false;
+
         loop {
             match x11("poll overlay X11 event", connection.poll_for_event())? {
                 Some(Event::Expose(event)) => {
@@ -145,10 +159,24 @@ impl X11Overlay {
                         self.draw_window(connection, window)?;
                     }
                 }
+                Some(Event::ButtonPress(event)) => {
+                    if self.handle_button_press(&event) {
+                        lock_after_break_requested = true;
+                    }
+                }
                 Some(_) => {}
-                None => return Ok(()),
+                None => return Ok(lock_after_break_requested),
             }
         }
+    }
+
+    pub(crate) fn update_remaining(
+        &mut self,
+        connection: &RustConnection,
+        remaining: Duration,
+    ) -> Result<(), X11OverlayError> {
+        self.remaining = remaining;
+        self.draw(connection)
     }
 
     pub(crate) fn raise(&self, connection: &RustConnection) -> Result<(), X11OverlayError> {
@@ -271,12 +299,71 @@ impl X11Overlay {
             ),
         )?;
 
-        let (x, y) = message_position(&window.monitor, self.message.len());
+        let layout = overlay_layout(
+            &window.monitor,
+            &self.message,
+            self.remaining,
+            self.lock_after_break,
+        );
+        self.draw_text_line(connection, window, &layout.message)?;
+        self.draw_text_line(connection, window, &layout.remaining)?;
+
         x11(
-            "draw overlay message",
-            connection.image_text8(window.window, self.foreground_gc, x, y, &self.message),
+            "draw overlay lock-after-break control",
+            connection.poly_rectangle(
+                window.window,
+                self.foreground_gc,
+                &[Rectangle {
+                    x: layout.lock_control.bounds.x,
+                    y: layout.lock_control.bounds.y,
+                    width: layout.lock_control.bounds.width,
+                    height: layout.lock_control.bounds.height,
+                }],
+            ),
+        )?;
+        self.draw_text_line(connection, window, &layout.lock_control.label)?;
+        Ok(())
+    }
+
+    fn draw_text_line(
+        &self,
+        connection: &RustConnection,
+        window: &OverlayWindow,
+        line: &TextLine,
+    ) -> Result<(), X11OverlayError> {
+        x11(
+            "draw overlay text",
+            connection.image_text8(
+                window.window,
+                self.foreground_gc,
+                line.x,
+                line.y,
+                &line.text,
+            ),
         )?;
         Ok(())
+    }
+
+    fn handle_button_press(&mut self, event: &ButtonPressEvent) -> bool {
+        if self.lock_after_break {
+            return false;
+        }
+
+        let Some(window) = self
+            .windows
+            .iter()
+            .find(|window| window.window == event.event)
+        else {
+            return false;
+        };
+
+        let control = lock_control_layout(&window.monitor, self.lock_after_break);
+        if control.bounds.contains(event.event_x, event.event_y) {
+            self.lock_after_break = true;
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -579,14 +666,149 @@ fn x11_text_bytes(message: &str) -> Vec<u8> {
     }
 }
 
-fn message_position(monitor: &MonitorGeometry, message_len: usize) -> (i16, i16) {
-    let text_width = i32::try_from(message_len).map_or(i32::MAX, |message_len| {
-        message_len.saturating_mul(TEXT_WIDTH_PIXELS)
-    });
-    let x = ((i32::from(monitor.width) - text_width) / 2).max(TEXT_MIN_X);
-    let y = (i32::from(monitor.height) / 2).max(TEXT_MIN_Y);
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OverlayLayout {
+    message: TextLine,
+    remaining: TextLine,
+    lock_control: LockControlLayout,
+}
 
-    (saturating_i16(x), saturating_i16(y))
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TextLine {
+    x: i16,
+    y: i16,
+    text: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LockControlLayout {
+    bounds: ControlBounds,
+    label: TextLine,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ControlBounds {
+    x: i16,
+    y: i16,
+    width: u16,
+    height: u16,
+}
+
+impl ControlBounds {
+    fn contains(self, x: i16, y: i16) -> bool {
+        let x = i32::from(x);
+        let y = i32::from(y);
+        let left = i32::from(self.x);
+        let top = i32::from(self.y);
+        let right = left.saturating_add(i32::from(self.width));
+        let bottom = top.saturating_add(i32::from(self.height));
+
+        x >= left && x < right && y >= top && y < bottom
+    }
+}
+
+fn overlay_layout(
+    monitor: &MonitorGeometry,
+    message: &[u8],
+    remaining: Duration,
+    lock_after_break: bool,
+) -> OverlayLayout {
+    let center_y = i32::from(monitor.height) / 2;
+    let message_y = (center_y - LINE_HEIGHT_PIXELS).max(TEXT_MIN_Y);
+    let remaining_y = center_y.max(TEXT_MIN_Y);
+
+    OverlayLayout {
+        message: centered_text_line(monitor, message.to_vec(), message_y),
+        remaining: centered_text_line(
+            monitor,
+            x11_text_bytes(&remaining_time_text(remaining)),
+            remaining_y,
+        ),
+        lock_control: lock_control_layout(monitor, lock_after_break),
+    }
+}
+
+fn centered_text_line(monitor: &MonitorGeometry, text: Vec<u8>, y: i32) -> TextLine {
+    TextLine {
+        x: centered_text_x(monitor, text.len()),
+        y: saturating_i16(y),
+        text,
+    }
+}
+
+fn centered_text_x(monitor: &MonitorGeometry, text_len: usize) -> i16 {
+    let text_width = text_width_pixels(text_len);
+    let x = ((i32::from(monitor.width) - text_width) / 2).max(TEXT_MIN_X);
+
+    saturating_i16(x)
+}
+
+fn text_width_pixels(text_len: usize) -> i32 {
+    i32::try_from(text_len).map_or(i32::MAX, |text_len| {
+        text_len.saturating_mul(TEXT_WIDTH_PIXELS)
+    })
+}
+
+fn remaining_time_text(remaining: Duration) -> String {
+    let seconds = if remaining.is_zero() {
+        0
+    } else {
+        remaining
+            .as_secs()
+            .saturating_add(u64::from(remaining.subsec_nanos() > 0))
+    };
+    let hours = seconds / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    let seconds = seconds % 60;
+
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
+
+fn lock_control_label(lock_after_break: bool) -> &'static str {
+    if lock_after_break {
+        LOCK_CONTROL_REQUESTED_LABEL
+    } else {
+        LOCK_CONTROL_LABEL
+    }
+}
+
+fn lock_control_layout(monitor: &MonitorGeometry, lock_after_break: bool) -> LockControlLayout {
+    let label = x11_text_bytes(lock_control_label(lock_after_break));
+    let width = lock_control_width(monitor, label.len());
+    let x = ((i32::from(monitor.width) - i32::from(width)) / 2).max(TEXT_MIN_X);
+    let y = (i32::from(monitor.height) / 2).saturating_add(CONTROL_MARGIN_TOP_PIXELS);
+    let bounds = ControlBounds {
+        x: saturating_i16(x),
+        y: saturating_i16(y),
+        width,
+        height: CONTROL_HEIGHT_PIXELS,
+    };
+    let label_x = i32::from(bounds.x).saturating_add(CONTROL_PADDING_X_PIXELS);
+    let label_y = i32::from(bounds.y).saturating_add(CONTROL_TEXT_BASELINE_OFFSET_PIXELS);
+
+    LockControlLayout {
+        bounds,
+        label: TextLine {
+            x: saturating_i16(label_x),
+            y: saturating_i16(label_y),
+            text: label,
+        },
+    }
+}
+
+fn lock_control_width(monitor: &MonitorGeometry, label_len: usize) -> u16 {
+    let width = text_width_pixels(label_len)
+        .saturating_add(CONTROL_PADDING_X_PIXELS.saturating_mul(2))
+        .max(1);
+    let max_width = i32::from(monitor.width)
+        .saturating_sub(TEXT_MIN_X.saturating_mul(2))
+        .max(1);
+
+    saturating_u16(width.min(max_width))
 }
 
 fn saturating_i16(value: i32) -> i16 {
@@ -594,6 +816,14 @@ fn saturating_i16(value: i32) -> i16 {
         Ok(value) => value,
         Err(_) if value.is_negative() => i16::MIN,
         Err(_) => i16::MAX,
+    }
+}
+
+fn saturating_u16(value: i32) -> u16 {
+    match u16::try_from(value) {
+        Ok(value) => value,
+        Err(_) if value.is_negative() => 0,
+        Err(_) => u16::MAX,
     }
 }
 

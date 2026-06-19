@@ -13,6 +13,7 @@ pub(crate) enum RuntimeEvent {
     ActiveTimeElapsed(Duration),
     WallClockElapsed(Duration),
     BreakFinished,
+    LockAfterCurrentBreak,
     Disable(DisableRequest),
     Enable,
     Shutdown,
