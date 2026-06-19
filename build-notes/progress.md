@@ -132,6 +132,11 @@
   transient peer identity, sequence numbers, active-time increments, named
   break starts, disable/enable controls, and lock-after-current-break requests,
   authenticated with HMAC-SHA256 over canonical JSON payloads.
+- Completed `lan-discovery`: crate-internal mDNS/DNS-SD discovery now
+  advertises a peer-specific Resteyes sync service, authenticates TXT metadata
+  with the configured shared secret, and converts resolved authenticated
+  services into discovered peer records without yet wiring peer transport or
+  runtime sync behavior.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -190,6 +195,7 @@
   cleanup.
 - `make check` passes after the macOS helper shutdown/event-order cleanup.
 - `make check` passes after adding authenticated sync protocol framing.
+- `make check` passes after adding mDNS/DNS-SD LAN discovery.
 - A bounded `timeout 3s make run` on macOS stays alive until terminated by
   `timeout` and no longer emits helper stderr during startup after AppKit setup
   was made lazy.
@@ -206,7 +212,7 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next planned increment is `lan-discovery`.
+- The next planned increment is `authenticated-peer-transport`.
 - The later build order now brings macOS backend parity before sync protocol,
   then separates sync protocol, LAN discovery, authenticated peer transport,
   active-time sync, synced break/disable behavior, tray UI, and synced
