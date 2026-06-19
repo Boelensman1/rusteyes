@@ -13,8 +13,8 @@
 - Added internal runtime events for active time, wall-clock elapsed time, break
   completion, finite disable, disable-until-restart, explicit enable, and
   shutdown.
-- Added a no-op backend for the current executable path. It emits shutdown
-  immediately so startup wiring is checked without platform behavior.
+- Added a no-op backend for the initial executable path. It emitted shutdown
+  immediately so startup wiring could be checked without platform behavior.
 - Added scripted runtime tests covering scheduled breaks, break completion,
   timed disable, disable-until-restart, shutdown, and scheduler setup errors.
 - The public API remains `resteyes::run()` with an application error wrapper.
@@ -26,7 +26,8 @@
   remain out of scope for this increment.
 - Runtime finite disable state is tracked outside the scheduler as remaining
   wall-clock duration.
-- The no-op backend intentionally produces no app output.
+- The no-op backend intentionally produces no app output and is now test-only;
+  production unsupported targets report a missing backend instead.
 
 ## Commands
 

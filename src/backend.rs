@@ -35,11 +35,11 @@ pub(crate) enum BackendCommand {
     ClearBreak,
 }
 
-#[cfg(any(test, not(target_os = "linux")))]
+#[cfg(test)]
 #[allow(dead_code)]
 pub(crate) struct NoopBackend;
 
-#[cfg(any(test, not(target_os = "linux")))]
+#[cfg(test)]
 impl Backend for NoopBackend {
     fn next_event(&mut self) -> RuntimeEvent {
         RuntimeEvent::Shutdown

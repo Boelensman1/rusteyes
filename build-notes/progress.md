@@ -42,6 +42,8 @@
   wall-clock ticks and active-time increments into the runtime. This step
   initially used a temporary diagnostic wrapper, which was removed by
   `x11-overlay`.
+- Follow-up fix: unsupported non-Linux builds now fail at startup with a clear
+  missing-backend message instead of silently using the no-op backend path.
 - Completed `x11-overlay`: Linux/X11 break commands now create unmanaged
   `override_redirect` overlay windows over connected monitor geometries, render
   the first configured break message, keep overlays raised/redrawn during the
@@ -94,6 +96,8 @@
 - `make macos-helper-build` passes on macOS with SwiftPM available.
 - `nix build` passes.
 - `.codex/hooks/rustfmt.sh` runs successfully.
+- On unsupported targets, `make run` prints
+  `resteyes: no backend is available for <platform> yet` and exits non-zero.
 - Manual X11 overlay, input-blocking, overlay UI, and trace-output verification
   is still pending because this environment does not provide usable X server
   access.

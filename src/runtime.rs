@@ -1,10 +1,12 @@
-#[cfg(not(target_os = "linux"))]
-use crate::backend::NoopBackend;
+#[cfg(any(test, target_os = "linux"))]
 use crate::backend::{Backend, BackendCommand, DisableRequest, RuntimeEvent};
+#[cfg(any(test, target_os = "linux"))]
 use crate::config::{Config, ConfigError};
+#[cfg(any(test, target_os = "linux"))]
 use crate::scheduler::{BreakSchedule, BreakScheduler, ScheduledBreak};
 #[cfg(target_os = "linux")]
 use crate::x11_activity::X11ActivityBackend;
+#[cfg(any(test, target_os = "linux"))]
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
@@ -18,13 +20,10 @@ pub(crate) fn run() -> Result<(), crate::Error> {
 
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn run() -> Result<(), crate::Error> {
-    let config = Config::load()?;
-    let mut backend = NoopBackend;
-
-    run_with_backend(config, &mut backend)?;
-    Ok(())
+    Err(crate::Error::unsupported_platform())
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn run_with_backend<B>(config: Config, backend: &mut B) -> Result<(), ConfigError>
 where
     B: Backend,
@@ -43,12 +42,14 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(any(test, target_os = "linux"))]
 enum DisableMode {
     Enabled,
     Timed(Duration),
     UntilRestart,
 }
 
+#[cfg(any(test, target_os = "linux"))]
 struct DaemonRuntime<'a, B>
 where
     B: Backend,
@@ -59,6 +60,7 @@ where
     current_break: Option<CurrentBreakState>,
 }
 
+#[cfg(any(test, target_os = "linux"))]
 impl<B> DaemonRuntime<'_, B>
 where
     B: Backend,
@@ -163,10 +165,12 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(any(test, target_os = "linux"))]
 struct CurrentBreakState {
     lock_after: bool,
 }
 
+#[cfg(any(test, target_os = "linux"))]
 impl CurrentBreakState {
     const fn for_break(scheduled_break: &ScheduledBreak) -> Self {
         Self {

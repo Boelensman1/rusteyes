@@ -17,7 +17,8 @@
 - This increment temporarily layered stderr diagnostics through a wrapper that
   printed activity samples and backend commands; `x11-overlay` removed that
   wrapper after visible break behavior existed.
-- Unsupported targets keep the no-op backend path.
+- Unsupported targets report a clear missing-backend startup error instead of
+  silently using the no-op backend path.
 - Added unit tests for activity classification, queued event ordering, idle
   behavior, and overlay break countdown helpers without requiring a live X
   server.

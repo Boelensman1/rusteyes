@@ -17,6 +17,9 @@
 - Runtime now clears backend break state when a pending break finishes or is
   cleared by disable.
 - Runtime requests local lock after an autolock break finishes.
+- Follow-up fix removed the no-op backend from production unsupported-target
+  startup. Unsupported targets now return a clear missing-backend error, and the
+  no-op backend remains test-only.
 - Later cleanup grouped finite and until-restart disable inputs under one
   `DisableRequest` event payload.
 - Later cleanup made scheduler break completion and disable transitions return
@@ -42,6 +45,8 @@
 - `make test`
 - `make check`
 - `make check` after backend default-command cleanup
+- `make check` after unsupported-platform startup fix
+- `make run` after unsupported-platform startup fix (expected non-zero exit)
 
 ## Follow-up
 
