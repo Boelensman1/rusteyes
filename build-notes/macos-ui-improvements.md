@@ -10,6 +10,10 @@
 - The Rust macOS backend keeps helper UI state in sync after each overlay
   activity poll and queues `LockAfterCurrentBreak` before `BreakFinished` when
   a click and break completion happen in the same poll.
+- Follow-up fix: `finishBreak` and `updateBreak` now explicitly serialize
+  `lockAfter` in the JSON wire format. The helper previously rejected
+  `updateBreak` as an invalid protocol message because Rust emitted
+  `lock_after`.
 
 ## Decisions
 
@@ -28,6 +32,9 @@
   lock-request decoding, active-break state, and runtime event ordering tests.
 - `make macos-helper-build` passed after adding the AppKit overlay UI updates.
 - `make check` passed before completing the step.
+- `make test` passed after adding raw JSON assertions for `lockAfter` command
+  fields.
+- `make check` passed after fixing `lockAfter` command field serialization.
 
 ## Follow-up
 

@@ -120,7 +120,9 @@
 - Completed `macos-ui-improvements`: macOS break overlays now render remaining
   break time and a lock-after-break control through helper protocol version 6,
   and helper click requests are reported back to the runtime before a break can
-  finish and request local locking.
+  finish and request local locking. Follow-up fix explicitly serializes the
+  helper command lock flag as `lockAfter` so `updateBreak` and `finishBreak`
+  match the Swift protocol parser.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -169,6 +171,10 @@
 - `make test` passes after adding macOS overlay UI protocol and backend state.
 - `make macos-helper-build` passes after adding macOS overlay UI controls.
 - `make check` passes after adding macOS overlay UI controls.
+- `make test` passes after fixing macOS helper `lockAfter` command field
+  serialization.
+- `make check` passes after fixing macOS helper `lockAfter` command field
+  serialization.
 - A bounded `timeout 3s make run` on macOS stays alive until terminated by
   `timeout` and no longer emits helper stderr during startup after AppKit setup
   was made lazy.

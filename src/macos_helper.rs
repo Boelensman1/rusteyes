@@ -521,11 +521,13 @@ enum DaemonMessage {
         break_info: WireBreak,
     },
     FinishBreak {
+        #[serde(rename = "lockAfter")]
         lock_after: bool,
     },
     UpdateBreak {
         #[serde(rename = "remainingMs")]
         remaining_ms: u64,
+        #[serde(rename = "lockAfter")]
         lock_after: bool,
     },
     ClearBreak,
@@ -1042,6 +1044,9 @@ mod tests {
             daemon_messages(&output)?,
             vec![DaemonMessage::FinishBreak { lock_after: true }]
         );
+        let messages = daemon_json_values(&output)?;
+        assert_eq!(messages[0]["lockAfter"], true);
+        assert!(messages[0].get("lock_after").is_none());
         Ok(())
     }
 
@@ -1060,6 +1065,10 @@ mod tests {
                 lock_after: true,
             }]
         );
+        let messages = daemon_json_values(&output)?;
+        assert_eq!(messages[0]["remainingMs"], 2_500);
+        assert_eq!(messages[0]["lockAfter"], true);
+        assert!(messages[0].get("lock_after").is_none());
         Ok(())
     }
 
@@ -1240,6 +1249,16 @@ mod tests {
     }
 
     fn daemon_messages(output: &[u8]) -> Result<Vec<DaemonMessage>, Box<dyn std::error::Error>> {
+        let output = std::str::from_utf8(output)?;
+        output
+            .lines()
+            .map(|line| Ok(serde_json::from_str(line)?))
+            .collect()
+    }
+
+    fn daemon_json_values(
+        output: &[u8],
+    ) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
         let output = std::str::from_utf8(output)?;
         output
             .lines()
