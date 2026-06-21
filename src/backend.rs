@@ -9,8 +9,8 @@ pub(crate) type BackendEventSender = flume::Sender<RuntimeEvent>;
 
 #[derive(Debug)]
 pub(crate) struct BackendActor {
-    command_sender: Option<BackendCommandSender>,
-    event_receiver: RuntimeEventReceiver,
+    command_sender: Option<flume::Sender<BackendCommand>>,
+    event_receiver: flume::Receiver<RuntimeEvent>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -64,14 +64,14 @@ impl BackendActor {
         thread: JoinHandle<()>,
     ) -> Self {
         Self {
-            command_sender: Some(BackendCommandSender::new(command_sender)),
-            event_receiver: RuntimeEventReceiver::new(event_receiver),
+            command_sender: Some(command_sender),
+            event_receiver,
             thread: Some(thread),
         }
     }
 
-    pub(crate) fn event_receiver(&self) -> &RuntimeEventReceiver {
-        &self.event_receiver
+    pub(crate) fn clone_event_receiver(&self) -> flume::Receiver<RuntimeEvent> {
+        self.event_receiver.clone()
     }
 
     pub(crate) fn send_command(&self, command: BackendCommand) -> Result<(), BackendActorError> {
@@ -79,7 +79,9 @@ impl BackendActor {
             return Err(BackendActorError::Stopped);
         };
 
-        command_sender.send(command)
+        command_sender
+            .send(command)
+            .map_err(|_| BackendActorError::Stopped)
     }
 }
 
@@ -92,38 +94,6 @@ impl Drop for BackendActor {
         {
             warn!("backend actor thread panicked");
         }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct BackendCommandSender {
-    sender: flume::Sender<BackendCommand>,
-}
-
-impl BackendCommandSender {
-    fn new(sender: flume::Sender<BackendCommand>) -> Self {
-        Self { sender }
-    }
-
-    fn send(&self, command: BackendCommand) -> Result<(), BackendActorError> {
-        self.sender
-            .send(command)
-            .map_err(|_| BackendActorError::Stopped)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct RuntimeEventReceiver {
-    receiver: flume::Receiver<RuntimeEvent>,
-}
-
-impl RuntimeEventReceiver {
-    fn new(receiver: flume::Receiver<RuntimeEvent>) -> Self {
-        Self { receiver }
-    }
-
-    pub(crate) fn clone_receiver(&self) -> flume::Receiver<RuntimeEvent> {
-        self.receiver.clone()
     }
 }
 

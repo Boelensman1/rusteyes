@@ -28,7 +28,21 @@
 - Inbound disable events clear a pending local break through the same backend
   cleanup path as local disable actions.
 
+## Cleanup
+
+- Collapsed separate local and synced runtime helper paths behind a small sync
+  propagation flag so scheduler behavior stays shared while rebroadcast policy
+  remains explicit.
+- Removed thin backend actor channel wrapper types; `BackendActor` now stores
+  the flume channels directly.
+- Marked directed sync transport send/poll helpers as test-only where runtime
+  now uses the event receiver API.
+- Reworked runtime sync tests to drive ordered runtime inputs directly instead
+  of using sleep-delayed backend and sync event sources.
+
 ## Commands
 
 - `cargo test --all-targets --all-features runtime`
 - `make check`
+- `cargo check --all-targets --all-features`
+- `make fmt-check`

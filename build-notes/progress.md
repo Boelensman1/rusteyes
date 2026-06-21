@@ -185,6 +185,9 @@
   disable/enable controls now broadcast authenticated sync events, inbound
   authenticated break-start and disable/enable events apply locally without
   rebroadcasting, and synced lock-after-current-break remains deferred.
+  Follow-up cleanup collapsed duplicated local/synced runtime helper paths,
+  removed thin backend actor channel wrappers, and made sync runtime tests drive
+  ordered inputs without sleep-delayed event sources.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -267,6 +270,7 @@
 - `cargo test --all-targets --all-features runtime` passes after adding
   break/disable sync behavior.
 - `make check` passes after adding break/disable sync behavior.
+- `make check` passes after the break/disable sync runtime cleanup.
 - A bounded `timeout 3s make run` on macOS stays alive until terminated by
   `timeout` and no longer emits helper stderr during startup after AppKit setup
   was made lazy.

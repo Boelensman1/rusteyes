@@ -142,7 +142,6 @@ impl SyncTransport {
         })
     }
 
-    #[allow(dead_code)]
     pub(crate) fn broadcast_event(&self, event: SyncEvent) -> Result<usize, SyncTransportError> {
         let SyncTransportState::Active(active) = &self.state else {
             return Ok(0);
@@ -151,7 +150,7 @@ impl SyncTransport {
         active.broadcast_event(event)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn send_event(
         &self,
         peer_id: PeerId,
@@ -164,7 +163,7 @@ impl SyncTransport {
         active.send_event(peer_id, event)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn try_recv_event(&self) -> Result<Option<SyncTransportEvent>, SyncTransportError> {
         let SyncTransportState::Active(active) = &self.state else {
             return Ok(None);
@@ -173,7 +172,7 @@ impl SyncTransport {
         active.try_recv_event()
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn drain_events(&self) -> Result<Vec<SyncTransportEvent>, SyncTransportError> {
         let SyncTransportState::Active(active) = &self.state else {
             return Ok(Vec::new());
@@ -254,6 +253,7 @@ impl ActiveSyncTransport {
             .map_err(|_| SyncTransportError::WorkerStopped)?
     }
 
+    #[cfg(test)]
     fn send_event(&self, peer_id: PeerId, event: SyncEvent) -> Result<bool, SyncTransportError> {
         let (reply_sender, reply_receiver) = flume::bounded(1);
         self.command_sender
@@ -270,6 +270,7 @@ impl ActiveSyncTransport {
             .map_err(|_| SyncTransportError::WorkerStopped)?
     }
 
+    #[cfg(test)]
     fn try_recv_event(&self) -> Result<Option<SyncTransportEvent>, SyncTransportError> {
         match self.event_receiver.try_recv() {
             Ok(event) => Ok(Some(event)),
@@ -278,6 +279,7 @@ impl ActiveSyncTransport {
         }
     }
 
+    #[cfg(test)]
     fn drain_events(&self) -> Result<Vec<SyncTransportEvent>, SyncTransportError> {
         let mut events = Vec::new();
 

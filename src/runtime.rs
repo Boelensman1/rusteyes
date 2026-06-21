@@ -55,18 +55,7 @@ fn run_with_event_sources(
     backend: BackendActor,
     sync_runtime: RuntimeSync<'_>,
 ) {
-    let backend_event_receiver = backend.event_receiver().clone_receiver();
-    let scheduler = BreakScheduler::new(schedule);
-    let mut daemon = DaemonRuntime {
-        scheduler,
-        backend,
-        backend_event_receiver,
-        sync_event_receiver: sync_runtime.event_receiver,
-        sync_broadcaster: sync_runtime.broadcaster,
-        disable_mode: DisableMode::Enabled,
-        current_break: None,
-    };
-
+    let mut daemon = DaemonRuntime::new(schedule, backend, sync_runtime);
     daemon.run();
 }
 
@@ -75,6 +64,18 @@ enum DisableMode {
     Enabled,
     Timed(Duration),
     UntilRestart,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyncPropagation {
+    Broadcast,
+    Suppress,
+}
+
+impl SyncPropagation {
+    const fn should_broadcast(self) -> bool {
+        matches!(self, Self::Broadcast)
+    }
 }
 
 struct DaemonRuntime<'a> {
@@ -87,7 +88,21 @@ struct DaemonRuntime<'a> {
     current_break: Option<CurrentBreakState>,
 }
 
-impl DaemonRuntime<'_> {
+impl<'a> DaemonRuntime<'a> {
+    fn new(schedule: BreakSchedule, backend: BackendActor, sync_runtime: RuntimeSync<'a>) -> Self {
+        let backend_event_receiver = backend.clone_event_receiver();
+
+        Self {
+            scheduler: BreakScheduler::new(schedule),
+            backend,
+            backend_event_receiver,
+            sync_event_receiver: sync_runtime.event_receiver,
+            sync_broadcaster: sync_runtime.broadcaster,
+            disable_mode: DisableMode::Enabled,
+            current_break: None,
+        }
+    }
+
     fn run(&mut self) {
         while let Some(input) = self.next_input() {
             if !self.handle_input(input) {
@@ -137,20 +152,21 @@ impl DaemonRuntime<'_> {
     fn handle_event(&mut self, event: RuntimeEvent) -> bool {
         match event {
             RuntimeEvent::ActiveTimeElapsed(elapsed) => {
-                self.broadcast_active_time(elapsed);
-                return self.advance_local_active(elapsed);
+                return self.advance_active(elapsed, SyncPropagation::Broadcast);
             }
             RuntimeEvent::WallClockElapsed(elapsed) => self.advance_wall_clock(elapsed),
             RuntimeEvent::BreakFinished => return self.finish_break(),
             RuntimeEvent::LockAfterCurrentBreak => self.request_lock_after_current_break(),
-            RuntimeEvent::StartManualBreak(name) => return self.start_local_manual_break(&name),
+            RuntimeEvent::StartManualBreak(name) => {
+                return self.start_manual_break(&name, SyncPropagation::Broadcast);
+            }
             RuntimeEvent::Disable(DisableRequest::For(duration)) => {
-                return self.disable_for_local(duration);
+                return self.disable_for(duration, SyncPropagation::Broadcast);
             }
             RuntimeEvent::Disable(DisableRequest::UntilRestart) => {
-                return self.disable_until_restart_local();
+                return self.disable_until_restart(SyncPropagation::Broadcast);
             }
-            RuntimeEvent::Enable => self.enable_local(),
+            RuntimeEvent::Enable => self.enable(SyncPropagation::Broadcast),
             RuntimeEvent::Shutdown => return false,
         }
 
@@ -171,23 +187,23 @@ impl DaemonRuntime<'_> {
         match event {
             SyncEvent::ActiveTimeElapsed { elapsed } => {
                 trace!(peer_id = %peer_id, ?elapsed, "applying synced active time");
-                self.advance_active(elapsed)
+                self.advance_active(elapsed, SyncPropagation::Suppress)
             }
             SyncEvent::BreakStarted { name } => {
                 trace!(peer_id = %peer_id, break_name = %name, "applying synced break start");
-                self.start_synced_break(&name)
+                self.start_manual_break(&name, SyncPropagation::Suppress)
             }
             SyncEvent::DisableFor { duration } => {
                 trace!(peer_id = %peer_id, ?duration, "applying synced timed disable");
-                self.disable_for(duration)
+                self.disable_for(duration, SyncPropagation::Suppress)
             }
             SyncEvent::DisableUntilRestart => {
                 trace!(peer_id = %peer_id, "applying synced disable until restart");
-                self.disable_until_restart()
+                self.disable_until_restart(SyncPropagation::Suppress)
             }
             SyncEvent::Enable => {
                 trace!(peer_id = %peer_id, "applying synced enable");
-                self.enable();
+                self.enable(SyncPropagation::Suppress);
                 true
             }
             SyncEvent::LockAfterCurrentBreak => {
@@ -213,74 +229,44 @@ impl DaemonRuntime<'_> {
         }
     }
 
-    fn broadcast_active_time(&self, elapsed: Duration) {
-        self.broadcast_sync_event(&SyncEvent::ActiveTimeElapsed { elapsed });
+    fn broadcast_if_needed(&self, propagation: SyncPropagation, event: &SyncEvent) {
+        if propagation.should_broadcast() {
+            self.broadcast_sync_event(event);
+        }
     }
 
-    fn broadcast_break_started(&self, name: &str) {
-        self.broadcast_sync_event(&SyncEvent::BreakStarted {
-            name: name.to_owned(),
-        });
-    }
+    fn advance_active(&mut self, elapsed: Duration, propagation: SyncPropagation) -> bool {
+        self.broadcast_if_needed(propagation, &SyncEvent::ActiveTimeElapsed { elapsed });
 
-    fn broadcast_disable_for(&self, duration: Duration) {
-        self.broadcast_sync_event(&SyncEvent::DisableFor { duration });
-    }
-
-    fn broadcast_disable_until_restart(&self) {
-        self.broadcast_sync_event(&SyncEvent::DisableUntilRestart);
-    }
-
-    fn broadcast_enable(&self) {
-        self.broadcast_sync_event(&SyncEvent::Enable);
-    }
-
-    fn advance_local_active(&mut self, elapsed: Duration) -> bool {
         if let Some(scheduled_break) = self.scheduler.advance_active(elapsed) {
-            self.start_local_break(scheduled_break)
+            self.start_break(scheduled_break, propagation)
         } else {
             true
         }
     }
 
-    fn advance_active(&mut self, elapsed: Duration) -> bool {
-        if let Some(scheduled_break) = self.scheduler.advance_active(elapsed) {
-            self.start_break(scheduled_break)
-        } else {
-            true
-        }
-    }
-
-    fn start_local_manual_break(&mut self, name: &str) -> bool {
+    fn start_manual_break(&mut self, name: &str, propagation: SyncPropagation) -> bool {
         if let Some(scheduled_break) = self.scheduler.start_manual_break(name) {
-            self.start_local_break(scheduled_break)
+            self.start_break(scheduled_break, propagation)
         } else {
             true
         }
     }
 
-    fn start_synced_break(&mut self, name: &str) -> bool {
-        if let Some(scheduled_break) = self.scheduler.start_manual_break(name) {
-            self.start_break(scheduled_break)
-        } else {
-            true
-        }
-    }
-
-    fn start_local_break(&mut self, scheduled_break: ScheduledBreak) -> bool {
+    fn start_break(
+        &mut self,
+        scheduled_break: ScheduledBreak,
+        propagation: SyncPropagation,
+    ) -> bool {
         let name = scheduled_break.name.clone();
+        self.current_break = Some(CurrentBreakState::for_break(&scheduled_break));
 
-        if self.start_break(scheduled_break) {
-            self.broadcast_break_started(&name);
+        if self.handle_command(BackendCommand::StartBreak(scheduled_break)) {
+            self.broadcast_if_needed(propagation, &SyncEvent::BreakStarted { name });
             true
         } else {
             false
         }
-    }
-
-    fn start_break(&mut self, scheduled_break: ScheduledBreak) -> bool {
-        self.current_break = Some(CurrentBreakState::for_break(&scheduled_break));
-        self.handle_command(BackendCommand::StartBreak(scheduled_break))
     }
 
     fn finish_break(&mut self) -> bool {
@@ -306,7 +292,9 @@ impl DaemonRuntime<'_> {
 
     fn advance_wall_clock(&mut self, elapsed: Duration) {
         match self.disable_mode {
-            DisableMode::Timed(remaining) if elapsed >= remaining => self.enable(),
+            DisableMode::Timed(remaining) if elapsed >= remaining => {
+                self.enable(SyncPropagation::Suppress);
+            }
             DisableMode::Timed(remaining) => {
                 self.disable_mode = DisableMode::Timed(remaining.saturating_sub(elapsed));
             }
@@ -314,48 +302,28 @@ impl DaemonRuntime<'_> {
         }
     }
 
-    fn disable_for(&mut self, duration: Duration) -> bool {
+    fn disable_for(&mut self, duration: Duration, propagation: SyncPropagation) -> bool {
         if !self.disable_scheduler() {
             return false;
         }
         self.disable_mode = DisableMode::Timed(duration);
+        self.broadcast_if_needed(propagation, &SyncEvent::DisableFor { duration });
         true
     }
 
-    fn disable_for_local(&mut self, duration: Duration) -> bool {
-        if self.disable_for(duration) {
-            self.broadcast_disable_for(duration);
-            true
-        } else {
-            false
-        }
-    }
-
-    fn disable_until_restart(&mut self) -> bool {
+    fn disable_until_restart(&mut self, propagation: SyncPropagation) -> bool {
         if !self.disable_scheduler() {
             return false;
         }
         self.disable_mode = DisableMode::UntilRestart;
+        self.broadcast_if_needed(propagation, &SyncEvent::DisableUntilRestart);
         true
     }
 
-    fn disable_until_restart_local(&mut self) -> bool {
-        if self.disable_until_restart() {
-            self.broadcast_disable_until_restart();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn enable(&mut self) {
+    fn enable(&mut self, propagation: SyncPropagation) {
         self.scheduler.enable();
         self.disable_mode = DisableMode::Enabled;
-    }
-
-    fn enable_local(&mut self) {
-        self.enable();
-        self.broadcast_enable();
+        self.broadcast_if_needed(propagation, &SyncEvent::Enable);
     }
 
     fn disable_scheduler(&mut self) -> bool {

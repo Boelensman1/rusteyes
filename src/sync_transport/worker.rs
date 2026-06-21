@@ -74,6 +74,7 @@ impl WorkerState {
                 TransportCommand::Broadcast { event, reply } => {
                     _ = reply.send(self.broadcast_domain_event(event));
                 }
+                #[cfg(test)]
                 TransportCommand::Send {
                     peer_id,
                     event,
@@ -98,6 +99,7 @@ impl WorkerState {
         Ok(sent_count)
     }
 
+    #[cfg(test)]
     fn send_domain_event(
         &mut self,
         peer_id: PeerId,
