@@ -3,7 +3,8 @@ use crate::config::Config;
 #[cfg(target_os = "macos")]
 use crate::macos_helper::MacOSHelperBackend;
 use crate::scheduler::{BreakSchedule, BreakScheduler, ScheduledBreak};
-use crate::sync_transport::{SyncTransport, SyncTransportEvent};
+use crate::sync_protocol::SyncEvent;
+use crate::sync_transport::{SyncTransport, SyncTransportError, SyncTransportEvent};
 #[cfg(target_os = "linux")]
 use crate::x11_activity::X11ActivityBackend;
 use std::time::Duration;
@@ -45,14 +46,14 @@ fn run_with_backend(
     backend: BackendActor,
     sync_transport: &SyncTransport,
 ) {
-    let sync_event_receiver = sync_transport.event_receiver();
-    run_with_event_sources(schedule, backend, sync_event_receiver);
+    let sync_runtime = RuntimeSync::new(sync_transport.event_receiver(), sync_transport);
+    run_with_event_sources(schedule, backend, sync_runtime);
 }
 
 fn run_with_event_sources(
     schedule: BreakSchedule,
     backend: BackendActor,
-    sync_event_receiver: Option<flume::Receiver<SyncTransportEvent>>,
+    sync_runtime: RuntimeSync<'_>,
 ) {
     let backend_event_receiver = backend.event_receiver().clone_receiver();
     let scheduler = BreakScheduler::new(schedule);
@@ -60,7 +61,8 @@ fn run_with_event_sources(
         scheduler,
         backend,
         backend_event_receiver,
-        sync_event_receiver,
+        sync_event_receiver: sync_runtime.event_receiver,
+        sync_broadcaster: sync_runtime.broadcaster,
         disable_mode: DisableMode::Enabled,
         current_break: None,
     };
@@ -75,16 +77,17 @@ enum DisableMode {
     UntilRestart,
 }
 
-struct DaemonRuntime {
+struct DaemonRuntime<'a> {
     scheduler: BreakScheduler,
     backend: BackendActor,
     backend_event_receiver: flume::Receiver<RuntimeEvent>,
     sync_event_receiver: Option<flume::Receiver<SyncTransportEvent>>,
+    sync_broadcaster: &'a dyn SyncEventBroadcaster,
     disable_mode: DisableMode,
     current_break: Option<CurrentBreakState>,
 }
 
-impl DaemonRuntime {
+impl DaemonRuntime<'_> {
     fn run(&mut self) {
         while let Some(input) = self.next_input() {
             if !self.handle_input(input) {
@@ -127,16 +130,16 @@ impl DaemonRuntime {
     fn handle_input(&mut self, input: RuntimeInput) -> bool {
         match input {
             RuntimeInput::Backend(event) => self.handle_event(event),
-            RuntimeInput::SyncTransport(event) => {
-                Self::handle_sync_transport_event(&event);
-                true
-            }
+            RuntimeInput::SyncTransport(event) => self.handle_sync_transport_event(event),
         }
     }
 
     fn handle_event(&mut self, event: RuntimeEvent) -> bool {
         match event {
-            RuntimeEvent::ActiveTimeElapsed(elapsed) => return self.advance_active(elapsed),
+            RuntimeEvent::ActiveTimeElapsed(elapsed) => {
+                self.broadcast_active_time(elapsed);
+                return self.advance_active(elapsed);
+            }
             RuntimeEvent::WallClockElapsed(elapsed) => self.advance_wall_clock(elapsed),
             RuntimeEvent::BreakFinished => return self.finish_break(),
             RuntimeEvent::LockAfterCurrentBreak => self.request_lock_after_current_break(),
@@ -154,8 +157,34 @@ impl DaemonRuntime {
         true
     }
 
-    fn handle_sync_transport_event(event: &SyncTransportEvent) {
-        trace!(?event, "received sync transport event");
+    fn handle_sync_transport_event(&mut self, event: SyncTransportEvent) -> bool {
+        match event {
+            SyncTransportEvent::Domain {
+                peer_id,
+                event: SyncEvent::ActiveTimeElapsed { elapsed },
+            } => {
+                trace!(peer_id = %peer_id, ?elapsed, "applying synced active time");
+                self.advance_active(elapsed)
+            }
+            event => {
+                trace!(?event, "received sync transport event");
+                true
+            }
+        }
+    }
+
+    fn broadcast_active_time(&self, elapsed: Duration) {
+        match self
+            .sync_broadcaster
+            .broadcast_sync_event(SyncEvent::ActiveTimeElapsed { elapsed })
+        {
+            Ok(peer_count) => {
+                trace!(?elapsed, peer_count, "broadcast synced active time");
+            }
+            Err(error) => {
+                warn!(%error, "failed to broadcast synced active time");
+            }
+        }
     }
 
     fn advance_active(&mut self, elapsed: Duration) -> bool {
@@ -261,6 +290,53 @@ enum SelectedRuntimeInput {
     Backend(Result<RuntimeEvent, flume::RecvError>),
     SyncTransport(Result<SyncTransportEvent, flume::RecvError>),
 }
+
+struct RuntimeSync<'a> {
+    event_receiver: Option<flume::Receiver<SyncTransportEvent>>,
+    broadcaster: &'a dyn SyncEventBroadcaster,
+}
+
+impl RuntimeSync<'_> {
+    fn new(
+        event_receiver: Option<flume::Receiver<SyncTransportEvent>>,
+        broadcaster: &dyn SyncEventBroadcaster,
+    ) -> RuntimeSync<'_> {
+        RuntimeSync {
+            event_receiver,
+            broadcaster,
+        }
+    }
+}
+
+#[cfg(test)]
+impl RuntimeSync<'static> {
+    fn inactive() -> Self {
+        Self::new(None, &NOOP_SYNC_BROADCASTER)
+    }
+}
+
+trait SyncEventBroadcaster {
+    fn broadcast_sync_event(&self, event: SyncEvent) -> Result<usize, SyncTransportError>;
+}
+
+impl SyncEventBroadcaster for SyncTransport {
+    fn broadcast_sync_event(&self, event: SyncEvent) -> Result<usize, SyncTransportError> {
+        self.broadcast_event(event)
+    }
+}
+
+#[cfg(test)]
+struct NoopSyncBroadcaster;
+
+#[cfg(test)]
+impl SyncEventBroadcaster for NoopSyncBroadcaster {
+    fn broadcast_sync_event(&self, _event: SyncEvent) -> Result<usize, SyncTransportError> {
+        Ok(0)
+    }
+}
+
+#[cfg(test)]
+static NOOP_SYNC_BROADCASTER: NoopSyncBroadcaster = NoopSyncBroadcaster;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CurrentBreakState {

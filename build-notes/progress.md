@@ -174,6 +174,11 @@
   interrupt the next sample delay. Runtime now selects over backend events and
   sync transport events through one internal input path, while sync domain
   behavior remains deferred to `active-time-sync`.
+- Completed `active-time-sync`: local backend-originated active-time events now
+  broadcast authenticated `ActiveTimeElapsed` sync events, inbound authenticated
+  active-time events advance the same scheduler path without rebroadcasting, and
+  existing scheduler disabled/pending states suppress remote active-time
+  increments.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -248,6 +253,11 @@
 - `make check` passes after the transport session and connection outcome API
   cleanup.
 - `make check` passes after adding the backend actor runtime.
+- `cargo check --all-targets --all-features` passes after adding active-time
+  sync.
+- `cargo test --all-targets --all-features runtime` passes after adding
+  active-time sync.
+- `make check` passes after adding active-time sync.
 - A bounded `timeout 3s make run` on macOS stays alive until terminated by
   `timeout` and no longer emits helper stderr during startup after AppKit setup
   was made lazy.
@@ -264,7 +274,7 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next planned increment is `active-time-sync`.
+- The next planned increment is `break-disable-sync`.
 - The later build order now brings macOS backend parity before sync protocol,
   then separates sync protocol, LAN discovery, authenticated peer transport,
   active-time sync, synced break/disable behavior, tray UI, and synced

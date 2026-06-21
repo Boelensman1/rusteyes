@@ -23,6 +23,20 @@
 - Manual breaks also reset accumulated active time without advancing scheduled
   break slots.
 
+## Changes
+
+- Runtime now keeps a sync broadcaster next to the existing selected sync event
+  receiver.
+- Local backend-originated active-time events broadcast
+  `ActiveTimeElapsed { elapsed }` before advancing the local scheduler.
+- Authenticated remote active-time transport events advance the scheduler
+  through the same path as local active time.
+- Remote active-time events are not rebroadcast.
+- Peer lifecycle events and non-active-time domain events remain logged/ignored
+  until later sync increments.
+- Sync broadcast failures are logged as degraded sync and do not stop local
+  scheduling.
+
 ## Protocol Notes
 
 - Active-time messages should carry an elapsed active duration.
@@ -36,3 +50,9 @@
   increments.
 - Simultaneous peer activity adds together.
 - A synced break start resets accumulated active time.
+
+## Commands
+
+- `cargo check --all-targets --all-features`
+- `cargo test --all-targets --all-features runtime`
+- `make check`
