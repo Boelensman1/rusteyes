@@ -12,14 +12,13 @@ use crate::sync_transport_io::{
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use tracing::{info, trace, warn};
 
 pub(super) fn spawn_worker_thread(
     mut worker: WorkerState,
     mut event_receiver: TransportIoReceiver,
-    command_receiver: mpsc::Receiver<TransportCommand>,
+    command_receiver: flume::Receiver<TransportCommand>,
     shutdown: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
@@ -46,14 +45,14 @@ pub(super) struct WorkerState {
     session: TransportSession,
     handle: TransportIoHandle,
     tracker: ConnectionTracker<TransportEndpoint>,
-    event_sender: mpsc::Sender<SyncTransportEvent>,
+    event_sender: flume::Sender<SyncTransportEvent>,
 }
 
 impl WorkerState {
     pub(super) fn new(
         session: TransportSession,
         handle: TransportIoHandle,
-        event_sender: mpsc::Sender<SyncTransportEvent>,
+        event_sender: flume::Sender<SyncTransportEvent>,
     ) -> Self {
         let self_id = session.self_id();
 
@@ -69,7 +68,7 @@ impl WorkerState {
         self.session.self_id()
     }
 
-    fn handle_transport_commands(&mut self, command_receiver: &mpsc::Receiver<TransportCommand>) {
+    fn handle_transport_commands(&mut self, command_receiver: &flume::Receiver<TransportCommand>) {
         for command in command_receiver.try_iter() {
             match command {
                 TransportCommand::Broadcast { event, reply } => {

@@ -19,7 +19,6 @@ use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 #[cfg(test)]
 use std::time::Duration;
@@ -38,8 +37,8 @@ enum SyncTransportState {
 
 struct ActiveSyncTransport {
     io: TransportIo,
-    command_sender: mpsc::Sender<TransportCommand>,
-    event_receiver: mpsc::Receiver<SyncTransportEvent>,
+    command_sender: flume::Sender<TransportCommand>,
+    event_receiver: flume::Receiver<SyncTransportEvent>,
     #[cfg(test)]
     local_addr: SocketAddr,
     worker_thread: Option<JoinHandle<()>>,
@@ -79,8 +78,8 @@ impl SyncTransport {
             .map_err(SyncTransportError::Protocol)?;
         let mut binding = TransportIo::listen(listen_addr).map_err(SyncTransportError::Listen)?;
         let handle = binding.io.handle();
-        let (command_sender, command_receiver) = mpsc::channel();
-        let (event_sender, event_receiver) = mpsc::channel();
+        let (command_sender, command_receiver) = flume::unbounded();
+        let (event_sender, event_receiver) = flume::unbounded();
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let discovery = match discovery_mode {
@@ -234,7 +233,7 @@ impl SyncTransport {
 
 impl ActiveSyncTransport {
     fn broadcast_event(&self, event: SyncEvent) -> Result<usize, SyncTransportError> {
-        let (reply_sender, reply_receiver) = mpsc::channel();
+        let (reply_sender, reply_receiver) = flume::bounded(1);
         self.command_sender
             .send(TransportCommand::Broadcast {
                 event,
@@ -249,7 +248,7 @@ impl ActiveSyncTransport {
     }
 
     fn send_event(&self, peer_id: PeerId, event: SyncEvent) -> Result<bool, SyncTransportError> {
-        let (reply_sender, reply_receiver) = mpsc::channel();
+        let (reply_sender, reply_receiver) = flume::bounded(1);
         self.command_sender
             .send(TransportCommand::Send {
                 peer_id,
@@ -267,8 +266,8 @@ impl ActiveSyncTransport {
     fn try_recv_event(&self) -> Result<Option<SyncTransportEvent>, SyncTransportError> {
         match self.event_receiver.try_recv() {
             Ok(event) => Ok(Some(event)),
-            Err(mpsc::TryRecvError::Empty) => Ok(None),
-            Err(mpsc::TryRecvError::Disconnected) => Err(SyncTransportError::WorkerStopped),
+            Err(flume::TryRecvError::Empty) => Ok(None),
+            Err(flume::TryRecvError::Disconnected) => Err(SyncTransportError::WorkerStopped),
         }
     }
 
@@ -289,8 +288,8 @@ impl ActiveSyncTransport {
     ) -> Result<Option<SyncTransportEvent>, SyncTransportError> {
         match self.event_receiver.recv_timeout(timeout) {
             Ok(event) => Ok(Some(event)),
-            Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(SyncTransportError::WorkerStopped),
+            Err(flume::RecvTimeoutError::Timeout) => Ok(None),
+            Err(flume::RecvTimeoutError::Disconnected) => Err(SyncTransportError::WorkerStopped),
         }
     }
 

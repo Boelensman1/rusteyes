@@ -53,6 +53,9 @@
   `message-io` events and uses node signals to wake for facade commands or
   shutdown, while discovery uses `flume::Selector` to wait for mDNS events or
   an explicit shutdown signal.
+- Follow-up cleanup moved remaining transport facade command, reply, and event
+  channels from `std::sync::mpsc` to `flume`; one-shot reply channels now use
+  `flume::bounded(1)`.
 
 ## Decisions
 
@@ -84,6 +87,9 @@
 - `cargo check --all-targets --all-features` passes after the wake-driven
   worker and discovery cleanup.
 - `make check` passes after the wake-driven worker and discovery cleanup.
+- `cargo test --all-targets --all-features sync_transport` passes after the
+  transport channel cleanup.
+- `make check` passes after the transport channel cleanup.
 
 ## Follow-up
 

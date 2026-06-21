@@ -164,7 +164,9 @@
   outcomes explicit, and centralized failed endpoint closure in the worker.
   Later cleanup removed transport worker timeout polling with `message-io` wake
   signals and replaced discovery timeout polling with a selected mDNS/shutdown
-  event path.
+  event path. Later cleanup moved remaining transport command, reply, and
+  facade event channels from `std::sync::mpsc` to `flume`, including bounded
+  one-shot reply channels.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
