@@ -73,7 +73,9 @@
   backend-agnostic activity module, X11 overlay samples remain available at
   trace level, and top-level startup errors remain visible on stderr. Follow-up
   cleanup switched tracing writes away from the global Rust stderr writer so
-  macOS activity traces are not blocked before reaching the terminal.
+  macOS activity traces are not blocked before reaching the terminal. Later
+  follow-up cleanup added an info-level startup event after logging
+  initialization so explicit `RUST_LOG` runs show when the daemon starts.
 - Added `test-break-config`: `test-configs/ten-second-break.yaml` starts a 10
   second test break after 10 seconds of active time for manual testing.
 - Completed `manual-break-control`: runtime events can now start configured

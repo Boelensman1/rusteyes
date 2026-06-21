@@ -4,6 +4,7 @@ use tracing_subscriber::fmt::MakeWriter;
 
 fn main() {
     init_logging();
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting Resteyes");
 
     if let Err(error) = resteyes::run() {
         eprintln!("resteyes: {error}");

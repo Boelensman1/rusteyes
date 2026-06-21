@@ -10,6 +10,8 @@
   logger setup.
 - Initialize logging once from the binary entry point before calling
   `resteyes::run()`.
+- Emit an info-level startup event from the binary after logging is initialized
+  and before entering the runtime.
 - Use `warn` as the default filter so normal runs stay quiet.
 - Support the standard `RUST_LOG` override, such as
   `RUST_LOG=resteyes=trace make run`.
@@ -32,6 +34,8 @@
   structured fields and future span-based diagnostics.
 - Keep activity diagnostics at `trace` level because they run on every poll and
   would be too noisy for default or info-level output.
+- Keep successful startup at `info` level because it is useful when explicitly
+  enabling runtime logs, but should not make default runs noisy.
 - Keep platform names out of regular activity sample log messages. Backend
   details belong in backend-specific traces such as X11 overlay diagnostics.
 
