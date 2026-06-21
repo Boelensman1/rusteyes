@@ -37,7 +37,7 @@ enum SyncTransportState {
 struct ActiveSyncTransport {
     io: TransportIo,
     command_sender: mpsc::Sender<TransportCommand>,
-    inbound_receiver: mpsc::Receiver<SyncInboundEvent>,
+    event_receiver: mpsc::Receiver<SyncTransportEvent>,
     #[cfg(test)]
     local_addr: SocketAddr,
     worker_thread: Option<JoinHandle<()>>,
@@ -63,7 +63,6 @@ impl SyncTransport {
             shared_secret,
             PRODUCTION_LISTEN_ADDR,
             DiscoveryMode::Advertise,
-            None,
         )
     }
 
@@ -72,14 +71,13 @@ impl SyncTransport {
         shared_secret: SharedSecret,
         listen_addr: impl ToSocketAddrs,
         discovery_mode: DiscoveryMode,
-        observer: Option<mpsc::Sender<TransportNotification>>,
     ) -> Result<Self, SyncTransportError> {
         let hello =
             peer_hello_payload(self_id, &shared_secret).map_err(SyncTransportError::Protocol)?;
         let mut binding = TransportIo::listen(listen_addr).map_err(SyncTransportError::Listen)?;
         let handle = binding.io.handle();
         let (command_sender, command_receiver) = mpsc::channel();
-        let (inbound_sender, inbound_receiver) = mpsc::channel();
+        let (event_sender, event_receiver) = mpsc::channel();
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let discovery = match discovery_mode {
@@ -98,14 +96,7 @@ impl SyncTransport {
             DiscoveryMode::Disabled => None,
         };
 
-        let worker = WorkerState::new(
-            self_id,
-            shared_secret,
-            hello,
-            handle.clone(),
-            inbound_sender,
-            observer,
-        );
+        let worker = WorkerState::new(self_id, shared_secret, hello, handle.clone(), event_sender);
         let worker_thread = spawn_worker_thread(
             worker,
             binding.event_receiver,
@@ -127,7 +118,7 @@ impl SyncTransport {
             state: SyncTransportState::Active(Box::new(ActiveSyncTransport {
                 io: binding.io,
                 command_sender,
-                inbound_receiver,
+                event_receiver,
                 #[cfg(test)]
                 local_addr: binding.local_addr,
                 worker_thread: Some(worker_thread),
@@ -138,16 +129,16 @@ impl SyncTransport {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn broadcast(&self, event: SyncEvent) -> Result<usize, SyncTransportError> {
+    pub(crate) fn broadcast_event(&self, event: SyncEvent) -> Result<usize, SyncTransportError> {
         let SyncTransportState::Active(active) = &self.state else {
             return Ok(0);
         };
 
-        active.broadcast(event)
+        active.broadcast_event(event)
     }
 
     #[allow(dead_code)]
-    pub(crate) fn send(
+    pub(crate) fn send_event(
         &self,
         peer_id: PeerId,
         event: SyncEvent,
@@ -156,33 +147,29 @@ impl SyncTransport {
             return Ok(false);
         };
 
-        active.send(peer_id, event)
+        active.send_event(peer_id, event)
     }
 
     #[allow(dead_code)]
-    pub(crate) fn try_recv_event(&self) -> Result<Option<SyncInboundEvent>, SyncTransportError> {
+    pub(crate) fn try_recv(&self) -> Result<Option<SyncTransportEvent>, SyncTransportError> {
         let SyncTransportState::Active(active) = &self.state else {
             return Ok(None);
         };
 
-        active.try_recv_event()
+        active.try_recv()
     }
 
     #[cfg(test)]
     fn start_for_test(
         self_id: PeerId,
         shared_secret: SharedSecret,
-    ) -> Result<(Self, mpsc::Receiver<TransportNotification>), SyncTransportError> {
-        let (sender, receiver) = mpsc::channel();
-        let transport = Self::start_internal(
+    ) -> Result<Self, SyncTransportError> {
+        Self::start_internal(
             self_id,
             shared_secret,
             "127.0.0.1:0",
             DiscoveryMode::Disabled,
-            Some(sender),
-        )?;
-
-        Ok((transport, receiver))
+        )
     }
 
     #[cfg(test)]
@@ -208,7 +195,7 @@ impl SyncTransport {
     fn recv_event_timeout_for_test(
         &self,
         timeout: Duration,
-    ) -> Result<Option<SyncInboundEvent>, SyncTransportError> {
+    ) -> Result<Option<SyncTransportEvent>, SyncTransportError> {
         self.active_for_test().recv_event_timeout(timeout)
     }
 
@@ -222,7 +209,7 @@ impl SyncTransport {
 }
 
 impl ActiveSyncTransport {
-    fn broadcast(&self, event: SyncEvent) -> Result<usize, SyncTransportError> {
+    fn broadcast_event(&self, event: SyncEvent) -> Result<usize, SyncTransportError> {
         let (reply_sender, reply_receiver) = mpsc::channel();
         self.command_sender
             .send(TransportCommand::Broadcast {
@@ -236,7 +223,7 @@ impl ActiveSyncTransport {
             .map_err(|_| SyncTransportError::WorkerStopped)?
     }
 
-    fn send(&self, peer_id: PeerId, event: SyncEvent) -> Result<bool, SyncTransportError> {
+    fn send_event(&self, peer_id: PeerId, event: SyncEvent) -> Result<bool, SyncTransportError> {
         let (reply_sender, reply_receiver) = mpsc::channel();
         self.command_sender
             .send(TransportCommand::Send {
@@ -251,8 +238,8 @@ impl ActiveSyncTransport {
             .map_err(|_| SyncTransportError::WorkerStopped)?
     }
 
-    fn try_recv_event(&self) -> Result<Option<SyncInboundEvent>, SyncTransportError> {
-        match self.inbound_receiver.try_recv() {
+    fn try_recv(&self) -> Result<Option<SyncTransportEvent>, SyncTransportError> {
+        match self.event_receiver.try_recv() {
             Ok(event) => Ok(Some(event)),
             Err(mpsc::TryRecvError::Empty) => Ok(None),
             Err(mpsc::TryRecvError::Disconnected) => Err(SyncTransportError::WorkerStopped),
@@ -263,8 +250,8 @@ impl ActiveSyncTransport {
     fn recv_event_timeout(
         &self,
         timeout: Duration,
-    ) -> Result<Option<SyncInboundEvent>, SyncTransportError> {
-        match self.inbound_receiver.recv_timeout(timeout) {
+    ) -> Result<Option<SyncTransportEvent>, SyncTransportError> {
+        match self.event_receiver.recv_timeout(timeout) {
             Ok(event) => Ok(Some(event)),
             Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(SyncTransportError::WorkerStopped),
@@ -297,10 +284,10 @@ impl Drop for SyncTransport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SyncInboundEvent {
-    pub(crate) sender: PeerId,
-    pub(crate) sequence: u64,
-    pub(crate) event: SyncEvent,
+pub(crate) enum SyncTransportEvent {
+    PeerAuthenticated(PeerId),
+    PeerDisconnected(PeerId),
+    Domain { peer_id: PeerId, event: SyncEvent },
 }
 
 fn spawn_discovery_thread(
@@ -357,12 +344,6 @@ impl DiscoveryMode {
             Self::Disabled => "disabled",
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum TransportNotification {
-    PeerAuthenticated(PeerId),
-    PeerDisconnected(PeerId),
 }
 
 #[derive(Debug)]

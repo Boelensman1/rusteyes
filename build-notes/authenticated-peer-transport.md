@@ -37,6 +37,11 @@
   inbound event polling onto the transport facade, returned a named transport IO
   binding from listener setup, split connection success/failure into explicit IO
   events, and moved sender/replay validation behind the connection tracker.
+- Follow-up API cleanup unified peer authentication, disconnection, and
+  authenticated domain messages behind one `SyncTransportEvent` facade stream,
+  renamed outbound facade calls to `broadcast_event` and `send_event`, hid wire
+  sequence numbers from runtime-facing events, and simplified connection binding
+  results to a peer result plus endpoints to disconnect.
 - Removed the temporary `RESTEYES_DISCOVERY_SMOKE` path now that discovery is
   started by normal sync-enabled runtime startup.
 
@@ -58,6 +63,8 @@
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `make check`
 - `cargo test --all-targets --all-features sync_transport`
+- Re-ran `cargo test --all-targets --all-features sync_transport` and
+  `make check` after the unified event facade cleanup.
 
 ## Follow-up
 

@@ -41,31 +41,33 @@ where
         });
     }
 
-    pub(super) fn bind_peer(&mut self, endpoint: E, peer_id: PeerId) -> BindPeerOutcome<E> {
+    pub(super) fn bind_peer(&mut self, endpoint: E, peer_id: PeerId) -> PeerBindUpdate<E> {
         if peer_id == self.self_id {
             self.remove_endpoint(endpoint);
-            return BindPeerOutcome::RejectedSelf {
-                close_endpoints: vec![endpoint],
+            return PeerBindUpdate {
+                result: PeerBindResult::RejectedSelf,
+                disconnect: vec![endpoint],
             };
         }
 
         let had_peer = self.peer_is_connected(peer_id);
         let Some(connection) = self.connection_mut(endpoint) else {
-            return BindPeerOutcome::RejectedUnknownEndpoint {
-                close_endpoints: vec![endpoint],
+            return PeerBindUpdate {
+                result: PeerBindResult::RejectedUnknownEndpoint,
+                disconnect: vec![endpoint],
             };
         };
 
         connection.peer_id = Some(peer_id);
-        let close_endpoints = self.collapse_duplicate_peer_connections(peer_id);
+        let disconnect = self.collapse_duplicate_peer_connections(peer_id);
         let peer_connected = !had_peer
             && self
                 .connection(endpoint)
                 .is_some_and(|connection| connection.peer_id == Some(peer_id));
 
-        BindPeerOutcome::Authenticated {
-            peer_connected,
-            close_endpoints,
+        PeerBindUpdate {
+            result: PeerBindResult::Authenticated { peer_connected },
+            disconnect,
         }
     }
 
@@ -193,17 +195,16 @@ struct Connection<E> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum BindPeerOutcome<E> {
-    Authenticated {
-        peer_connected: bool,
-        close_endpoints: Vec<E>,
-    },
-    RejectedSelf {
-        close_endpoints: Vec<E>,
-    },
-    RejectedUnknownEndpoint {
-        close_endpoints: Vec<E>,
-    },
+pub(super) struct PeerBindUpdate<E> {
+    pub(super) result: PeerBindResult,
+    pub(super) disconnect: Vec<E>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PeerBindResult {
+    Authenticated { peer_connected: bool },
+    RejectedSelf,
+    RejectedUnknownEndpoint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

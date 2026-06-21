@@ -155,7 +155,9 @@
   cleanup made disabled sync an inert transport value, moved inbound polling
   onto the transport facade, named the transport IO listener binding, split
   connection success/failure events, and moved sender/replay acceptance behind
-  the connection tracker.
+  the connection tracker. Later cleanup unified peer/auth/domain output behind
+  one `SyncTransportEvent` facade stream, hid wire sequence numbers from
+  runtime-facing domain events, and simplified connection binding results.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -222,6 +224,9 @@
   splitting sync transport internals and adding replay protection.
 - `make check` passes after splitting sync transport internals and adding
   replay protection.
+- `cargo test --all-targets --all-features sync_transport` passes after
+  unifying the sync transport event facade.
+- `make check` passes after unifying the sync transport event facade.
 - A bounded `timeout 3s make run` on macOS stays alive until terminated by
   `timeout` and no longer emits helper stderr during startup after AppKit setup
   was made lazy.

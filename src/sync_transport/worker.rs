@@ -1,8 +1,8 @@
 use super::commands::TransportCommand;
 use super::connections::{
-    BindPeerOutcome, ConnectionDirection, ConnectionTracker, InboundEventAcceptance,
+    ConnectionDirection, ConnectionTracker, InboundEventAcceptance, PeerBindResult,
 };
-use super::{SyncInboundEvent, SyncTransportError, TransportNotification};
+use super::{SyncTransportError, SyncTransportEvent};
 use crate::config::SharedSecret;
 use crate::sync_protocol::{
     PeerId, SyncEvent, SyncFramePayload, SyncMessage, SyncProtocolError, TransportControlFrame,
@@ -54,8 +54,7 @@ pub(super) struct WorkerState {
     handle: TransportIoHandle,
     tracker: ConnectionTracker<TransportEndpoint>,
     next_sequence: u64,
-    inbound_sender: mpsc::Sender<SyncInboundEvent>,
-    observer: Option<mpsc::Sender<TransportNotification>>,
+    event_sender: mpsc::Sender<SyncTransportEvent>,
 }
 
 impl WorkerState {
@@ -64,8 +63,7 @@ impl WorkerState {
         shared_secret: SharedSecret,
         hello: Vec<u8>,
         handle: TransportIoHandle,
-        inbound_sender: mpsc::Sender<SyncInboundEvent>,
-        observer: Option<mpsc::Sender<TransportNotification>>,
+        event_sender: mpsc::Sender<SyncTransportEvent>,
     ) -> Self {
         Self {
             self_id,
@@ -74,8 +72,7 @@ impl WorkerState {
             handle,
             tracker: ConnectionTracker::new(self_id),
             next_sequence: 1,
-            inbound_sender,
-            observer,
+            event_sender,
         }
     }
 
@@ -169,7 +166,7 @@ impl WorkerState {
             TransportIoEvent::Disconnected(endpoint) => {
                 if let Some(peer_id) = self.tracker.remove_endpoint(endpoint) {
                     info!(peer_id = %peer_id, endpoint = %endpoint, "sync peer disconnected");
-                    self.notify(TransportNotification::PeerDisconnected(peer_id));
+                    self.emit(SyncTransportEvent::PeerDisconnected(peer_id));
                 }
             }
         }
@@ -208,31 +205,28 @@ impl WorkerState {
     }
 
     fn handle_peer_hello(&mut self, endpoint: TransportEndpoint, sender: PeerId) {
-        match self.tracker.bind_peer(endpoint, sender) {
-            BindPeerOutcome::Authenticated {
-                peer_connected,
-                close_endpoints,
-            } => {
-                self.remove_endpoints(close_endpoints);
+        let update = self.tracker.bind_peer(endpoint, sender);
+        self.remove_endpoints(update.disconnect);
+
+        match update.result {
+            PeerBindResult::Authenticated { peer_connected } => {
                 if peer_connected {
                     info!(
                         peer_id = %sender,
                         endpoint = %endpoint,
                         "authenticated Resteyes sync peer"
                     );
-                    self.notify(TransportNotification::PeerAuthenticated(sender));
+                    self.emit(SyncTransportEvent::PeerAuthenticated(sender));
                 }
             }
-            BindPeerOutcome::RejectedSelf { close_endpoints } => {
-                self.remove_endpoints(close_endpoints);
+            PeerBindResult::RejectedSelf => {
                 warn!(
                     peer_id = %sender,
                     endpoint = %endpoint,
                     "rejected sync connection from local peer id"
                 );
             }
-            BindPeerOutcome::RejectedUnknownEndpoint { close_endpoints } => {
-                self.remove_endpoints(close_endpoints);
+            PeerBindResult::RejectedUnknownEndpoint => {
                 warn!(
                     peer_id = %sender,
                     endpoint = %endpoint,
@@ -288,9 +282,8 @@ impl WorkerState {
             }
         }
 
-        _ = self.inbound_sender.send(SyncInboundEvent {
-            sender,
-            sequence,
+        _ = self.event_sender.send(SyncTransportEvent::Domain {
+            peer_id: sender,
             event,
         });
     }
@@ -312,7 +305,7 @@ impl WorkerState {
 
     fn remove_endpoint(&mut self, endpoint: TransportEndpoint) {
         if let Some(peer_id) = self.tracker.remove_endpoint(endpoint) {
-            self.notify(TransportNotification::PeerDisconnected(peer_id));
+            self.emit(SyncTransportEvent::PeerDisconnected(peer_id));
         }
 
         self.handle.remove(endpoint);
@@ -324,10 +317,8 @@ impl WorkerState {
         }
     }
 
-    fn notify(&self, event: TransportNotification) {
-        if let Some(observer) = &self.observer {
-            _ = observer.send(event);
-        }
+    fn emit(&self, event: SyncTransportEvent) {
+        _ = self.event_sender.send(event);
     }
 }
 
