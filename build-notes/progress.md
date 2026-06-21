@@ -198,6 +198,8 @@
   fix configures macOS as an accessory app and hides Dock visibility so Resteyes
   is menu-bar only. Later follow-up refinement shows accumulated scheduler
   active time in the tray/menu-bar dropdown and resets it with scheduler state.
+  Later follow-up refinement orders manual break controls by scheduled cadence
+  from shortest to longest.
 - Completed `synced-lock-after-break`: local lock-after-current-break requests
   now broadcast authenticated sync events, inbound authenticated lock-after
   requests mark the active local break for locking without rebroadcasting, and

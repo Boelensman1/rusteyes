@@ -11,8 +11,22 @@ pub(crate) struct UiConfig {
 
 impl UiConfig {
     pub(crate) fn from_config(breaks: &Breaks, disable_presets: &[Duration]) -> Self {
+        let mut break_names = breaks
+            .types
+            .iter()
+            .map(|(name, break_type)| (break_type.interval, name.clone()))
+            .collect::<Vec<_>>();
+        break_names.sort_by(|(left_interval, left_name), (right_interval, right_name)| {
+            left_interval
+                .cmp(right_interval)
+                .then_with(|| left_name.cmp(right_name))
+        });
+
         Self {
-            break_names: breaks.types.keys().cloned().collect(),
+            break_names: break_names
+                .into_iter()
+                .map(|(_interval, name)| name)
+                .collect(),
             disable_presets: disable_presets.to_vec(),
         }
     }
@@ -584,6 +598,8 @@ pub(crate) use app::{UiError, run, runtime_ui_from_handle};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::BreakTypeConfig;
+    use std::collections::BTreeMap;
 
     #[test]
     fn menu_actions_map_to_runtime_events() {
@@ -600,5 +616,39 @@ mod tests {
             RuntimeEvent::Disable(DisableRequest::UntilRestart)
         );
         assert_eq!(UiMenuAction::Quit.runtime_event(), RuntimeEvent::Shutdown);
+    }
+
+    #[test]
+    fn break_menu_names_are_ordered_by_shortest_cadence() {
+        let mut types = BTreeMap::new();
+        types.insert(
+            String::from("long"),
+            BreakTypeConfig {
+                interval: 3,
+                duration: Duration::from_secs(300),
+                messages: vec![String::from("Long break")],
+                autolock: true,
+            },
+        );
+        types.insert(
+            String::from("short"),
+            BreakTypeConfig {
+                interval: 1,
+                duration: Duration::from_secs(20),
+                messages: vec![String::from("Short break")],
+                autolock: false,
+            },
+        );
+
+        let ui_config = UiConfig::from_config(
+            &Breaks {
+                after_active: Duration::from_secs(1200),
+                reset_after_idle: None,
+                types,
+            },
+            &[],
+        );
+
+        assert_eq!(ui_config.break_names, ["short", "long"]);
     }
 }

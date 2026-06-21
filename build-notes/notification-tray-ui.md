@@ -34,6 +34,8 @@
 - The active-time row starts at `0s`, updates when local or synced active-time
   increments change scheduler accumulation, and resets when breaks or disable
   controls reset scheduler active time.
+- Manual break controls are ordered by scheduled cadence from shortest to
+  longest, using each break type's slot interval.
 
 ## Commands
 
