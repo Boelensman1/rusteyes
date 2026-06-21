@@ -764,6 +764,122 @@ fn remote_active_time_is_not_rebroadcast() -> Result<(), Box<dyn std::error::Err
 }
 
 #[test]
+fn idle_below_reset_timeout_preserves_partial_active_time() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs(
+        test_config_with_reset_after_idle(Some(Duration::from_secs(5))),
+        backend,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(9))),
+            backend_input(RuntimeEvent::IdleTimeElapsed(Duration::from_secs(4))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(1))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+    );
+    Ok(())
+}
+
+#[test]
+fn idle_at_reset_timeout_discards_partial_active_time() -> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs(
+        test_config_with_reset_after_idle(Some(Duration::from_secs(5))),
+        backend,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(9))),
+            backend_input(RuntimeEvent::IdleTimeElapsed(Duration::from_secs(5))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(1))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(9))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+    );
+    Ok(())
+}
+
+#[test]
+fn disabled_idle_reset_preserves_current_active_time_behavior()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs(
+        test_config_with_reset_after_idle(None),
+        backend,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(9))),
+            backend_input(RuntimeEvent::IdleTimeElapsed(Duration::from_secs(30))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(1))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+    );
+    Ok(())
+}
+
+#[test]
+fn remote_active_time_resets_combined_idle_tracking() -> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs(
+        test_config_with_reset_after_idle(Some(Duration::from_secs(5))),
+        backend,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(4))),
+            backend_input(RuntimeEvent::IdleTimeElapsed(Duration::from_secs(4))),
+            sync_input(remote_active_time(Duration::from_secs(1))?),
+            backend_input(RuntimeEvent::IdleTimeElapsed(Duration::from_secs(4))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+    );
+    Ok(())
+}
+
+#[test]
+fn idle_reset_is_not_broadcast_to_sync_peers() {
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = test_backend();
+
+    assert_eq!(
+        run_config_with_inputs_and_sync_broadcaster(
+            test_config_with_reset_after_idle(Some(Duration::from_secs(5))),
+            backend,
+            &sync_broadcaster,
+            [
+                backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(4))),
+                backend_input(RuntimeEvent::IdleTimeElapsed(Duration::from_secs(5))),
+            ],
+        ),
+        Ok(())
+    );
+
+    assert!(received_commands(&commands).is_empty());
+    assert_eq!(
+        sync_broadcaster.events(),
+        vec![SyncEvent::ActiveTimeElapsed {
+            elapsed: Duration::from_secs(4),
+        }]
+    );
+}
+
+#[test]
 fn pre_break_notification_fires_once_when_notice_window_is_reached()
 -> Result<(), Box<dyn std::error::Error>> {
     let (backend, commands) = test_backend();
@@ -791,6 +907,43 @@ fn pre_break_notification_fires_once_when_notice_window_is_reached()
                 starts_after: Duration::from_secs(5),
             }),
             UiCommand::UpdateActiveTime(Duration::from_secs(6)),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn idle_reset_clears_pre_break_notification_and_active_time_display()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+    let (ui, ui_commands) = recording_ui();
+
+    run_config_with_inputs_and_ui(
+        test_config_with_reset_after_idle(Some(Duration::from_secs(5))),
+        backend,
+        ui,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
+            backend_input(RuntimeEvent::IdleTimeElapsed(Duration::from_secs(5))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
+        ],
+    )?;
+
+    assert!(received_commands(&commands).is_empty());
+    assert_eq!(
+        received_ui_commands(&ui_commands),
+        vec![
+            UiCommand::UpdateActiveTime(Duration::from_secs(5)),
+            UiCommand::ShowPreBreakNotification(PreBreakNotification {
+                break_name: String::from("short"),
+                starts_after: Duration::from_secs(5),
+            }),
+            UiCommand::UpdateActiveTime(Duration::ZERO),
+            UiCommand::UpdateActiveTime(Duration::from_secs(5)),
+            UiCommand::ShowPreBreakNotification(PreBreakNotification {
+                break_name: String::from("short"),
+                starts_after: Duration::from_secs(5),
+            }),
         ]
     );
     Ok(())
@@ -1180,6 +1333,7 @@ fn test_config() -> Config {
     Config {
         breaks: Breaks {
             after_active: Duration::from_secs(10),
+            reset_after_idle: Some(Duration::from_secs(300)),
             types: [
                 (
                     String::from("short"),
@@ -1197,6 +1351,12 @@ fn test_config() -> Config {
         lock: LockConfig::default(),
         sync: SyncConfig::default(),
     }
+}
+
+fn test_config_with_reset_after_idle(reset_after_idle: Option<Duration>) -> Config {
+    let mut config = test_config();
+    config.breaks.reset_after_idle = reset_after_idle;
+    config
 }
 
 fn break_type(

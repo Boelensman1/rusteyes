@@ -18,6 +18,7 @@ pub(crate) const DEFAULT_SHORT_BREAK_INTERVAL: usize = 1;
 pub(crate) const DEFAULT_SHORT_BREAK_DURATION: Duration = Duration::from_secs(20);
 pub(crate) const DEFAULT_LONG_BREAK_INTERVAL: usize = 2;
 pub(crate) const DEFAULT_LONG_BREAK_DURATION: Duration = Duration::from_secs(5 * 60);
+pub(crate) const DEFAULT_BREAK_RESET_AFTER_IDLE: Duration = Duration::from_secs(5 * 60);
 pub(crate) const DEFAULT_DISABLE_PRESETS: [Duration; 4] = [
     Duration::from_secs(30 * 60),
     Duration::from_secs(60 * 60),
@@ -197,6 +198,7 @@ impl std::error::Error for ConfigLoadError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Breaks {
     pub(crate) after_active: Duration,
+    pub(crate) reset_after_idle: Option<Duration>,
     pub(crate) types: BTreeMap<String, BreakTypeConfig>,
 }
 
@@ -204,6 +206,13 @@ impl Breaks {
     pub(crate) fn validate(&self) -> Result<(), ConfigError> {
         if self.after_active.is_zero() {
             return Err(ConfigError::ZeroBreakAfterActiveDuration);
+        }
+
+        if self
+            .reset_after_idle
+            .is_some_and(|duration| duration.is_zero())
+        {
+            return Err(ConfigError::ZeroBreakResetAfterIdleDuration);
         }
 
         if self.types.is_empty() {
@@ -257,6 +266,7 @@ impl Default for Breaks {
 
         Self {
             after_active: DEFAULT_BREAK_AFTER_ACTIVE,
+            reset_after_idle: Some(DEFAULT_BREAK_RESET_AFTER_IDLE),
             types,
         }
     }
@@ -374,6 +384,7 @@ enum ConfigPathMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ConfigError {
     ZeroBreakAfterActiveDuration,
+    ZeroBreakResetAfterIdleDuration,
     EmptyBreakTypes,
     InvalidBreakTypeName {
         name: String,
@@ -419,6 +430,9 @@ impl fmt::Display for ConfigError {
         match self {
             Self::ZeroBreakAfterActiveDuration => {
                 formatter.write_str("break active duration must be greater than zero")
+            }
+            Self::ZeroBreakResetAfterIdleDuration => {
+                formatter.write_str("break idle reset duration must be greater than zero")
             }
             Self::EmptyBreakTypes => formatter.write_str("at least one break type must be defined"),
             Self::InvalidBreakTypeName { name } => {
@@ -530,6 +544,8 @@ impl PartialConfig {
 #[serde(deny_unknown_fields)]
 struct PartialBreaks {
     after_active: Option<ConfigDuration>,
+    #[serde(default)]
+    reset_after_idle: NullableConfigDuration,
     types: Option<BTreeMap<String, YamlBreakTypeConfig>>,
 }
 
@@ -537,6 +553,14 @@ impl PartialBreaks {
     fn apply_to(self, breaks: &mut Breaks) {
         if let Some(after_active) = self.after_active {
             breaks.after_active = after_active.into_duration();
+        }
+
+        match self.reset_after_idle {
+            NullableConfigDuration::Unset => {}
+            NullableConfigDuration::Null => breaks.reset_after_idle = None,
+            NullableConfigDuration::Value(reset_after_idle) => {
+                breaks.reset_after_idle = Some(reset_after_idle.into_duration());
+            }
         }
 
         if let Some(types) = self.types {
@@ -566,6 +590,54 @@ impl YamlBreakTypeConfig {
             messages: self.messages,
             autolock: self.autolock,
         }
+    }
+}
+
+#[derive(Debug, Default)]
+enum NullableConfigDuration {
+    #[default]
+    Unset,
+    Null,
+    Value(ConfigDuration),
+}
+
+impl<'de> Deserialize<'de> for NullableConfigDuration {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct NullableConfigDurationVisitor;
+
+        impl<'de> de::Visitor<'de> for NullableConfigDurationVisitor {
+            type Value = NullableConfigDuration;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a duration string or null")
+            }
+
+            fn visit_none<E>(self) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(NullableConfigDuration::Null)
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(NullableConfigDuration::Null)
+            }
+
+            fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                ConfigDuration::deserialize(deserializer).map(NullableConfigDuration::Value)
+            }
+        }
+
+        deserializer.deserialize_option(NullableConfigDurationVisitor)
     }
 }
 

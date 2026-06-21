@@ -204,6 +204,13 @@
   X11/macOS active overlays update their lock-control state through private
   backend paths before the existing platform-local lock hook runs at break
   finish.
+- Completed `idle-reset-behavior`: config now has optional
+  `breaks.reset_after_idle`, defaulting to 5 minutes and disabled with `null`;
+  normal activity polling emits idle-duration runtime events; runtime resets
+  accumulated scheduler active time after enough combined idle time, clears
+  pre-break notification state, updates the active-time tray row, and treats
+  authenticated remote active-time events as combined activity without changing
+  the sync protocol.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -292,6 +299,7 @@
 - `cargo test --all-targets --all-features runtime` passes after adding synced
   lock-after-break behavior.
 - `make check` passes after adding synced lock-after-break behavior.
+- `make check` passes after adding idle reset behavior.
 - A bounded `timeout 3s make run` on macOS stays alive until terminated by
   `timeout` and no longer emits helper stderr during startup after AppKit setup
   was made lazy.

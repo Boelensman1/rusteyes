@@ -192,6 +192,7 @@ pub(crate) fn wait_for_command_or_timeout(
 #[allow(dead_code)]
 pub(crate) enum RuntimeEvent {
     ActiveTimeElapsed(Duration),
+    IdleTimeElapsed(Duration),
     WallClockElapsed(Duration),
     BreakFinished,
     LockAfterCurrentBreak,

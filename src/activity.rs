@@ -35,6 +35,8 @@ impl ActivityPoller {
 
         if state == ActivityState::Active {
             self.queue_event(RuntimeEvent::ActiveTimeElapsed(self.poll_interval));
+        } else {
+            self.queue_event(RuntimeEvent::IdleTimeElapsed(self.poll_interval));
         }
 
         state

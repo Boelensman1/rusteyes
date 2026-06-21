@@ -57,7 +57,7 @@ fn active_sample_queues_wall_clock_before_active_time() {
 }
 
 #[test]
-fn idle_sample_queues_only_wall_clock_time() {
+fn idle_sample_queues_wall_clock_before_idle_time() {
     let poll_interval = Duration::from_secs(1);
     let mut poller = ActivityPoller::new(poll_interval);
 
@@ -68,6 +68,10 @@ fn idle_sample_queues_only_wall_clock_time() {
     assert_eq!(
         poller.next_event(),
         Some(RuntimeEvent::WallClockElapsed(poll_interval))
+    );
+    assert_eq!(
+        poller.next_event(),
+        Some(RuntimeEvent::IdleTimeElapsed(poll_interval))
     );
     assert_eq!(poller.next_event(), None);
 }

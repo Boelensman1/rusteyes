@@ -353,6 +353,50 @@ fn upcoming_scheduled_break_is_absent_while_disabled_or_pending() {
 }
 
 #[test]
+fn reset_active_time_discards_partial_active_time() {
+    let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20)]));
+
+    assert_eq!(scheduler.advance_active(Duration::from_secs(9)), None);
+    scheduler.reset_active_time();
+
+    assert_eq!(scheduler.advance_active(Duration::from_secs(1)), None);
+    let first = started_break(scheduler.advance_active(Duration::from_secs(9)));
+    assert_eq!(first.origin, BreakOrigin::Scheduled { slot: 1 });
+}
+
+#[test]
+fn reset_active_time_preserves_completed_slots() {
+    let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20), ("long", 2, 300)]));
+
+    let first = started_break(scheduler.advance_active(Duration::from_secs(10)));
+    assert_eq!(first.origin, BreakOrigin::Scheduled { slot: 1 });
+    assert!(scheduler.finish_break());
+
+    assert_eq!(scheduler.advance_active(Duration::from_secs(9)), None);
+    scheduler.reset_active_time();
+
+    let second = started_break(scheduler.advance_active(Duration::from_secs(10)));
+    assert_eq!(second.name, "long");
+    assert_eq!(second.origin, BreakOrigin::Scheduled { slot: 2 });
+}
+
+#[test]
+fn reset_active_time_preserves_pending_and_disabled_state() {
+    let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20)]));
+
+    let first = started_break(scheduler.advance_active(Duration::from_secs(10)));
+    assert_eq!(first.origin, BreakOrigin::Scheduled { slot: 1 });
+    scheduler.reset_active_time();
+    assert_eq!(scheduler.advance_active(Duration::from_secs(10)), None);
+    assert!(scheduler.finish_break());
+
+    assert!(!scheduler.disable());
+    scheduler.reset_active_time();
+    assert!(scheduler.is_disabled());
+    assert_eq!(scheduler.advance_active(Duration::from_secs(10)), None);
+}
+
+#[test]
 fn schedule_rejects_empty_break_types() {
     let mut breaks = custom_breaks(10, &[("short", 1, 20)]);
     breaks.types.clear();
@@ -413,6 +457,7 @@ fn upcoming_break(action: Option<UpcomingScheduledBreak>) -> UpcomingScheduledBr
 fn custom_breaks(after_active_secs: u64, types: &[(&str, usize, u64)]) -> Breaks {
     Breaks {
         after_active: Duration::from_secs(after_active_secs),
+        reset_after_idle: Some(Duration::from_secs(300)),
         types: types
             .iter()
             .map(|(name, interval, duration_secs)| {

@@ -113,6 +113,7 @@ struct DaemonRuntime<'a> {
     sync_broadcaster: &'a dyn SyncEventBroadcaster,
     ui: RuntimeUi,
     disable_mode: DisableMode,
+    idle_reset: IdleReset,
     current_break: Option<CurrentBreakState>,
     notified_break: Option<NotifiedBreak>,
     displayed_active_time: Duration,
@@ -126,6 +127,7 @@ impl<'a> DaemonRuntime<'a> {
         ui: RuntimeUi,
     ) -> Self {
         let backend_event_receiver = backend.clone_event_receiver();
+        let idle_reset = IdleReset::new(schedule.reset_after_idle());
 
         Self {
             scheduler: BreakScheduler::new(schedule),
@@ -135,6 +137,7 @@ impl<'a> DaemonRuntime<'a> {
             sync_broadcaster: sync_runtime.broadcaster,
             ui,
             disable_mode: DisableMode::Enabled,
+            idle_reset,
             current_break: None,
             notified_break: None,
             displayed_active_time: Duration::ZERO,
@@ -208,6 +211,7 @@ impl<'a> DaemonRuntime<'a> {
             RuntimeEvent::ActiveTimeElapsed(elapsed) => {
                 return self.advance_active(elapsed, SyncPropagation::Broadcast);
             }
+            RuntimeEvent::IdleTimeElapsed(elapsed) => self.advance_idle(elapsed),
             RuntimeEvent::WallClockElapsed(elapsed) => self.advance_wall_clock(elapsed),
             RuntimeEvent::BreakFinished => return self.finish_break(),
             RuntimeEvent::LockAfterCurrentBreak => {
@@ -292,6 +296,7 @@ impl<'a> DaemonRuntime<'a> {
     }
 
     fn advance_active(&mut self, elapsed: Duration, propagation: SyncPropagation) -> bool {
+        self.idle_reset.reset();
         self.broadcast_if_needed(propagation, &SyncEvent::ActiveTimeElapsed { elapsed });
 
         let scheduled_break = self.scheduler.advance_active(elapsed);
@@ -303,6 +308,16 @@ impl<'a> DaemonRuntime<'a> {
             self.notify_upcoming_break();
             true
         }
+    }
+
+    fn advance_idle(&mut self, elapsed: Duration) {
+        if !self.idle_reset.advance(elapsed) {
+            return;
+        }
+
+        self.scheduler.reset_active_time();
+        self.clear_pre_break_notice();
+        self.update_active_time_display();
     }
 
     fn start_manual_break(&mut self, name: &str, propagation: SyncPropagation) -> bool {
@@ -480,6 +495,46 @@ impl<'a> DaemonRuntime<'a> {
         {
             warn!(%error, "failed to send active-time UI update");
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IdleReset {
+    timeout: Option<Duration>,
+    idle_elapsed: Duration,
+    reset_triggered: bool,
+}
+
+impl IdleReset {
+    const fn new(timeout: Option<Duration>) -> Self {
+        Self {
+            timeout,
+            idle_elapsed: Duration::ZERO,
+            reset_triggered: false,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.idle_elapsed = Duration::ZERO;
+        self.reset_triggered = false;
+    }
+
+    fn advance(&mut self, elapsed: Duration) -> bool {
+        let Some(timeout) = self.timeout else {
+            return false;
+        };
+
+        if self.reset_triggered {
+            return false;
+        }
+
+        self.idle_elapsed = self.idle_elapsed.saturating_add(elapsed);
+        if self.idle_elapsed < timeout {
+            return false;
+        }
+
+        self.reset_triggered = true;
+        true
     }
 }
 

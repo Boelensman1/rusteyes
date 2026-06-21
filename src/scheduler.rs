@@ -5,6 +5,7 @@ use std::time::Duration;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BreakSchedule {
     after_active: Duration,
+    reset_after_idle: Option<Duration>,
     rules: Vec<BreakRule>,
 }
 
@@ -12,6 +13,10 @@ impl BreakSchedule {
     #[must_use]
     const fn after_active(&self) -> Duration {
         self.after_active
+    }
+
+    pub(crate) const fn reset_after_idle(&self) -> Option<Duration> {
+        self.reset_after_idle
     }
 
     fn next_due_break_after(&self, slot: usize) -> Option<ScheduledBreak> {
@@ -50,6 +55,7 @@ impl TryFrom<Breaks> for BreakSchedule {
 
         let Breaks {
             after_active,
+            reset_after_idle,
             types,
         } = breaks;
         let mut rules = types
@@ -61,6 +67,7 @@ impl TryFrom<Breaks> for BreakSchedule {
 
         Ok(Self {
             after_active,
+            reset_after_idle,
             rules,
         })
     }
@@ -170,6 +177,10 @@ impl BreakScheduler {
         }
 
         None
+    }
+
+    pub(crate) fn reset_active_time(&mut self) {
+        self.active_elapsed = Duration::ZERO;
     }
 
     pub(crate) fn start_manual_break(&mut self, name: &str) -> Option<ScheduledBreak> {
