@@ -1,6 +1,7 @@
 use super::{
-    AuthenticatedSyncMessage, PeerId, SyncEvent, SyncMessage, SyncProtocolError,
-    authenticate_message, decode_authenticated, encode_authenticated, encode_hex,
+    AuthenticatedSyncMessage, PeerId, SyncEvent, SyncFramePayload, SyncMessage, SyncProtocolError,
+    TransportControlFrame, authenticate_message, decode_authenticated, encode_authenticated,
+    encode_hex,
 };
 use crate::config::SharedSecret;
 use serde_json::{Value, json};
@@ -26,7 +27,6 @@ fn generated_peer_id_is_valid_protocol_id() -> Result<(), Box<dyn Error>> {
 #[test]
 fn authenticates_all_sync_event_variants() -> Result<(), Box<dyn Error>> {
     let events = [
-        SyncEvent::PeerHello,
         SyncEvent::ActiveTimeElapsed {
             elapsed: Duration::from_millis(1_500),
         },
@@ -42,8 +42,8 @@ fn authenticates_all_sync_event_variants() -> Result<(), Box<dyn Error>> {
     ];
 
     for (index, event) in events.into_iter().enumerate() {
-        let sequence = u64::try_from(index)?;
-        let message = SyncMessage::new(peer_id()?, sequence, event);
+        let sequence = u64::try_from(index)? + 1;
+        let message = SyncMessage::event(peer_id()?, sequence, event);
         let encoded = encode_authenticated(&message, &shared_secret())?;
 
         assert_eq!(decode_authenticated(&encoded, &shared_secret())?, message);
@@ -53,8 +53,18 @@ fn authenticates_all_sync_event_variants() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn authenticates_peer_hello_control_frame() -> Result<(), Box<dyn Error>> {
+    let message = SyncMessage::control(peer_id()?, 0, TransportControlFrame::PeerHello);
+    let encoded = encode_authenticated(&message, &shared_secret())?;
+
+    assert_eq!(decode_authenticated(&encoded, &shared_secret())?, message);
+
+    Ok(())
+}
+
+#[test]
 fn rejects_peer_hello_with_non_zero_sequence() -> Result<(), Box<dyn Error>> {
-    let message = SyncMessage::new(peer_id()?, 1, SyncEvent::PeerHello);
+    let message = SyncMessage::control(peer_id()?, 1, TransportControlFrame::PeerHello);
 
     assert_eq!(
         encode_authenticated(&message, &shared_secret()),
@@ -65,8 +75,20 @@ fn rejects_peer_hello_with_non_zero_sequence() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn rejects_domain_event_with_zero_sequence() -> Result<(), Box<dyn Error>> {
+    let message = SyncMessage::event(peer_id()?, 0, SyncEvent::Enable);
+
+    assert_eq!(
+        encode_authenticated(&message, &shared_secret()),
+        Err(SyncProtocolError::InvalidEventSequence { sequence: 0 })
+    );
+
+    Ok(())
+}
+
+#[test]
 fn wire_json_uses_expected_version_sender_sequence_event_and_mac() -> Result<(), Box<dyn Error>> {
-    let message = SyncMessage::new(
+    let message = SyncMessage::event(
         peer_id()?,
         42,
         SyncEvent::ActiveTimeElapsed {
@@ -91,8 +113,28 @@ fn wire_json_uses_expected_version_sender_sequence_event_and_mac() -> Result<(),
 }
 
 #[test]
+fn wire_json_uses_control_field_for_peer_hello() -> Result<(), Box<dyn Error>> {
+    let message = SyncMessage::control(peer_id()?, 0, TransportControlFrame::PeerHello);
+    let encoded = encode_authenticated(&message, &shared_secret())?;
+    let value = serde_json::from_str::<Value>(&encoded)?;
+
+    assert_eq!(value["version"], json!(1));
+    assert_eq!(value["sender"], json!(PEER_ID));
+    assert_eq!(value["sequence"], json!(0));
+    assert_eq!(value["control"]["type"], json!("peerHello"));
+    assert!(value.get("event").is_none());
+    assert_eq!(
+        value["mac"].as_str().map(str::len),
+        Some(64),
+        "HMAC-SHA256 should be encoded as 32 bytes of hex"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn rejects_tampered_payload() -> Result<(), Box<dyn Error>> {
-    let message = SyncMessage::new(
+    let message = SyncMessage::event(
         peer_id()?,
         7,
         SyncEvent::BreakStarted {
@@ -114,7 +156,7 @@ fn rejects_tampered_payload() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn rejects_tampered_mac() -> Result<(), Box<dyn Error>> {
-    let message = SyncMessage::new(peer_id()?, 8, SyncEvent::Enable);
+    let message = SyncMessage::event(peer_id()?, 8, SyncEvent::Enable);
     let encoded = encode_authenticated(&message, &shared_secret())?;
     let mut value = serde_json::from_str::<Value>(&encoded)?;
     value["mac"] = json!("0000000000000000000000000000000000000000000000000000000000000000");
@@ -130,7 +172,7 @@ fn rejects_tampered_mac() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn rejects_wrong_shared_secret() -> Result<(), Box<dyn Error>> {
-    let message = SyncMessage::new(peer_id()?, 9, SyncEvent::DisableUntilRestart);
+    let message = SyncMessage::event(peer_id()?, 9, SyncEvent::DisableUntilRestart);
     let encoded = encode_authenticated(&message, &shared_secret())?;
 
     assert_eq!(
@@ -143,7 +185,7 @@ fn rejects_wrong_shared_secret() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn rejects_invalid_mac_hex() -> Result<(), Box<dyn Error>> {
-    let message = SyncMessage::new(peer_id()?, 10, SyncEvent::Enable);
+    let message = SyncMessage::event(peer_id()?, 10, SyncEvent::Enable);
     let encoded = encode_authenticated(&message, &shared_secret())?;
     let mut value = serde_json::from_str::<Value>(&encoded)?;
     value["mac"] = json!("not-hex");
@@ -163,7 +205,7 @@ fn rejects_invalid_mac_hex() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn rejects_unsupported_version_after_authentication() -> Result<(), Box<dyn Error>> {
-    let mut message = SyncMessage::new(peer_id()?, 11, SyncEvent::Enable);
+    let mut message = SyncMessage::event(peer_id()?, 11, SyncEvent::Enable);
     message.version = 2;
     let encoded = authenticated_json(&message)?;
 
@@ -177,7 +219,7 @@ fn rejects_unsupported_version_after_authentication() -> Result<(), Box<dyn Erro
 
 #[test]
 fn rejects_bad_sender_id() -> Result<(), Box<dyn Error>> {
-    let message = SyncMessage::new(peer_id()?, 12, SyncEvent::Enable);
+    let message = SyncMessage::event(peer_id()?, 12, SyncEvent::Enable);
     let encoded = encode_authenticated(&message, &shared_secret())?;
     let mut value = serde_json::from_str::<Value>(&encoded)?;
     value["sender"] = json!("bad-sender");
@@ -193,7 +235,7 @@ fn rejects_bad_sender_id() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn rejects_zero_active_time_duration() -> Result<(), Box<dyn Error>> {
-    let message = SyncMessage::new(
+    let message = SyncMessage::event(
         peer_id()?,
         13,
         SyncEvent::ActiveTimeElapsed {
@@ -212,7 +254,7 @@ fn rejects_zero_active_time_duration() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn rejects_zero_disable_duration() -> Result<(), Box<dyn Error>> {
-    let message = SyncMessage::new(
+    let message = SyncMessage::event(
         peer_id()?,
         14,
         SyncEvent::DisableFor {
@@ -234,7 +276,7 @@ fn rejects_zero_disable_duration() -> Result<(), Box<dyn Error>> {
 #[test]
 fn rejects_invalid_break_names() -> Result<(), Box<dyn Error>> {
     for name in ["", " short", "short "] {
-        let message = SyncMessage::new(
+        let message = SyncMessage::event(
             peer_id()?,
             15,
             SyncEvent::BreakStarted {
@@ -249,6 +291,21 @@ fn rejects_invalid_break_names() -> Result<(), Box<dyn Error>> {
             })
         );
     }
+
+    Ok(())
+}
+
+#[test]
+fn decoded_domain_event_keeps_event_payload_separate() -> Result<(), Box<dyn Error>> {
+    let message = SyncMessage::event(peer_id()?, 16, SyncEvent::Enable);
+    let encoded = encode_authenticated(&message, &shared_secret())?;
+
+    assert_eq!(
+        decode_authenticated(&encoded, &shared_secret())?.payload,
+        SyncFramePayload::Event {
+            event: SyncEvent::Enable,
+        }
+    );
 
     Ok(())
 }

@@ -63,16 +63,26 @@ pub(crate) struct SyncMessage {
     pub(crate) version: u8,
     pub(crate) sender: PeerId,
     pub(crate) sequence: u64,
-    pub(crate) event: SyncEvent,
+    #[serde(flatten)]
+    pub(crate) payload: SyncFramePayload,
 }
 
 impl SyncMessage {
-    pub(crate) const fn new(sender: PeerId, sequence: u64, event: SyncEvent) -> Self {
+    pub(crate) fn control(sender: PeerId, sequence: u64, control: TransportControlFrame) -> Self {
         Self {
             version: PROTOCOL_VERSION,
             sender,
             sequence,
-            event,
+            payload: SyncFramePayload::Control { control },
+        }
+    }
+
+    pub(crate) fn event(sender: PeerId, sequence: u64, event: SyncEvent) -> Self {
+        Self {
+            version: PROTOCOL_VERSION,
+            sender,
+            sequence,
+            payload: SyncFramePayload::Event { event },
         }
     }
 
@@ -83,20 +93,39 @@ impl SyncMessage {
             });
         }
 
-        if matches!(self.event, SyncEvent::PeerHello) && self.sequence != 0 {
-            return Err(SyncProtocolError::InvalidHelloSequence {
+        match &self.payload {
+            SyncFramePayload::Control {
+                control: TransportControlFrame::PeerHello,
+            } if self.sequence != 0 => Err(SyncProtocolError::InvalidHelloSequence {
                 sequence: self.sequence,
-            });
+            }),
+            SyncFramePayload::Control { .. } => Ok(()),
+            SyncFramePayload::Event { .. } if self.sequence == 0 => {
+                Err(SyncProtocolError::InvalidEventSequence {
+                    sequence: self.sequence,
+                })
+            }
+            SyncFramePayload::Event { event } => event.validate(),
         }
-
-        self.event.validate()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum SyncFramePayload {
+    Control { control: TransportControlFrame },
+    Event { event: SyncEvent },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub(crate) enum TransportControlFrame {
+    PeerHello,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub(crate) enum SyncEvent {
-    PeerHello,
     ActiveTimeElapsed {
         #[serde(rename = "elapsedMs", with = "duration_millis")]
         elapsed: Duration,
@@ -128,7 +157,6 @@ impl SyncEvent {
                 Err(SyncProtocolError::InvalidBreakName { name: name.clone() })
             }
             Self::ActiveTimeElapsed { .. }
-            | Self::PeerHello
             | Self::BreakStarted { .. }
             | Self::DisableFor { .. }
             | Self::DisableUntilRestart
@@ -286,6 +314,9 @@ pub(crate) enum SyncProtocolError {
     InvalidHelloSequence {
         sequence: u64,
     },
+    InvalidEventSequence {
+        sequence: u64,
+    },
     AuthenticationFailed,
 }
 
@@ -321,6 +352,10 @@ impl fmt::Display for SyncProtocolError {
             Self::InvalidHelloSequence { sequence } => write!(
                 formatter,
                 "sync peer hello sequence must be 0, got {sequence}"
+            ),
+            Self::InvalidEventSequence { sequence } => write!(
+                formatter,
+                "sync domain event sequence must be greater than 0, got {sequence}"
             ),
             Self::AuthenticationFailed => formatter.write_str("sync message authentication failed"),
         }

@@ -12,6 +12,7 @@ pub(crate) mod scheduler;
 mod sync_discovery;
 pub(crate) mod sync_protocol;
 mod sync_transport;
+mod sync_transport_io;
 #[cfg(target_os = "linux")]
 mod x11_activity;
 #[cfg(target_os = "linux")]

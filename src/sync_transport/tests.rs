@@ -1,9 +1,13 @@
 use super::{
-    BindPeerStatus, ConnectionDirection, ConnectionTracker, SyncTransport, TransportNotification,
-    peer_hello_payload,
+    BindPeerStatus, ConnectionDirection, ConnectionTracker, SyncInboundEvent, SyncInboundReceiver,
+    SyncTransport, TransportNotification, peer_hello_payload,
 };
 use crate::config::SharedSecret;
-use crate::sync_protocol::{PeerId, SyncEvent, SyncProtocolError, decode_authenticated};
+use crate::sync_protocol::{
+    PeerId, SyncEvent, SyncFramePayload, SyncMessage, SyncProtocolError, TransportControlFrame,
+    decode_authenticated, encode_authenticated,
+};
+use crate::sync_transport_io::{TransportIo, TransportIoEvent, TransportSendStatus};
 use std::error::Error;
 use std::str;
 use std::str::FromStr;
@@ -12,6 +16,7 @@ use std::time::{Duration, Instant};
 
 const LOCAL_PEER: &str = "00112233445566778899aabbccddeeff";
 const REMOTE_PEER: &str = "ffeeddccbbaa99887766554433221100";
+const THIRD_PEER: &str = "11112222333344445555666677778888";
 const SHARED_SECRET: &str = "0123456789abcdef0123456789abcdef";
 const WRONG_SHARED_SECRET: &str = "fedcba9876543210fedcba9876543210";
 
@@ -23,7 +28,12 @@ fn peer_hello_uses_authenticated_sequence_zero_frame() -> Result<(), Box<dyn Err
 
     assert_eq!(message.sender, local_peer()?);
     assert_eq!(message.sequence, 0);
-    assert_eq!(message.event, SyncEvent::PeerHello);
+    assert_eq!(
+        message.payload,
+        SyncFramePayload::Control {
+            control: TransportControlFrame::PeerHello,
+        }
+    );
 
     Ok(())
 }
@@ -144,13 +154,153 @@ fn disconnect_removes_endpoint_peer_binding() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn loopback_transports_authenticate_after_hello_exchange() -> Result<(), Box<dyn Error>> {
-    let (left, left_events) = SyncTransport::start_for_test(local_peer()?, shared_secret())?;
-    let (right, right_events) = SyncTransport::start_for_test(remote_peer()?, shared_secret())?;
+    let (left, _left_inbound, left_events) =
+        SyncTransport::start_for_test(local_peer()?, shared_secret())?;
+    let (right, _right_inbound, right_events) =
+        SyncTransport::start_for_test(remote_peer()?, shared_secret())?;
 
     left.connect_for_test(right.local_addr_for_test())?;
 
     expect_peer_authenticated(&left_events, remote_peer()?)?;
     expect_peer_authenticated(&right_events, local_peer()?)?;
+
+    Ok(())
+}
+
+#[test]
+fn broadcast_sends_domain_event_to_authenticated_peer() -> Result<(), Box<dyn Error>> {
+    let (left, _left_inbound, left_events) =
+        SyncTransport::start_for_test(local_peer()?, shared_secret())?;
+    let (right, right_inbound, right_events) =
+        SyncTransport::start_for_test(remote_peer()?, shared_secret())?;
+
+    left.connect_for_test(right.local_addr_for_test())?;
+    expect_peer_authenticated(&left_events, remote_peer()?)?;
+    expect_peer_authenticated(&right_events, local_peer()?)?;
+
+    assert_eq!(
+        left.broadcast(SyncEvent::ActiveTimeElapsed {
+            elapsed: Duration::from_millis(1_500),
+        })?,
+        1
+    );
+
+    assert_eq!(
+        expect_inbound_event(&right_inbound)?,
+        SyncInboundEvent {
+            sender: local_peer()?,
+            sequence: 1,
+            event: SyncEvent::ActiveTimeElapsed {
+                elapsed: Duration::from_millis(1_500),
+            },
+        }
+    );
+
+    Ok(())
+}
+
+#[test]
+fn directed_send_delivers_only_to_requested_authenticated_peer() -> Result<(), Box<dyn Error>> {
+    let (left, _left_inbound, left_events) =
+        SyncTransport::start_for_test(local_peer()?, shared_secret())?;
+    let (right, right_inbound, right_events) =
+        SyncTransport::start_for_test(remote_peer()?, shared_secret())?;
+    let (third, third_inbound, third_events) =
+        SyncTransport::start_for_test(third_peer()?, shared_secret())?;
+
+    left.connect_for_test(right.local_addr_for_test())?;
+    left.connect_for_test(third.local_addr_for_test())?;
+    expect_peers_authenticated(&left_events, &[remote_peer()?, third_peer()?])?;
+    expect_peer_authenticated(&right_events, local_peer()?)?;
+    expect_peer_authenticated(&third_events, local_peer()?)?;
+
+    assert!(left.send(remote_peer()?, SyncEvent::Enable)?);
+
+    assert_eq!(
+        expect_inbound_event(&right_inbound)?,
+        SyncInboundEvent {
+            sender: local_peer()?,
+            sequence: 1,
+            event: SyncEvent::Enable,
+        }
+    );
+    assert!(
+        third_inbound
+            .recv_timeout(Duration::from_millis(100))
+            .is_err()
+    );
+
+    Ok(())
+}
+
+#[test]
+fn directed_send_returns_false_for_unknown_peer() -> Result<(), Box<dyn Error>> {
+    let (left, _left_inbound, _left_events) =
+        SyncTransport::start_for_test(local_peer()?, shared_secret())?;
+
+    assert!(!left.send(remote_peer()?, SyncEvent::Enable)?);
+
+    Ok(())
+}
+
+#[test]
+fn domain_event_before_authenticated_hello_is_rejected() -> Result<(), Box<dyn Error>> {
+    let (server, server_inbound, _server_events) =
+        SyncTransport::start_for_test(local_peer()?, shared_secret())?;
+    let (mut client_io, mut client_events, _) = TransportIo::listen("127.0.0.1:0")?;
+    let client_handle = client_io.handle();
+    client_handle.connect(server.local_addr_for_test())?;
+
+    let endpoint = expect_client_connected(&mut client_events)?;
+    let payload = encode_authenticated(
+        &SyncMessage::event(remote_peer()?, 1, SyncEvent::Enable),
+        &shared_secret(),
+    )?;
+
+    assert_eq!(
+        client_handle.send(endpoint, payload.as_bytes()),
+        TransportSendStatus::Sent
+    );
+    expect_client_disconnected(&mut client_events)?;
+    assert!(
+        server_inbound
+            .recv_timeout(Duration::from_millis(100))
+            .is_err()
+    );
+
+    client_io.remove_listener();
+    client_io.stop();
+    client_io.wait();
+
+    Ok(())
+}
+
+#[test]
+fn authenticated_endpoint_rejects_spoofed_sender() -> Result<(), Box<dyn Error>> {
+    let (left, left_inbound, left_events) =
+        SyncTransport::start_for_test(local_peer()?, shared_secret())?;
+    let (right, _right_inbound, right_events) =
+        SyncTransport::start_for_test(remote_peer()?, shared_secret())?;
+
+    let right_endpoint = right.connect_for_test(left.local_addr_for_test())?;
+    expect_peer_authenticated(&left_events, remote_peer()?)?;
+    expect_peer_authenticated(&right_events, local_peer()?)?;
+
+    let payload = encode_authenticated(
+        &SyncMessage::event(local_peer()?, 1, SyncEvent::Enable),
+        &shared_secret(),
+    )?;
+
+    assert_eq!(
+        right.io.handle().send(right_endpoint, payload.as_bytes()),
+        TransportSendStatus::Sent
+    );
+    expect_peer_disconnected(&left_events, remote_peer()?)?;
+    assert!(
+        left_inbound
+            .recv_timeout(Duration::from_millis(100))
+            .is_err()
+    );
 
     Ok(())
 }
@@ -177,12 +327,110 @@ fn expect_peer_authenticated(
     }
 }
 
+fn expect_peers_authenticated(
+    receiver: &mpsc::Receiver<TransportNotification>,
+    peer_ids: &[PeerId],
+) -> Result<(), Box<dyn Error>> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut remaining_peers = peer_ids.to_vec();
+
+    while !remaining_peers.is_empty() {
+        let now = Instant::now();
+        let remaining = deadline.saturating_duration_since(now);
+        if remaining.is_zero() {
+            return Err(
+                format!("timed out waiting for authenticated peers {remaining_peers:?}").into(),
+            );
+        }
+
+        if let TransportNotification::PeerAuthenticated(actual) =
+            receiver.recv_timeout(remaining)?
+        {
+            remaining_peers.retain(|peer_id| *peer_id != actual);
+        }
+    }
+
+    Ok(())
+}
+
+fn expect_peer_disconnected(
+    receiver: &mpsc::Receiver<TransportNotification>,
+    peer_id: PeerId,
+) -> Result<(), Box<dyn Error>> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+
+    loop {
+        let now = Instant::now();
+        let remaining = deadline.saturating_duration_since(now);
+        if remaining.is_zero() {
+            return Err(format!("timed out waiting for disconnected peer {peer_id}").into());
+        }
+
+        match receiver.recv_timeout(remaining)? {
+            TransportNotification::PeerDisconnected(actual) if actual == peer_id => {
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+}
+
+fn expect_inbound_event(
+    receiver: &SyncInboundReceiver,
+) -> Result<SyncInboundEvent, Box<dyn Error>> {
+    Ok(receiver.recv_timeout(Duration::from_secs(2))?)
+}
+
+fn expect_client_connected(
+    receiver: &mut crate::sync_transport_io::TransportIoReceiver,
+) -> Result<crate::sync_transport_io::TransportEndpoint, Box<dyn Error>> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+
+    loop {
+        let now = Instant::now();
+        let remaining = deadline.saturating_duration_since(now);
+        if remaining.is_zero() {
+            return Err("timed out waiting for raw client connection".into());
+        }
+
+        match receiver.receive_timeout(remaining) {
+            Some(TransportIoEvent::Connected(endpoint, true)) => return Ok(endpoint),
+            Some(_) => {}
+            None => return Err("timed out waiting for raw client connection".into()),
+        }
+    }
+}
+
+fn expect_client_disconnected(
+    receiver: &mut crate::sync_transport_io::TransportIoReceiver,
+) -> Result<(), Box<dyn Error>> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+
+    loop {
+        let now = Instant::now();
+        let remaining = deadline.saturating_duration_since(now);
+        if remaining.is_zero() {
+            return Err("timed out waiting for raw client disconnect".into());
+        }
+
+        match receiver.receive_timeout(remaining) {
+            Some(TransportIoEvent::Disconnected(_)) => return Ok(()),
+            Some(_) => {}
+            None => return Err("timed out waiting for raw client disconnect".into()),
+        }
+    }
+}
+
 fn local_peer() -> Result<PeerId, Box<dyn Error>> {
     Ok(PeerId::from_str(LOCAL_PEER)?)
 }
 
 fn remote_peer() -> Result<PeerId, Box<dyn Error>> {
     Ok(PeerId::from_str(REMOTE_PEER)?)
+}
+
+fn third_peer() -> Result<PeerId, Box<dyn Error>> {
+    Ok(PeerId::from_str(THIRD_PEER)?)
 }
 
 fn shared_secret() -> SharedSecret {

@@ -141,12 +141,15 @@
   path was removed when authenticated peer transport started discovery from
   normal runtime code.
 - Completed `authenticated-peer-transport`: sync-enabled runtime startup now
-  creates a transient peer ID, starts a framed TCP `message-io` listener on an
+  creates a transient peer ID, starts a framed TCP transport listener on an
   OS-assigned port, advertises that port through authenticated LAN discovery,
   connects to discovered peers, authenticates each connection with a HMAC-framed
-  `PeerHello`, rejects unauthenticated/self endpoints, and collapses duplicate
-  peer connections deterministically before later runtime sync behavior is
-  added.
+  transport-control `PeerHello`, rejects unauthenticated/self endpoints, and
+  collapses duplicate peer connections deterministically. Follow-up transport
+  cleanup split control frames from domain sync events, wrapped `message-io`
+  behind a private adapter, and added crate-internal broadcast, directed send,
+  and authenticated inbound domain-event receiver APIs before runtime sync
+  behavior is added.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -207,6 +210,8 @@
 - `make check` passes after adding authenticated sync protocol framing.
 - `make check` passes after adding mDNS/DNS-SD LAN discovery.
 - `make check` passes after adding authenticated peer transport.
+- `make check` passes after splitting sync transport control/domain frames and
+  adding the send/broadcast/inbound receiver transport API.
 - A bounded `timeout 3s make run` on macOS stays alive until terminated by
   `timeout` and no longer emits helper stderr during startup after AppKit setup
   was made lazy.

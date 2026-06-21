@@ -1,11 +1,13 @@
 use crate::config::{SharedSecret, SyncConfig};
 use crate::sync_discovery::{DiscoveredPeer, LanDiscovery, SyncDiscoveryError};
 use crate::sync_protocol::{
-    PeerId, SyncEvent, SyncMessage, SyncProtocolError, decode_authenticated, encode_authenticated,
+    PeerId, SyncEvent, SyncFramePayload, SyncMessage, SyncProtocolError, TransportControlFrame,
+    decode_authenticated, encode_authenticated,
 };
-use message_io::events::EventReceiver;
-use message_io::network::{Endpoint, SendStatus, Transport};
-use message_io::node::{self, NodeHandler, NodeTask, StoredNetEvent, StoredNodeEvent};
+use crate::sync_transport_io::{
+    TransportEndpoint, TransportIo, TransportIoEvent, TransportIoHandle, TransportIoReceiver,
+    TransportSendStatus,
+};
 use std::fmt;
 use std::io;
 #[cfg(test)]
@@ -24,9 +26,8 @@ const DISCOVERY_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const NODE_EVENT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 pub(crate) struct SyncTransport {
-    handler: NodeHandler<()>,
-    node_task: Option<NodeTask>,
-    listener_id: message_io::network::ResourceId,
+    io: TransportIo,
+    command_sender: mpsc::Sender<TransportCommand>,
     #[cfg(test)]
     local_addr: SocketAddr,
     worker_thread: Option<JoinHandle<()>>,
@@ -35,7 +36,9 @@ pub(crate) struct SyncTransport {
 }
 
 impl SyncTransport {
-    pub(crate) fn start(sync: SyncConfig) -> Result<Option<Self>, SyncTransportError> {
+    pub(crate) fn start(
+        sync: SyncConfig,
+    ) -> Result<Option<(Self, SyncInboundReceiver)>, SyncTransportError> {
         if !sync.enabled {
             return Ok(None);
         }
@@ -61,15 +64,14 @@ impl SyncTransport {
         listen_addr: impl ToSocketAddrs,
         discovery_mode: DiscoveryMode,
         observer: Option<mpsc::Sender<TransportNotification>>,
-    ) -> Result<Self, SyncTransportError> {
+    ) -> Result<(Self, SyncInboundReceiver), SyncTransportError> {
         let hello = peer_hello_payload(self_id, &shared_secret)
             .map_err(|error| sync_protocol_error(&error))?;
-        let (handler, listener) = node::split::<()>();
-        let (listener_id, local_addr) = handler
-            .network()
-            .listen(Transport::FramedTcp, listen_addr)
-            .map_err(|error| sync_listen_error(&error))?;
-        let (mut node_task, event_receiver) = listener.enqueue();
+        let (mut io, event_receiver, local_addr) =
+            TransportIo::listen(listen_addr).map_err(|error| sync_listen_error(&error))?;
+        let handle = io.handle();
+        let (command_sender, command_receiver) = mpsc::channel();
+        let (inbound_sender, inbound_receiver) = mpsc::channel();
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let discovery = match discovery_mode {
@@ -78,8 +80,9 @@ impl SyncTransport {
                     Ok(discovery) => Some(discovery),
                     Err(error) => {
                         shutdown.store(true, Ordering::Relaxed);
-                        handler.stop();
-                        node_task.wait();
+                        io.remove_listener();
+                        io.stop();
+                        io.wait();
                         return Err(SyncTransportError::Discovery(error));
                     }
                 }
@@ -88,17 +91,18 @@ impl SyncTransport {
             DiscoveryMode::Disabled => None,
         };
 
-        let worker_thread = spawn_worker_thread(
+        let worker = WorkerState::new(
             self_id,
             shared_secret,
             hello,
-            handler.clone(),
-            event_receiver,
-            shutdown.clone(),
+            handle.clone(),
+            inbound_sender,
             observer,
         );
+        let worker_thread =
+            spawn_worker_thread(worker, event_receiver, command_receiver, shutdown.clone());
         let discovery_thread = discovery.map(|discovery| {
-            spawn_discovery_thread(self_id, discovery, handler.clone(), shutdown.clone())
+            spawn_discovery_thread(self_id, discovery, handle.clone(), shutdown.clone())
         });
 
         info!(
@@ -108,25 +112,71 @@ impl SyncTransport {
             "started Resteyes sync transport"
         );
 
-        Ok(Self {
-            handler,
-            node_task: Some(node_task),
-            listener_id,
-            #[cfg(test)]
-            local_addr,
-            worker_thread: Some(worker_thread),
-            discovery_thread,
-            shutdown,
-        })
+        Ok((
+            Self {
+                io,
+                command_sender,
+                #[cfg(test)]
+                local_addr,
+                worker_thread: Some(worker_thread),
+                discovery_thread,
+                shutdown,
+            },
+            SyncInboundReceiver {
+                receiver: inbound_receiver,
+            },
+        ))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn broadcast(&self, event: SyncEvent) -> Result<usize, SyncTransportError> {
+        let (reply_sender, reply_receiver) = mpsc::channel();
+        self.command_sender
+            .send(TransportCommand::Broadcast {
+                event,
+                reply: reply_sender,
+            })
+            .map_err(|_| SyncTransportError::WorkerStopped)?;
+
+        reply_receiver
+            .recv()
+            .map_err(|_| SyncTransportError::WorkerStopped)?
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn send(
+        &self,
+        peer_id: PeerId,
+        event: SyncEvent,
+    ) -> Result<bool, SyncTransportError> {
+        let (reply_sender, reply_receiver) = mpsc::channel();
+        self.command_sender
+            .send(TransportCommand::Send {
+                peer_id,
+                event,
+                reply: reply_sender,
+            })
+            .map_err(|_| SyncTransportError::WorkerStopped)?;
+
+        reply_receiver
+            .recv()
+            .map_err(|_| SyncTransportError::WorkerStopped)?
     }
 
     #[cfg(test)]
     fn start_for_test(
         self_id: PeerId,
         shared_secret: SharedSecret,
-    ) -> Result<(Self, mpsc::Receiver<TransportNotification>), SyncTransportError> {
+    ) -> Result<
+        (
+            Self,
+            SyncInboundReceiver,
+            mpsc::Receiver<TransportNotification>,
+        ),
+        SyncTransportError,
+    > {
         let (sender, receiver) = mpsc::channel();
-        let transport = Self::start_internal(
+        let (transport, inbound_receiver) = Self::start_internal(
             self_id,
             shared_secret,
             "127.0.0.1:0",
@@ -134,15 +184,12 @@ impl SyncTransport {
             Some(sender),
         )?;
 
-        Ok((transport, receiver))
+        Ok((transport, inbound_receiver, receiver))
     }
 
     #[cfg(test)]
-    fn connect_for_test(&self, address: SocketAddr) -> io::Result<Endpoint> {
-        self.handler
-            .network()
-            .connect(Transport::FramedTcp, address)
-            .map(|(endpoint, _)| endpoint)
+    fn connect_for_test(&self, address: SocketAddr) -> io::Result<TransportEndpoint> {
+        self.io.handle().connect(address)
     }
 
     #[cfg(test)]
@@ -154,8 +201,8 @@ impl SyncTransport {
 impl Drop for SyncTransport {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
-        _ = self.handler.network().remove(self.listener_id);
-        self.handler.stop();
+        self.io.remove_listener();
+        self.io.stop();
 
         if let Some(handle) = self.discovery_thread.take() {
             _ = handle.join();
@@ -165,23 +212,60 @@ impl Drop for SyncTransport {
             _ = handle.join();
         }
 
-        if let Some(mut node_task) = self.node_task.take() {
-            node_task.wait();
-        }
+        self.io.wait();
     }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SyncInboundEvent {
+    pub(crate) sender: PeerId,
+    pub(crate) sequence: u64,
+    pub(crate) event: SyncEvent,
+}
+
+#[allow(dead_code)]
+pub(crate) struct SyncInboundReceiver {
+    receiver: mpsc::Receiver<SyncInboundEvent>,
+}
+
+#[allow(dead_code)]
+impl SyncInboundReceiver {
+    pub(crate) fn try_recv(&self) -> Result<SyncInboundEvent, mpsc::TryRecvError> {
+        self.receiver.try_recv()
+    }
+
+    pub(crate) fn recv_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<SyncInboundEvent, mpsc::RecvTimeoutError> {
+        self.receiver.recv_timeout(timeout)
+    }
+}
+
+enum TransportCommand {
+    Broadcast {
+        event: SyncEvent,
+        reply: mpsc::Sender<Result<usize, SyncTransportError>>,
+    },
+    Send {
+        peer_id: PeerId,
+        event: SyncEvent,
+        reply: mpsc::Sender<Result<bool, SyncTransportError>>,
+    },
 }
 
 fn spawn_discovery_thread(
     self_id: PeerId,
     discovery: LanDiscovery,
-    handler: NodeHandler<()>,
+    handle: TransportIoHandle,
     shutdown: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         while !shutdown.load(Ordering::Relaxed) {
             if let Some(peer) = discovery.next_peer_timeout(Instant::now(), DISCOVERY_POLL_INTERVAL)
             {
-                connect_discovered_peer(&handler, &peer);
+                connect_discovered_peer(&handle, &peer);
             }
         }
 
@@ -189,12 +273,9 @@ fn spawn_discovery_thread(
     })
 }
 
-fn connect_discovered_peer(handler: &NodeHandler<()>, peer: &DiscoveredPeer) {
-    match handler
-        .network()
-        .connect(Transport::FramedTcp, peer.address)
-    {
-        Ok((endpoint, _)) => {
+fn connect_discovered_peer(handle: &TransportIoHandle, peer: &DiscoveredPeer) {
+    match handle.connect(peer.address) {
+        Ok(endpoint) => {
             trace!(
                 peer_id = %peer.peer_id,
                 address = %peer.address,
@@ -214,190 +295,292 @@ fn connect_discovered_peer(handler: &NodeHandler<()>, peer: &DiscoveredPeer) {
 }
 
 fn spawn_worker_thread(
-    self_id: PeerId,
-    shared_secret: SharedSecret,
-    hello: Vec<u8>,
-    handler: NodeHandler<()>,
-    mut event_receiver: EventReceiver<StoredNodeEvent<()>>,
+    mut worker: WorkerState,
+    mut event_receiver: TransportIoReceiver,
+    command_receiver: mpsc::Receiver<TransportCommand>,
     shutdown: Arc<AtomicBool>,
-    observer: Option<mpsc::Sender<TransportNotification>>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        let mut tracker = ConnectionTracker::default();
+        while !shutdown.load(Ordering::Relaxed) && worker.handle.is_running() {
+            worker.handle_transport_commands(&command_receiver);
 
-        while !shutdown.load(Ordering::Relaxed) && handler.is_running() {
             let Some(event) = event_receiver.receive_timeout(NODE_EVENT_POLL_INTERVAL) else {
                 continue;
             };
 
-            match event {
-                StoredNodeEvent::Network(event) => handle_network_event(
-                    self_id,
-                    &shared_secret,
-                    &hello,
-                    &handler,
-                    event,
-                    &mut tracker,
-                    observer.as_ref(),
-                ),
-                StoredNodeEvent::Signal(()) => {}
-            }
+            worker.handle_network_event(event);
         }
 
-        for endpoint in tracker.endpoints() {
-            _ = handler.network().remove(endpoint.resource_id());
+        for endpoint in worker.tracker.endpoints() {
+            worker.handle.remove(endpoint);
         }
 
-        trace!(peer_id = %self_id, "stopped Resteyes sync transport worker");
+        trace!(peer_id = %worker.self_id, "stopped Resteyes sync transport worker");
     })
 }
 
-fn handle_network_event(
+struct WorkerState {
     self_id: PeerId,
-    shared_secret: &SharedSecret,
-    hello: &[u8],
-    handler: &NodeHandler<()>,
-    event: StoredNetEvent,
-    tracker: &mut ConnectionTracker<Endpoint>,
-    observer: Option<&mpsc::Sender<TransportNotification>>,
-) {
-    match event {
-        StoredNetEvent::Connected(endpoint, true) => {
-            tracker.record_endpoint(endpoint, ConnectionDirection::Outgoing);
-            send_hello(handler, endpoint, hello);
+    shared_secret: SharedSecret,
+    hello: Vec<u8>,
+    handle: TransportIoHandle,
+    tracker: ConnectionTracker<TransportEndpoint>,
+    next_sequence: u64,
+    inbound_sender: mpsc::Sender<SyncInboundEvent>,
+    observer: Option<mpsc::Sender<TransportNotification>>,
+}
+
+impl WorkerState {
+    fn new(
+        self_id: PeerId,
+        shared_secret: SharedSecret,
+        hello: Vec<u8>,
+        handle: TransportIoHandle,
+        inbound_sender: mpsc::Sender<SyncInboundEvent>,
+        observer: Option<mpsc::Sender<TransportNotification>>,
+    ) -> Self {
+        Self {
+            self_id,
+            shared_secret,
+            hello,
+            handle,
+            tracker: ConnectionTracker::default(),
+            next_sequence: 1,
+            inbound_sender,
+            observer,
         }
-        StoredNetEvent::Connected(endpoint, false) => {
-            tracker.remove_endpoint(endpoint);
-            warn!(endpoint = %endpoint, "sync peer connection failed");
-        }
-        StoredNetEvent::Accepted(endpoint, _) => {
-            tracker.record_endpoint(endpoint, ConnectionDirection::Incoming);
-            send_hello(handler, endpoint, hello);
-        }
-        StoredNetEvent::Message(endpoint, bytes) => {
-            handle_peer_message(
-                self_id,
-                shared_secret,
-                handler,
-                endpoint,
-                &bytes,
-                tracker,
-                observer,
-            );
-        }
-        StoredNetEvent::Disconnected(endpoint) => {
-            if let Some(peer_id) = tracker.remove_endpoint(endpoint) {
-                info!(peer_id = %peer_id, endpoint = %endpoint, "sync peer disconnected");
-                notify(observer, TransportNotification::PeerDisconnected(peer_id));
+    }
+
+    fn handle_transport_commands(&mut self, command_receiver: &mpsc::Receiver<TransportCommand>) {
+        for command in command_receiver.try_iter() {
+            match command {
+                TransportCommand::Broadcast { event, reply } => {
+                    _ = reply.send(self.broadcast_domain_event(event));
+                }
+                TransportCommand::Send {
+                    peer_id,
+                    event,
+                    reply,
+                } => {
+                    _ = reply.send(self.send_domain_event(peer_id, event));
+                }
             }
         }
     }
-}
 
-fn handle_peer_message(
-    self_id: PeerId,
-    shared_secret: &SharedSecret,
-    handler: &NodeHandler<()>,
-    endpoint: Endpoint,
-    bytes: &[u8],
-    tracker: &mut ConnectionTracker<Endpoint>,
-    observer: Option<&mpsc::Sender<TransportNotification>>,
-) {
-    let input = match str::from_utf8(bytes) {
-        Ok(input) => input,
-        Err(error) => {
-            warn!(endpoint = %endpoint, %error, "sync peer sent non-UTF-8 frame");
-            remove_endpoint(handler, tracker, endpoint);
-            return;
+    fn broadcast_domain_event(&mut self, event: SyncEvent) -> Result<usize, SyncTransportError> {
+        let payload = self.domain_event_payload(event)?;
+        let mut sent_count = 0;
+
+        for endpoint in self.tracker.authenticated_endpoints() {
+            if self.send_payload(endpoint, &payload) {
+                sent_count += 1;
+            }
         }
-    };
 
-    let message = match decode_authenticated(input, shared_secret) {
-        Ok(message) => message,
-        Err(error) => {
-            warn!(endpoint = %endpoint, %error, "sync peer message authentication failed");
-            remove_endpoint(handler, tracker, endpoint);
-            return;
+        Ok(sent_count)
+    }
+
+    fn send_domain_event(
+        &mut self,
+        peer_id: PeerId,
+        event: SyncEvent,
+    ) -> Result<bool, SyncTransportError> {
+        let Some(endpoint) = self.tracker.endpoint_for_peer(peer_id) else {
+            return Ok(false);
+        };
+
+        let payload = self.domain_event_payload(event)?;
+        Ok(self.send_payload(endpoint, &payload))
+    }
+
+    fn domain_event_payload(&mut self, event: SyncEvent) -> Result<Vec<u8>, SyncTransportError> {
+        let sequence = self.next_sequence;
+        if sequence == u64::MAX {
+            return Err(SyncTransportError::SequenceExhausted);
         }
-    };
 
-    match message.event {
-        SyncEvent::PeerHello => {
-            let result = tracker.bind_peer(self_id, endpoint, message.sender);
-            remove_endpoints(handler, result.remove_endpoints);
+        let message = SyncMessage::event(self.self_id, sequence, event);
+        let payload = encode_authenticated(&message, &self.shared_secret)
+            .map_err(|error| sync_protocol_error(&error))?;
+        self.next_sequence += 1;
 
-            match result.status {
-                BindPeerStatus::Accepted { peer_connected } if peer_connected => {
-                    info!(
-                        peer_id = %message.sender,
-                        endpoint = %endpoint,
-                        "authenticated Resteyes sync peer"
-                    );
-                    notify(
-                        observer,
-                        TransportNotification::PeerAuthenticated(message.sender),
-                    );
-                }
-                BindPeerStatus::Accepted { .. } => {}
-                BindPeerStatus::RejectedSelf => {
-                    warn!(
-                        peer_id = %message.sender,
-                        endpoint = %endpoint,
-                        "rejected sync connection from local peer id"
-                    );
-                }
-                BindPeerStatus::RejectedUnknownEndpoint => {
-                    warn!(
-                        peer_id = %message.sender,
-                        endpoint = %endpoint,
-                        "rejected sync hello from unknown endpoint"
-                    );
+        Ok(payload.into_bytes())
+    }
+
+    fn send_payload(&mut self, endpoint: TransportEndpoint, payload: &[u8]) -> bool {
+        match self.handle.send(endpoint, payload) {
+            TransportSendStatus::Sent => true,
+            status => {
+                warn!(endpoint = %endpoint, ?status, "failed to send sync domain event");
+                self.remove_endpoint(endpoint);
+                false
+            }
+        }
+    }
+
+    fn handle_network_event(&mut self, event: TransportIoEvent) {
+        match event {
+            TransportIoEvent::Connected(endpoint, true) => {
+                self.tracker
+                    .record_endpoint(endpoint, ConnectionDirection::Outgoing);
+                self.send_hello(endpoint);
+            }
+            TransportIoEvent::Connected(endpoint, false) => {
+                self.tracker.remove_endpoint(endpoint);
+                warn!(endpoint = %endpoint, "sync peer connection failed");
+            }
+            TransportIoEvent::Accepted(endpoint) => {
+                self.tracker
+                    .record_endpoint(endpoint, ConnectionDirection::Incoming);
+                self.send_hello(endpoint);
+            }
+            TransportIoEvent::Message(endpoint, bytes) => {
+                self.handle_peer_message(endpoint, &bytes);
+            }
+            TransportIoEvent::Disconnected(endpoint) => {
+                if let Some(peer_id) = self.tracker.remove_endpoint(endpoint) {
+                    info!(peer_id = %peer_id, endpoint = %endpoint, "sync peer disconnected");
+                    self.notify(TransportNotification::PeerDisconnected(peer_id));
                 }
             }
         }
-        event if tracker.peer_for_endpoint(endpoint).is_some() => {
-            trace!(endpoint = %endpoint, ?event, "ignored authenticated sync event before runtime sync wiring");
+    }
+
+    fn handle_peer_message(&mut self, endpoint: TransportEndpoint, bytes: &[u8]) {
+        let input = match str::from_utf8(bytes) {
+            Ok(input) => input,
+            Err(error) => {
+                warn!(endpoint = %endpoint, %error, "sync peer sent non-UTF-8 frame");
+                self.remove_endpoint(endpoint);
+                return;
+            }
+        };
+
+        let message = match decode_authenticated(input, &self.shared_secret) {
+            Ok(message) => message,
+            Err(error) => {
+                warn!(endpoint = %endpoint, %error, "sync peer message authentication failed");
+                self.remove_endpoint(endpoint);
+                return;
+            }
+        };
+
+        let sender = message.sender;
+        let sequence = message.sequence;
+
+        match message.payload {
+            SyncFramePayload::Control {
+                control: TransportControlFrame::PeerHello,
+            } => self.handle_peer_hello(endpoint, sender),
+            SyncFramePayload::Event { event } => {
+                self.handle_domain_event(endpoint, sender, sequence, event);
+            }
         }
-        event => {
+    }
+
+    fn handle_peer_hello(&mut self, endpoint: TransportEndpoint, sender: PeerId) {
+        let BindPeerResult {
+            status,
+            remove_endpoints,
+        } = self.tracker.bind_peer(self.self_id, endpoint, sender);
+        self.remove_endpoints(remove_endpoints);
+
+        match status {
+            BindPeerStatus::Accepted { peer_connected } if peer_connected => {
+                info!(
+                    peer_id = %sender,
+                    endpoint = %endpoint,
+                    "authenticated Resteyes sync peer"
+                );
+                self.notify(TransportNotification::PeerAuthenticated(sender));
+            }
+            BindPeerStatus::Accepted { .. } => {}
+            BindPeerStatus::RejectedSelf => {
+                warn!(
+                    peer_id = %sender,
+                    endpoint = %endpoint,
+                    "rejected sync connection from local peer id"
+                );
+            }
+            BindPeerStatus::RejectedUnknownEndpoint => {
+                warn!(
+                    peer_id = %sender,
+                    endpoint = %endpoint,
+                    "rejected sync hello from unknown endpoint"
+                );
+            }
+        }
+    }
+
+    fn handle_domain_event(
+        &mut self,
+        endpoint: TransportEndpoint,
+        sender: PeerId,
+        sequence: u64,
+        event: SyncEvent,
+    ) {
+        let Some(peer_id) = self.tracker.peer_for_endpoint(endpoint) else {
             warn!(
                 endpoint = %endpoint,
                 ?event,
-                "sync peer sent data before authenticated hello"
+                "sync peer sent domain event before authenticated hello"
             );
-            remove_endpoint(handler, tracker, endpoint);
+            self.remove_endpoint(endpoint);
+            return;
+        };
+
+        if peer_id != sender {
+            warn!(
+                endpoint = %endpoint,
+                authenticated_peer_id = %peer_id,
+                frame_sender = %sender,
+                "sync peer sent frame with mismatched sender"
+            );
+            self.remove_endpoint(endpoint);
+            return;
+        }
+
+        _ = self.inbound_sender.send(SyncInboundEvent {
+            sender,
+            sequence,
+            event,
+        });
+    }
+
+    fn send_hello(&self, endpoint: TransportEndpoint) {
+        match self.handle.send(endpoint, &self.hello) {
+            TransportSendStatus::Sent => {
+                trace!(endpoint = %endpoint, "sent sync peer hello");
+            }
+            status => {
+                warn!(
+                    endpoint = %endpoint,
+                    ?status,
+                    "failed to send sync peer hello"
+                );
+            }
         }
     }
-}
 
-fn send_hello(handler: &NodeHandler<()>, endpoint: Endpoint, hello: &[u8]) {
-    match handler.network().send(endpoint, hello) {
-        SendStatus::Sent => {
-            trace!(endpoint = %endpoint, "sent sync peer hello");
+    fn remove_endpoint(&mut self, endpoint: TransportEndpoint) {
+        if let Some(peer_id) = self.tracker.remove_endpoint(endpoint) {
+            self.notify(TransportNotification::PeerDisconnected(peer_id));
         }
-        status => {
-            warn!(endpoint = %endpoint, ?status, "failed to send sync peer hello");
+
+        self.handle.remove(endpoint);
+    }
+
+    fn remove_endpoints(&mut self, endpoints: Vec<TransportEndpoint>) {
+        for endpoint in endpoints {
+            self.remove_endpoint(endpoint);
         }
     }
-}
 
-fn remove_endpoint(
-    handler: &NodeHandler<()>,
-    tracker: &mut ConnectionTracker<Endpoint>,
-    endpoint: Endpoint,
-) {
-    tracker.remove_endpoint(endpoint);
-    _ = handler.network().remove(endpoint.resource_id());
-}
-
-fn remove_endpoints(handler: &NodeHandler<()>, endpoints: Vec<Endpoint>) {
-    for endpoint in endpoints {
-        _ = handler.network().remove(endpoint.resource_id());
-    }
-}
-
-fn notify(observer: Option<&mpsc::Sender<TransportNotification>>, event: TransportNotification) {
-    if let Some(observer) = observer {
-        _ = observer.send(event);
+    fn notify(&self, event: TransportNotification) {
+        if let Some(observer) = &self.observer {
+            _ = observer.send(event);
+        }
     }
 }
 
@@ -406,7 +589,7 @@ fn peer_hello_payload(
     shared_secret: &SharedSecret,
 ) -> Result<Vec<u8>, SyncProtocolError> {
     encode_authenticated(
-        &SyncMessage::new(self_id, 0, SyncEvent::PeerHello),
+        &SyncMessage::control(self_id, 0, TransportControlFrame::PeerHello),
         shared_secret,
     )
     .map(String::into_bytes)
@@ -506,6 +689,21 @@ where
     fn peer_for_endpoint(&self, endpoint: E) -> Option<PeerId> {
         self.connection(endpoint)
             .and_then(|connection| connection.peer_id)
+    }
+
+    fn endpoint_for_peer(&self, peer_id: PeerId) -> Option<E> {
+        self.connections
+            .iter()
+            .find(|connection| connection.peer_id == Some(peer_id))
+            .map(|connection| connection.endpoint)
+    }
+
+    fn authenticated_endpoints(&self) -> Vec<E> {
+        self.connections
+            .iter()
+            .filter(|connection| connection.peer_id.is_some())
+            .map(|connection| connection.endpoint)
+            .collect()
     }
 
     fn endpoints(&self) -> Vec<E> {
@@ -610,6 +808,8 @@ pub(crate) enum SyncTransportError {
     Protocol { message: String },
     Listen { message: String },
     Discovery(SyncDiscoveryError),
+    WorkerStopped,
+    SequenceExhausted,
 }
 
 impl fmt::Display for SyncTransportError {
@@ -625,6 +825,8 @@ impl fmt::Display for SyncTransportError {
                 write!(formatter, "sync transport listener setup failed: {message}")
             }
             Self::Discovery(error) => write!(formatter, "{error}"),
+            Self::WorkerStopped => formatter.write_str("sync transport worker stopped"),
+            Self::SequenceExhausted => formatter.write_str("sync transport sequence exhausted"),
         }
     }
 }
@@ -633,7 +835,11 @@ impl std::error::Error for SyncTransportError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Discovery(error) => Some(error),
-            Self::MissingSharedSecret | Self::Protocol { .. } | Self::Listen { .. } => None,
+            Self::MissingSharedSecret
+            | Self::Protocol { .. }
+            | Self::Listen { .. }
+            | Self::WorkerStopped
+            | Self::SequenceExhausted => None,
         }
     }
 }
