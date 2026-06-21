@@ -35,6 +35,7 @@ impl UiConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum UiCommand {
     ShowPreBreakNotification(PreBreakNotification),
+    ClearPreBreakNotification,
     ShowNotification(UiNotification),
     UpdateActiveTime(Duration),
 }
@@ -168,7 +169,7 @@ mod app {
         PreBreakNotification, RuntimeEvent, RuntimeUi, UiAppChannels, UiCommand, UiConfig,
         UiHandle, UiMenuAction, UiNotification, ui_channels,
     };
-    use notify_rust::{Notification, Timeout};
+    use notify_rust::{Notification, NotificationHandle, Timeout};
     use std::collections::BTreeMap;
     use std::fmt;
     use std::io;
@@ -218,6 +219,7 @@ mod app {
                     app.handle_command(command);
                 }
                 Event::UserEvent(UiLoopEvent::RuntimeStopped) => {
+                    app.clear_pre_break_notification();
                     app.join_runtime();
                     *control_flow = ControlFlow::Exit;
                 }
@@ -303,6 +305,7 @@ mod app {
         runtime_thread: Option<JoinHandle<()>>,
         tray_icon: Option<TrayIcon>,
         active_time_item: Option<MenuItem>,
+        pre_break_notification: Option<NotificationHandle>,
         menu_actions: BTreeMap<String, UiMenuAction>,
         initialized: bool,
     }
@@ -319,6 +322,7 @@ mod app {
                 runtime_thread: Some(runtime_thread),
                 tray_icon: None,
                 active_time_item: None,
+                pre_break_notification: None,
                 menu_actions: BTreeMap::new(),
                 initialized: false,
             }
@@ -355,9 +359,14 @@ mod app {
         fn handle_command(&mut self, command: UiCommand) {
             match command {
                 UiCommand::ShowPreBreakNotification(notification) => {
-                    if let Err(error) = show_pre_break_notification(&notification) {
+                    if let Err(error) =
+                        show_pre_break_notification(&mut self.pre_break_notification, &notification)
+                    {
                         warn!(%error, ?notification, "failed to show pre-break notification");
                     }
+                }
+                UiCommand::ClearPreBreakNotification => {
+                    self.clear_pre_break_notification();
                 }
                 UiCommand::ShowNotification(notification) => {
                     if let Err(error) = show_notification(&notification) {
@@ -374,6 +383,10 @@ mod app {
 
         fn request_shutdown(&self) {
             _ = self.event_sender.send(RuntimeEvent::Shutdown);
+        }
+
+        fn clear_pre_break_notification(&mut self) {
+            clear_pre_break_notification(&mut self.pre_break_notification);
         }
 
         fn join_runtime(&mut self) {
@@ -494,29 +507,62 @@ mod app {
             .map_err(|error| UiError::tray_icon(error.to_string()))
     }
 
-    fn show_pre_break_notification(notification: &PreBreakNotification) -> Result<(), UiError> {
-        show_notification(&UiNotification {
+    fn show_pre_break_notification(
+        handle: &mut Option<NotificationHandle>,
+        notification: &PreBreakNotification,
+    ) -> Result<(), UiError> {
+        let notification = pre_break_ui_notification(notification);
+
+        if let Some(handle) = handle {
+            handle
+                .summary(&notification.summary)
+                .body(&notification.body)
+                .timeout(Timeout::Never);
+            return handle
+                .update()
+                .map_err(|error| UiError::notification(error.to_string()));
+        }
+
+        *handle = Some(
+            build_notification(&notification, Timeout::Never)
+                .show()
+                .map_err(|error| UiError::notification(error.to_string()))?,
+        );
+        Ok(())
+    }
+
+    fn clear_pre_break_notification(handle: &mut Option<NotificationHandle>) {
+        if let Some(handle) = handle.take() {
+            handle.close();
+        }
+    }
+
+    fn pre_break_ui_notification(notification: &PreBreakNotification) -> UiNotification {
+        UiNotification {
             summary: String::from("Resteyes break soon"),
             body: format!(
                 "{} break starts in {}.",
                 notification.break_name,
                 humantime::format_duration(notification.starts_after)
             ),
-        })
+        }
     }
 
     fn show_notification(notification: &UiNotification) -> Result<(), UiError> {
+        build_notification(notification, Timeout::Milliseconds(6_000))
+            .show()
+            .map(|_| ())
+            .map_err(|error| UiError::notification(error.to_string()))
+    }
+
+    fn build_notification(notification: &UiNotification, timeout: Timeout) -> Notification {
         let mut notification_builder = Notification::new();
         notification_builder
             .appname(APP_NAME)
             .summary(&notification.summary)
             .body(&notification.body)
-            .timeout(Timeout::Milliseconds(6_000));
-
+            .timeout(timeout);
         notification_builder
-            .show()
-            .map(|_| ())
-            .map_err(|error| UiError::notification(error.to_string()))
     }
 
     fn active_time_menu_text(active_time: Duration) -> String {

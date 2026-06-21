@@ -17,6 +17,7 @@ use std::time::Duration;
 use tracing::{trace, warn};
 
 const DEFAULT_PRE_BREAK_NOTICE_LEAD: Duration = Duration::from_secs(30);
+const PRE_BREAK_NOTICE_UPDATE_INTERVAL: u64 = 5;
 
 #[cfg(target_os = "linux")]
 pub(crate) fn run() -> Result<(), crate::Error> {
@@ -139,7 +140,7 @@ struct DaemonRuntime<'a> {
     disable_mode: DisableMode,
     idle_reset: IdleReset,
     current_break: Option<CurrentBreakState>,
-    notified_break: Option<NotifiedBreak>,
+    pre_break_notice: Option<PreBreakNoticeState>,
     notified_rejected_peers: BTreeSet<PeerId>,
     displayed_active_time: Duration,
 }
@@ -164,7 +165,7 @@ impl<'a> DaemonRuntime<'a> {
             disable_mode: DisableMode::Enabled,
             idle_reset,
             current_break: None,
-            notified_break: None,
+            pre_break_notice: None,
             notified_rejected_peers: BTreeSet::new(),
             displayed_active_time: Duration::ZERO,
         }
@@ -253,7 +254,10 @@ impl<'a> DaemonRuntime<'a> {
                 return self.disable_until_restart(SyncPropagation::Broadcast);
             }
             RuntimeEvent::Enable => self.enable(SyncPropagation::Broadcast),
-            RuntimeEvent::Shutdown => return false,
+            RuntimeEvent::Shutdown => {
+                self.clear_pre_break_notice();
+                return false;
+            }
         }
 
         true
@@ -330,6 +334,9 @@ impl<'a> DaemonRuntime<'a> {
         self.broadcast_if_needed(propagation, &SyncEvent::ActiveTimeElapsed { elapsed });
 
         let scheduled_break = self.scheduler.advance_active(elapsed);
+        if scheduled_break.is_some() {
+            self.clear_pre_break_notice();
+        }
         self.update_active_time_display();
 
         if let Some(scheduled_break) = scheduled_break {
@@ -485,19 +492,46 @@ impl<'a> DaemonRuntime<'a> {
             return;
         };
 
-        if self.notified_break == Some(notified_break.clone()) {
+        let Some(starts_after) =
+            self.next_pre_break_notice_starts_after(&notified_break, upcoming_break.starts_after)
+        else {
             return;
-        }
+        };
 
         let command = UiCommand::ShowPreBreakNotification(PreBreakNotification {
             break_name: upcoming_break.scheduled_break.name,
-            starts_after: upcoming_break.starts_after,
+            starts_after,
         });
 
         if let Err(error) = self.ui.send_command(command) {
             warn!(%error, "failed to send pre-break notification command");
         }
-        self.notified_break = Some(notified_break);
+        self.pre_break_notice = Some(PreBreakNoticeState {
+            notified_break,
+            starts_after,
+        });
+    }
+
+    fn next_pre_break_notice_starts_after(
+        &self,
+        notified_break: &NotifiedBreak,
+        starts_after: Duration,
+    ) -> Option<Duration> {
+        let Some(pre_break_notice) = &self.pre_break_notice else {
+            return Some(starts_after);
+        };
+
+        if &pre_break_notice.notified_break != notified_break {
+            return Some(starts_after);
+        }
+
+        let next_update = next_pre_break_notice_update(pre_break_notice.starts_after)?;
+
+        if starts_after > next_update {
+            return None;
+        }
+
+        Some(std::cmp::min(starts_after, next_update))
     }
 
     fn pre_break_notice_lead(&self) -> Duration {
@@ -508,7 +542,13 @@ impl<'a> DaemonRuntime<'a> {
     }
 
     fn clear_pre_break_notice(&mut self) {
-        self.notified_break = None;
+        if self.pre_break_notice.take().is_none() {
+            return;
+        }
+
+        if let Err(error) = self.ui.send_command(UiCommand::ClearPreBreakNotification) {
+            warn!(%error, "failed to send pre-break notification clear command");
+        }
     }
 
     fn update_active_time_display(&mut self) {
@@ -681,6 +721,12 @@ impl CurrentBreakState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct PreBreakNoticeState {
+    notified_break: NotifiedBreak,
+    starts_after: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct NotifiedBreak {
     name: String,
     slot: usize,
@@ -697,6 +743,17 @@ impl NotifiedBreak {
             slot,
         })
     }
+}
+
+fn next_pre_break_notice_update(starts_after: Duration) -> Option<Duration> {
+    let starts_after_secs = starts_after.as_secs();
+    let next_update_secs = if starts_after_secs.is_multiple_of(PRE_BREAK_NOTICE_UPDATE_INTERVAL) {
+        starts_after_secs.saturating_sub(PRE_BREAK_NOTICE_UPDATE_INTERVAL)
+    } else {
+        (starts_after_secs / PRE_BREAK_NOTICE_UPDATE_INTERVAL) * PRE_BREAK_NOTICE_UPDATE_INTERVAL
+    };
+
+    (next_update_secs > 0).then(|| Duration::from_secs(next_update_secs))
 }
 
 #[cfg(test)]

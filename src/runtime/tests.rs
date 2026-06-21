@@ -947,6 +947,149 @@ fn pre_break_notification_fires_once_when_notice_window_is_reached()
 }
 
 #[test]
+fn pre_break_notification_updates_on_countdown_boundaries() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (backend, commands) = test_backend();
+    let (ui, ui_commands) = recording_ui();
+
+    run_config_with_inputs_and_ui(
+        test_config_with_after_active(Duration::from_mins(1)),
+        backend,
+        ui,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(29))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(1))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+    );
+    assert_eq!(
+        received_ui_commands(&ui_commands),
+        vec![
+            UiCommand::UpdateActiveTime(Duration::from_secs(29)),
+            UiCommand::UpdateActiveTime(Duration::from_secs(30)),
+            UiCommand::ShowPreBreakNotification(PreBreakNotification {
+                break_name: String::from("short"),
+                starts_after: Duration::from_secs(30),
+            }),
+            UiCommand::UpdateActiveTime(Duration::from_secs(35)),
+            UiCommand::ShowPreBreakNotification(PreBreakNotification {
+                break_name: String::from("short"),
+                starts_after: Duration::from_secs(25),
+            }),
+            UiCommand::UpdateActiveTime(Duration::from_secs(40)),
+            UiCommand::ShowPreBreakNotification(PreBreakNotification {
+                break_name: String::from("short"),
+                starts_after: Duration::from_secs(20),
+            }),
+            UiCommand::UpdateActiveTime(Duration::from_secs(45)),
+            UiCommand::ShowPreBreakNotification(PreBreakNotification {
+                break_name: String::from("short"),
+                starts_after: Duration::from_secs(15),
+            }),
+            UiCommand::UpdateActiveTime(Duration::from_secs(50)),
+            UiCommand::ShowPreBreakNotification(PreBreakNotification {
+                break_name: String::from("short"),
+                starts_after: Duration::from_secs(10),
+            }),
+            UiCommand::UpdateActiveTime(Duration::from_secs(55)),
+            UiCommand::ShowPreBreakNotification(PreBreakNotification {
+                break_name: String::from("short"),
+                starts_after: Duration::from_secs(5),
+            }),
+            UiCommand::ClearPreBreakNotification,
+            UiCommand::UpdateActiveTime(Duration::ZERO),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn pre_break_notification_uses_half_interval_lead_for_short_schedules()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+    let (ui, ui_commands) = recording_ui();
+
+    run_config_with_inputs_and_ui(
+        test_config_with_after_active(Duration::from_secs(10)),
+        backend,
+        ui,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+    );
+    assert_eq!(
+        received_ui_commands(&ui_commands),
+        vec![
+            UiCommand::UpdateActiveTime(Duration::from_secs(5)),
+            UiCommand::ShowPreBreakNotification(PreBreakNotification {
+                break_name: String::from("short"),
+                starts_after: Duration::from_secs(5),
+            }),
+            UiCommand::ClearPreBreakNotification,
+            UiCommand::UpdateActiveTime(Duration::ZERO),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn pre_break_notification_uses_five_second_boundary_for_twenty_second_schedule()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+    let (ui, ui_commands) = recording_ui();
+
+    run_config_with_inputs_and_ui(
+        test_config_with_after_active(Duration::from_secs(20)),
+        backend,
+        ui,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+    );
+    assert_eq!(
+        received_ui_commands(&ui_commands),
+        vec![
+            UiCommand::UpdateActiveTime(Duration::from_secs(10)),
+            UiCommand::ShowPreBreakNotification(PreBreakNotification {
+                break_name: String::from("short"),
+                starts_after: Duration::from_secs(10),
+            }),
+            UiCommand::UpdateActiveTime(Duration::from_secs(15)),
+            UiCommand::ShowPreBreakNotification(PreBreakNotification {
+                break_name: String::from("short"),
+                starts_after: Duration::from_secs(5),
+            }),
+            UiCommand::ClearPreBreakNotification,
+            UiCommand::UpdateActiveTime(Duration::ZERO),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
 fn idle_reset_clears_pre_break_notification_and_active_time_display()
 -> Result<(), Box<dyn std::error::Error>> {
     let (backend, commands) = test_backend();
@@ -972,6 +1115,7 @@ fn idle_reset_clears_pre_break_notification_and_active_time_display()
                 break_name: String::from("short"),
                 starts_after: Duration::from_secs(5),
             }),
+            UiCommand::ClearPreBreakNotification,
             UiCommand::UpdateActiveTime(Duration::ZERO),
             UiCommand::UpdateActiveTime(Duration::from_secs(5)),
             UiCommand::ShowPreBreakNotification(PreBreakNotification {
@@ -1038,6 +1182,7 @@ fn pre_break_notification_resets_after_break_finishes() -> Result<(), Box<dyn st
                 break_name: String::from("short"),
                 starts_after: Duration::from_secs(5),
             }),
+            UiCommand::ClearPreBreakNotification,
             UiCommand::UpdateActiveTime(Duration::ZERO),
             UiCommand::UpdateActiveTime(Duration::from_secs(5)),
             UiCommand::ShowPreBreakNotification(PreBreakNotification {
@@ -1397,6 +1542,12 @@ fn test_config() -> Config {
 fn test_config_with_reset_after_idle(reset_after_idle: Option<Duration>) -> Config {
     let mut config = test_config();
     config.breaks.reset_after_idle = reset_after_idle;
+    config
+}
+
+fn test_config_with_after_active(after_active: Duration) -> Config {
+    let mut config = test_config();
+    config.breaks.after_active = after_active;
     config
 }
 

@@ -232,6 +232,10 @@
   authorization during UI startup, keep desktop notifications at normal
   priority, and ad-hoc sign the generated local app bundle before
   LaunchServices registration.
+- Completed `pre-break-notification-countdown`: pre-break desktop
+  notifications now update in place at countdown boundaries, preserve the
+  half-interval notice lead for short schedules, and are explicitly cleared
+  when the break starts.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -362,6 +366,11 @@
   dictionary after keeping macOS notifications at normal priority.
 - `timeout 3s make run` launches the macOS app bundle until the timeout sends
   SIGTERM, avoiding the earlier AMFI `Killed: 9` restricted-entitlement failure.
+- `cargo test pre_break_notification --lib` passes after adding countdown
+  update and clear behavior.
+- `make check` passes after adding pre-break notification countdown updates.
+- `make -B macos-app-build` passes after adding pre-break notification
+  countdown updates.
 - On unsupported targets, `make run` prints
   `resteyes: no backend is available for <platform> yet` and exits non-zero.
 - Manual X11 overlay, input-blocking, overlay UI, and trace-output verification
