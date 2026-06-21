@@ -197,6 +197,12 @@
   manual breaks and disable actions can sync to authenticated peers. Follow-up
   fix configures macOS as an accessory app and hides Dock visibility so Resteyes
   is menu-bar only.
+- Completed `synced-lock-after-break`: local lock-after-current-break requests
+  now broadcast authenticated sync events, inbound authenticated lock-after
+  requests mark the active local break for locking without rebroadcasting, and
+  X11/macOS active overlays update their lock-control state through private
+  backend paths before the existing platform-local lock hook runs at break
+  finish.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -281,6 +287,9 @@
 - `make check` passes after adding break/disable sync behavior.
 - `make check` passes after the break/disable sync runtime cleanup.
 - `make check` passes after adding notification tray UI behavior.
+- `cargo test --all-targets --all-features runtime` passes after adding synced
+  lock-after-break behavior.
+- `make check` passes after adding synced lock-after-break behavior.
 - A bounded `timeout 3s make run` on macOS stays alive until terminated by
   `timeout` and no longer emits helper stderr during startup after AppKit setup
   was made lazy.
@@ -298,7 +307,7 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next planned increment is `synced-lock-after-break`.
+- No next MVP increment is currently selected.
 - The later build order now brings macOS backend parity before sync protocol,
   then separates sync protocol, LAN discovery, authenticated peer transport,
   active-time sync, synced break/disable behavior, tray UI, and synced

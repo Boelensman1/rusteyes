@@ -196,6 +196,15 @@ impl X11ActivityBackend {
         }
     }
 
+    fn request_lock_after_current_break(&mut self) -> Result<(), X11ActivityError> {
+        match &mut self.active_break {
+            Some(active_break) => active_break
+                .request_lock_after_current_break(&self.activity.connection)
+                .map_err(|error| X11ActivityError::overlay(&error)),
+            None => Ok(()),
+        }
+    }
+
     fn queue_backend_error(&mut self, error: &X11ActivityError) {
         error!(%error, "backend error");
         self.poller.queue_event(RuntimeEvent::Shutdown);
@@ -205,6 +214,11 @@ impl X11ActivityBackend {
         match command {
             BackendCommand::StartBreak(scheduled_break) => self.start_break(&scheduled_break),
             BackendCommand::FinishBreak { lock_after } => self.finish_break(lock_after),
+            BackendCommand::RequestLockAfterCurrentBreak => {
+                if let Err(error) = self.request_lock_after_current_break() {
+                    self.queue_backend_error(&error);
+                }
+            }
             BackendCommand::ClearBreak => {
                 if let Err(error) = self.clear_break() {
                     self.queue_backend_error(&error);
@@ -264,6 +278,13 @@ impl ActiveBreak {
     fn prepare_lock_handoff(&mut self, connection: &RustConnection) -> Result<(), X11OverlayError> {
         self.overlay.raise(connection)?;
         self.overlay.release_input(connection)
+    }
+
+    fn request_lock_after_current_break(
+        &mut self,
+        connection: &RustConnection,
+    ) -> Result<(), X11OverlayError> {
+        self.overlay.request_lock_after_break(connection)
     }
 
     fn destroy(self, connection: &RustConnection) -> Result<(), X11OverlayError> {

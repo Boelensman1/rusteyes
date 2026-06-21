@@ -171,6 +171,18 @@ impl X11Overlay {
         self.draw(connection)
     }
 
+    pub(crate) fn request_lock_after_break(
+        &mut self,
+        connection: &RustConnection,
+    ) -> Result<(), X11OverlayError> {
+        if self.lock_after_break {
+            return Ok(());
+        }
+
+        self.lock_after_break = true;
+        self.draw(connection)
+    }
+
     pub(crate) fn raise(&self, connection: &RustConnection) -> Result<(), X11OverlayError> {
         for window in &self.windows {
             x11(

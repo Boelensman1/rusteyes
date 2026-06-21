@@ -198,6 +198,19 @@ impl MacOSHelperBackend {
         }
     }
 
+    fn request_lock_after_current_break(&mut self) {
+        let Some((remaining, lock_after_break)) = self.active_break.as_mut().map(|active_break| {
+            active_break.request_lock_after_break();
+            (active_break.remaining(), active_break.lock_after_break())
+        }) else {
+            return;
+        };
+
+        if let Err(error) = self.session.update_break(remaining, lock_after_break) {
+            self.queue_backend_error(&error);
+        }
+    }
+
     fn send_backend_command(&mut self, command: BackendCommand) -> bool {
         match self.session.send_command(command) {
             Ok(()) => true,
@@ -225,6 +238,7 @@ impl MacOSHelperBackend {
         match command {
             BackendCommand::StartBreak(scheduled_break) => self.start_break(scheduled_break),
             BackendCommand::FinishBreak { lock_after } => self.finish_break(lock_after),
+            BackendCommand::RequestLockAfterCurrentBreak => self.request_lock_after_current_break(),
             BackendCommand::ClearBreak => self.clear_break(),
         }
     }
@@ -588,6 +602,11 @@ impl From<BackendCommand> for DaemonMessage {
                 break_info: WireBreak::from(scheduled_break),
             },
             BackendCommand::FinishBreak { lock_after } => Self::FinishBreak { lock_after },
+            BackendCommand::RequestLockAfterCurrentBreak => {
+                unreachable!(
+                    "lock-after-current-break updates are framed with HelperSession::update_break"
+                )
+            }
             BackendCommand::ClearBreak => Self::ClearBreak,
         }
     }
@@ -645,10 +664,15 @@ enum HelperCommand {
 }
 
 impl HelperCommand {
-    const fn from_backend_command(command: &BackendCommand) -> Self {
+    fn from_backend_command(command: &BackendCommand) -> Self {
         match command {
             BackendCommand::StartBreak(_) => Self::Start,
             BackendCommand::FinishBreak { .. } => Self::Finish,
+            BackendCommand::RequestLockAfterCurrentBreak => {
+                unreachable!(
+                    "lock-after-current-break updates are framed with HelperSession::update_break"
+                )
+            }
             BackendCommand::ClearBreak => Self::Clear,
         }
     }

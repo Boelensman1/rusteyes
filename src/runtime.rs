@@ -208,7 +208,9 @@ impl<'a> DaemonRuntime<'a> {
             }
             RuntimeEvent::WallClockElapsed(elapsed) => self.advance_wall_clock(elapsed),
             RuntimeEvent::BreakFinished => return self.finish_break(),
-            RuntimeEvent::LockAfterCurrentBreak => self.request_lock_after_current_break(),
+            RuntimeEvent::LockAfterCurrentBreak => {
+                return self.request_lock_after_current_break(SyncPropagation::Broadcast);
+            }
             RuntimeEvent::StartManualBreak(name) => {
                 return self.start_manual_break(&name, SyncPropagation::Broadcast);
             }
@@ -263,7 +265,7 @@ impl<'a> DaemonRuntime<'a> {
                     peer_id = %peer_id,
                     "received synced lock-after-current-break request"
                 );
-                true
+                self.request_lock_after_current_break(SyncPropagation::Suppress)
             }
         }
     }
@@ -339,9 +341,20 @@ impl<'a> DaemonRuntime<'a> {
         }
     }
 
-    fn request_lock_after_current_break(&mut self) {
-        if let Some(current_break) = &mut self.current_break {
-            current_break.request_lock_after();
+    fn request_lock_after_current_break(&mut self, propagation: SyncPropagation) -> bool {
+        let Some(current_break) = &mut self.current_break else {
+            return true;
+        };
+
+        if !current_break.request_lock_after() {
+            return true;
+        }
+
+        if self.handle_command(BackendCommand::RequestLockAfterCurrentBreak) {
+            self.broadcast_if_needed(propagation, &SyncEvent::LockAfterCurrentBreak);
+            true
+        } else {
+            false
         }
     }
 
@@ -515,8 +528,13 @@ impl CurrentBreakState {
         }
     }
 
-    fn request_lock_after(&mut self) {
+    fn request_lock_after(&mut self) -> bool {
+        if self.lock_after {
+            return false;
+        }
+
         self.lock_after = true;
+        true
     }
 
     const fn lock_after(self) -> bool {

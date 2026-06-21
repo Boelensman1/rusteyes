@@ -95,6 +95,7 @@ fn lock_after_current_break_request_locks_after_non_autolock_break() {
         received_commands(&commands),
         vec![
             BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::RequestLockAfterCurrentBreak,
             BackendCommand::FinishBreak { lock_after: true }
         ]
     );
@@ -139,6 +140,7 @@ fn lock_after_current_break_request_clears_after_break_finishes() {
         received_commands(&commands),
         vec![
             BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::RequestLockAfterCurrentBreak,
             BackendCommand::FinishBreak { lock_after: true },
             BackendCommand::StartBreak(scheduled_break("short", 2, 20)),
             BackendCommand::FinishBreak { lock_after: false }
@@ -185,6 +187,7 @@ fn disable_clears_lock_after_current_break_request() {
         received_commands(&commands),
         vec![
             BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::RequestLockAfterCurrentBreak,
             BackendCommand::ClearBreak,
             BackendCommand::StartBreak(scheduled_break("short", 2, 20)),
             BackendCommand::FinishBreak { lock_after: false }
@@ -452,6 +455,77 @@ fn local_disable_and_enable_events_are_broadcast_to_sync_peers() {
 }
 
 #[test]
+fn local_lock_after_current_break_request_is_broadcast_once_to_sync_peers() {
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = ScriptedBackend::new([
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
+        RuntimeEvent::LockAfterCurrentBreak,
+        RuntimeEvent::LockAfterCurrentBreak,
+        RuntimeEvent::Shutdown,
+    ])
+    .into_parts();
+
+    assert_eq!(
+        run_config_with_sync_broadcaster(test_config(), backend, &sync_broadcaster),
+        Ok(())
+    );
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::RequestLockAfterCurrentBreak,
+        ]
+    );
+    assert_eq!(
+        sync_broadcaster.events(),
+        vec![
+            SyncEvent::ActiveTimeElapsed {
+                elapsed: Duration::from_secs(10),
+            },
+            SyncEvent::BreakStarted {
+                name: String::from("short"),
+            },
+            SyncEvent::LockAfterCurrentBreak,
+        ]
+    );
+}
+
+#[test]
+fn stale_local_lock_after_current_break_request_is_not_broadcast() {
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = ScriptedBackend::new([
+        RuntimeEvent::LockAfterCurrentBreak,
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
+        RuntimeEvent::BreakFinished,
+        RuntimeEvent::Shutdown,
+    ])
+    .into_parts();
+
+    assert_eq!(
+        run_config_with_sync_broadcaster(test_config(), backend, &sync_broadcaster),
+        Ok(())
+    );
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::FinishBreak { lock_after: false },
+        ]
+    );
+    assert_eq!(
+        sync_broadcaster.events(),
+        vec![
+            SyncEvent::ActiveTimeElapsed {
+                elapsed: Duration::from_secs(10),
+            },
+            SyncEvent::BreakStarted {
+                name: String::from("short"),
+            },
+        ]
+    );
+}
+
+#[test]
 fn remote_active_time_event_starts_expected_configured_break()
 -> Result<(), Box<dyn std::error::Error>> {
     let (backend, commands) = test_backend();
@@ -590,6 +664,84 @@ fn remote_disable_until_restart_and_enable_control_scheduler()
     assert_eq!(
         received_commands(&commands),
         vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+    );
+    Ok(())
+}
+
+#[test]
+fn remote_lock_after_current_break_request_applies_without_rebroadcast()
+-> Result<(), Box<dyn std::error::Error>> {
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs_and_sync_broadcaster(
+        test_config(),
+        backend,
+        &sync_broadcaster,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+            sync_input(remote_sync_event(SyncEvent::LockAfterCurrentBreak)?),
+            sync_input(remote_sync_event(SyncEvent::LockAfterCurrentBreak)?),
+            backend_input(RuntimeEvent::BreakFinished),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::RequestLockAfterCurrentBreak,
+            BackendCommand::FinishBreak { lock_after: true },
+        ]
+    );
+    assert_eq!(
+        sync_broadcaster.events(),
+        vec![
+            SyncEvent::ActiveTimeElapsed {
+                elapsed: Duration::from_secs(10),
+            },
+            SyncEvent::BreakStarted {
+                name: String::from("short"),
+            },
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn stale_remote_lock_after_current_break_request_is_ignored()
+-> Result<(), Box<dyn std::error::Error>> {
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs_and_sync_broadcaster(
+        test_config(),
+        backend,
+        &sync_broadcaster,
+        [
+            sync_input(remote_sync_event(SyncEvent::LockAfterCurrentBreak)?),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+            backend_input(RuntimeEvent::BreakFinished),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::FinishBreak { lock_after: false },
+        ]
+    );
+    assert_eq!(
+        sync_broadcaster.events(),
+        vec![
+            SyncEvent::ActiveTimeElapsed {
+                elapsed: Duration::from_secs(10),
+            },
+            SyncEvent::BreakStarted {
+                name: String::from("short"),
+            },
+        ]
     );
     Ok(())
 }

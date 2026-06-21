@@ -213,6 +213,7 @@ pub(crate) enum DisableRequest {
 pub(crate) enum BackendCommand {
     StartBreak(ScheduledBreak),
     FinishBreak { lock_after: bool },
+    RequestLockAfterCurrentBreak,
     ClearBreak,
 }
 
