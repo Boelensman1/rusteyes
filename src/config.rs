@@ -13,17 +13,17 @@ const HOME: &str = "HOME";
 const CONFIG_DIR: &str = "resteyes";
 const CONFIG_FILE: &str = "config.yaml";
 
-pub(crate) const DEFAULT_BREAK_AFTER_ACTIVE: Duration = Duration::from_secs(20 * 60);
+pub(crate) const DEFAULT_BREAK_AFTER_ACTIVE: Duration = Duration::from_mins(20);
 pub(crate) const DEFAULT_SHORT_BREAK_INTERVAL: usize = 1;
 pub(crate) const DEFAULT_SHORT_BREAK_DURATION: Duration = Duration::from_secs(20);
 pub(crate) const DEFAULT_LONG_BREAK_INTERVAL: usize = 2;
-pub(crate) const DEFAULT_LONG_BREAK_DURATION: Duration = Duration::from_secs(5 * 60);
-pub(crate) const DEFAULT_BREAK_RESET_AFTER_IDLE: Duration = Duration::from_secs(5 * 60);
+pub(crate) const DEFAULT_LONG_BREAK_DURATION: Duration = Duration::from_mins(5);
+pub(crate) const DEFAULT_BREAK_RESET_AFTER_IDLE: Duration = Duration::from_mins(5);
 pub(crate) const DEFAULT_DISABLE_PRESETS: [Duration; 4] = [
-    Duration::from_secs(30 * 60),
-    Duration::from_secs(60 * 60),
-    Duration::from_secs(2 * 60 * 60),
-    Duration::from_secs(3 * 60 * 60),
+    Duration::from_mins(30),
+    Duration::from_hours(1),
+    Duration::from_hours(2),
+    Duration::from_hours(3),
 ];
 pub(crate) const MIN_SYNC_SHARED_SECRET_LENGTH: usize = 32;
 

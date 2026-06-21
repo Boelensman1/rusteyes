@@ -35,7 +35,7 @@ impl BreakSchedule {
     fn due_break(&self, slot: usize) -> Option<ScheduledBreak> {
         self.rules
             .iter()
-            .find(|rule| slot % rule.interval == 0)
+            .find(|rule| slot.is_multiple_of(rule.interval))
             .map(|rule| rule.to_break(BreakOrigin::Scheduled { slot }))
     }
 

@@ -378,7 +378,7 @@ breaks:
         None,
     )?;
 
-    assert_eq!(config.breaks.after_active, Duration::from_secs(10 * 60));
+    assert_eq!(config.breaks.after_active, Duration::from_mins(10));
     Ok(())
 }
 
@@ -391,7 +391,7 @@ breaks:
 ",
     )?;
 
-    assert_eq!(config.breaks.after_active, Duration::from_secs(30 * 60));
+    assert_eq!(config.breaks.after_active, Duration::from_mins(30));
     assert_eq!(
         config.breaks.reset_after_idle,
         Some(DEFAULT_BREAK_RESET_AFTER_IDLE)
@@ -420,10 +420,7 @@ breaks:
 ",
     )?;
 
-    assert_eq!(
-        config.breaks.reset_after_idle,
-        Some(Duration::from_secs(7 * 60))
-    );
+    assert_eq!(config.breaks.reset_after_idle, Some(Duration::from_mins(7)));
     Ok(())
 }
 
@@ -464,24 +461,21 @@ lock:
 ",
     )?;
 
-    assert_eq!(config.breaks.after_active, Duration::from_secs(1200));
+    assert_eq!(config.breaks.after_active, Duration::from_mins(20));
     assert_eq!(
         config.breaks.types["short"].duration,
         Duration::from_secs(20)
     );
     assert_eq!(config.breaks.types["long"].interval, 4);
-    assert_eq!(
-        config.breaks.types["long"].duration,
-        Duration::from_secs(5 * 60)
-    );
+    assert_eq!(config.breaks.types["long"].duration, Duration::from_mins(5));
     assert!(config.breaks.types["long"].autolock);
     assert_eq!(
         config.disable_presets,
         vec![
-            Duration::from_secs(30 * 60),
-            Duration::from_secs(60 * 60),
-            Duration::from_secs(2 * 60 * 60),
-            Duration::from_secs(3 * 60 * 60)
+            Duration::from_mins(30),
+            Duration::from_hours(1),
+            Duration::from_hours(2),
+            Duration::from_hours(3)
         ]
     );
     assert_eq!(

@@ -659,7 +659,7 @@ mod tests {
             String::from("long"),
             BreakTypeConfig {
                 interval: 3,
-                duration: Duration::from_secs(300),
+                duration: Duration::from_mins(5),
                 messages: vec![String::from("Long break")],
                 autolock: true,
             },
@@ -676,7 +676,7 @@ mod tests {
 
         let ui_config = UiConfig::from_config(
             &Breaks {
-                after_active: Duration::from_secs(1200),
+                after_active: Duration::from_mins(20),
                 reset_after_idle: None,
                 types,
             },

@@ -19,7 +19,7 @@ fn default_config_schedules_short_and_long_break_slots() {
     let second = started_break(scheduler.advance_active(DEFAULT_BREAK_AFTER_ACTIVE));
     assert_eq!(second.name, "long");
     assert_eq!(second.origin, BreakOrigin::Scheduled { slot: 2 });
-    assert_eq!(second.duration, Duration::from_secs(5 * 60));
+    assert_eq!(second.duration, Duration::from_mins(5));
     assert_eq!(second.messages, vec![String::from("Take a longer break")]);
     assert!(second.autolock);
 
@@ -58,7 +58,7 @@ fn largest_due_interval_wins_for_the_slot() {
     let fourth = started_break(scheduler.advance_active(Duration::from_secs(10)));
     assert_eq!(fourth.name, "long");
     assert_eq!(fourth.origin, BreakOrigin::Scheduled { slot: 4 });
-    assert_eq!(fourth.duration, Duration::from_secs(300));
+    assert_eq!(fourth.duration, Duration::from_mins(5));
 }
 
 #[test]
@@ -214,7 +214,7 @@ fn manual_break_can_start_while_enabled() {
     let manual = started_break(scheduler.start_manual_break("long"));
     assert_eq!(manual.name, "long");
     assert_eq!(manual.origin, BreakOrigin::Manual);
-    assert_eq!(manual.duration, Duration::from_secs(300));
+    assert_eq!(manual.duration, Duration::from_mins(5));
 
     assert!(scheduler.finish_break());
 
@@ -457,7 +457,7 @@ fn upcoming_break(action: Option<UpcomingScheduledBreak>) -> UpcomingScheduledBr
 fn custom_breaks(after_active_secs: u64, types: &[(&str, usize, u64)]) -> Breaks {
     Breaks {
         after_active: Duration::from_secs(after_active_secs),
-        reset_after_idle: Some(Duration::from_secs(300)),
+        reset_after_idle: Some(Duration::from_mins(5)),
         types: types
             .iter()
             .map(|(name, interval, duration_secs)| {

@@ -242,7 +242,7 @@ fn compatibility_fingerprint_changes_for_synced_behavior() -> Result<(), Box<dyn
     );
 
     let mut changed_presets = base.clone();
-    changed_presets.disable_presets = vec![Duration::from_secs(60)];
+    changed_presets.disable_presets = vec![Duration::from_mins(1)];
     assert_ne!(
         fingerprint_for(&base)?,
         fingerprint_for(&changed_presets)?,
@@ -256,8 +256,8 @@ fn compatibility_fingerprint_changes_for_synced_behavior() -> Result<(), Box<dyn
 fn compatibility_fingerprint_normalizes_disable_preset_order() -> Result<(), Box<dyn Error>> {
     let mut left = compatibility_config();
     let mut right = compatibility_config();
-    left.disable_presets = vec![Duration::from_secs(30), Duration::from_secs(60)];
-    right.disable_presets = vec![Duration::from_secs(60), Duration::from_secs(30)];
+    left.disable_presets = vec![Duration::from_secs(30), Duration::from_mins(1)];
+    right.disable_presets = vec![Duration::from_mins(1), Duration::from_secs(30)];
 
     assert_eq!(fingerprint_for(&left)?, fingerprint_for(&right)?);
     Ok(())
@@ -470,7 +470,7 @@ fn compatibility_config() -> Config {
     Config {
         breaks: crate::config::Breaks {
             after_active: Duration::from_secs(10),
-            reset_after_idle: Some(Duration::from_secs(300)),
+            reset_after_idle: Some(Duration::from_mins(5)),
             types: [(
                 String::from("short"),
                 BreakTypeConfig {

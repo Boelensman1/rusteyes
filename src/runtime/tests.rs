@@ -220,7 +220,7 @@ fn disable_until_restart_stays_disabled_until_explicit_enable() {
     let (backend, commands) = ScriptedBackend::new([
         RuntimeEvent::Disable(DisableRequest::UntilRestart),
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(100)),
-        RuntimeEvent::WallClockElapsed(Duration::from_secs(60 * 60)),
+        RuntimeEvent::WallClockElapsed(Duration::from_hours(1)),
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(100)),
         RuntimeEvent::Enable,
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
@@ -1374,7 +1374,7 @@ fn test_config() -> Config {
     Config {
         breaks: Breaks {
             after_active: Duration::from_secs(10),
-            reset_after_idle: Some(Duration::from_secs(300)),
+            reset_after_idle: Some(Duration::from_mins(5)),
             types: [
                 (
                     String::from("short"),

@@ -223,6 +223,10 @@
   rejects authenticated peers with mismatched fingerprints before domain sync
   events can flow, and runtime sends one desktop notification per rejected peer
   ID through the existing UI notification path.
+- Completed `rust-1-96-toolchain`: Cargo now requires Rust 1.96, the Nix
+  development shell and package build use the exact Rust 1.96.0 toolchain from
+  `oxalica/rust-overlay`, and Rust 1.96 Clippy compatibility fixes have been
+  applied.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -334,6 +338,12 @@
   `timeout` and no longer emits helper stderr during startup after AppKit setup
   was made lazy.
 - `nix build` passes.
+- `nix develop --command rustc --version` reports Rust 1.96.0 after the exact
+  Nix toolchain pin.
+- `nix develop --command cargo --version` reports Cargo 1.96.0 after the exact
+  Nix toolchain pin.
+- `nix develop --command make check` passes after switching to Rust 1.96.0.
+- `nix build` passes after switching to Rust 1.96.0.
 - `.codex/hooks/rustfmt.sh` runs successfully.
 - On unsupported targets, `make run` prints
   `resteyes: no backend is available for <platform> yet` and exits non-zero.
