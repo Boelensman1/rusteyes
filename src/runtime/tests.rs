@@ -364,6 +364,91 @@ fn local_active_time_is_broadcast_to_sync_peers() {
 }
 
 #[test]
+fn local_scheduled_break_start_is_broadcast_to_sync_peers() {
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = ScriptedBackend::new([
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
+        RuntimeEvent::Shutdown,
+    ])
+    .into_parts();
+
+    assert_eq!(
+        run_config_with_sync_broadcaster(test_config(), backend, &sync_broadcaster),
+        Ok(())
+    );
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+    );
+    assert_eq!(
+        sync_broadcaster.events(),
+        vec![
+            SyncEvent::ActiveTimeElapsed {
+                elapsed: Duration::from_secs(10),
+            },
+            SyncEvent::BreakStarted {
+                name: String::from("short"),
+            },
+        ]
+    );
+}
+
+#[test]
+fn local_manual_break_start_is_broadcast_to_sync_peers() {
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = ScriptedBackend::new([
+        RuntimeEvent::StartManualBreak(String::from("long")),
+        RuntimeEvent::Shutdown,
+    ])
+    .into_parts();
+
+    assert_eq!(
+        run_config_with_sync_broadcaster(test_config(), backend, &sync_broadcaster),
+        Ok(())
+    );
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(manual_break("long", 300))]
+    );
+    assert_eq!(
+        sync_broadcaster.events(),
+        vec![SyncEvent::BreakStarted {
+            name: String::from("long"),
+        }]
+    );
+}
+
+#[test]
+fn local_disable_and_enable_events_are_broadcast_to_sync_peers() {
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = ScriptedBackend::new([
+        RuntimeEvent::Disable(DisableRequest::For(Duration::from_secs(30))),
+        RuntimeEvent::Enable,
+        RuntimeEvent::Disable(DisableRequest::UntilRestart),
+        RuntimeEvent::Enable,
+        RuntimeEvent::Shutdown,
+    ])
+    .into_parts();
+
+    assert_eq!(
+        run_config_with_sync_broadcaster(test_config(), backend, &sync_broadcaster),
+        Ok(())
+    );
+    assert!(received_commands(&commands).is_empty());
+    assert_eq!(
+        sync_broadcaster.events(),
+        vec![
+            SyncEvent::DisableFor {
+                duration: Duration::from_secs(30),
+            },
+            SyncEvent::Enable,
+            SyncEvent::DisableUntilRestart,
+            SyncEvent::Enable,
+        ]
+    );
+}
+
+#[test]
 fn remote_active_time_event_starts_expected_configured_break()
 -> Result<(), Box<dyn std::error::Error>> {
     let (sync_sender, sync_receiver) = flume::unbounded();
@@ -393,6 +478,133 @@ fn local_and_remote_active_time_are_additive() -> Result<(), Box<dyn std::error:
             RuntimeEvent::Shutdown,
         ],
         Duration::from_millis(25),
+    )
+    .into_parts();
+
+    run_config_with_event_sources(test_config(), backend, Some(sync_receiver))?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+    );
+    Ok(())
+}
+
+#[test]
+fn remote_break_start_event_starts_configured_break_without_rebroadcast()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (sync_sender, sync_receiver) = flume::unbounded();
+    sync_sender.send(remote_sync_event(SyncEvent::BreakStarted {
+        name: String::from("short"),
+    })?)?;
+    drop(sync_sender);
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) =
+        ScriptedBackend::new_with_delay([RuntimeEvent::Shutdown], Duration::from_millis(25))
+            .into_parts();
+
+    run_config_with_runtime_sync(
+        test_config(),
+        backend,
+        RuntimeSync::new(Some(sync_receiver), &sync_broadcaster),
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(manual_break("short", 20))]
+    );
+    assert!(sync_broadcaster.events().is_empty());
+    Ok(())
+}
+
+#[test]
+fn remote_break_start_event_ignores_unknown_break_name_without_rebroadcast()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (sync_sender, sync_receiver) = flume::unbounded();
+    sync_sender.send(remote_sync_event(SyncEvent::BreakStarted {
+        name: String::from("missing"),
+    })?)?;
+    drop(sync_sender);
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) =
+        ScriptedBackend::new_with_delay([RuntimeEvent::Shutdown], Duration::from_millis(25))
+            .into_parts();
+
+    run_config_with_runtime_sync(
+        test_config(),
+        backend,
+        RuntimeSync::new(Some(sync_receiver), &sync_broadcaster),
+    )?;
+
+    assert!(received_commands(&commands).is_empty());
+    assert!(sync_broadcaster.events().is_empty());
+    Ok(())
+}
+
+#[test]
+fn remote_disable_event_clears_pending_break_without_rebroadcast()
+-> Result<(), Box<dyn std::error::Error>> {
+    let sync_receiver = delayed_sync_event(
+        remote_sync_event(SyncEvent::DisableFor {
+            duration: Duration::from_secs(30),
+        })?,
+        Duration::from_millis(25),
+    );
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = ScriptedBackend::new_with_event_delay(
+        [
+            RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
+            RuntimeEvent::Shutdown,
+        ],
+        Duration::from_millis(50),
+    )
+    .into_parts();
+
+    run_config_with_runtime_sync(
+        test_config(),
+        backend,
+        RuntimeSync::new(Some(sync_receiver), &sync_broadcaster),
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::ClearBreak,
+        ]
+    );
+    assert_eq!(
+        sync_broadcaster.events(),
+        vec![
+            SyncEvent::ActiveTimeElapsed {
+                elapsed: Duration::from_secs(10),
+            },
+            SyncEvent::BreakStarted {
+                name: String::from("short"),
+            },
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn remote_disable_until_restart_and_enable_control_scheduler()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (sync_sender, sync_receiver) = flume::unbounded();
+    sync_sender.send(remote_sync_event(SyncEvent::DisableUntilRestart)?)?;
+    let enable_event = remote_sync_event(SyncEvent::Enable)?;
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(50));
+        _ = sync_sender.send(enable_event);
+    });
+    let (backend, commands) = ScriptedBackend::new_with_initial_and_event_delay(
+        [
+            RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
+            RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
+            RuntimeEvent::Shutdown,
+        ],
+        Duration::from_millis(25),
+        Duration::from_millis(50),
     )
     .into_parts();
 
@@ -526,6 +738,14 @@ impl ScriptedBackend {
         Self::spawn(events, Duration::ZERO, event_delay)
     }
 
+    fn new_with_initial_and_event_delay(
+        events: impl IntoIterator<Item = RuntimeEvent>,
+        initial_delay: Duration,
+        event_delay: Duration,
+    ) -> Self {
+        Self::spawn(events, initial_delay, event_delay)
+    }
+
     fn spawn(
         events: impl IntoIterator<Item = RuntimeEvent>,
         initial_delay: Duration,
@@ -570,9 +790,13 @@ fn peer_id() -> Result<PeerId, Box<dyn std::error::Error>> {
 }
 
 fn remote_active_time(elapsed: Duration) -> Result<SyncTransportEvent, Box<dyn std::error::Error>> {
+    remote_sync_event(SyncEvent::ActiveTimeElapsed { elapsed })
+}
+
+fn remote_sync_event(event: SyncEvent) -> Result<SyncTransportEvent, Box<dyn std::error::Error>> {
     Ok(SyncTransportEvent::Domain {
         peer_id: peer_id()?,
-        event: SyncEvent::ActiveTimeElapsed { elapsed },
+        event,
     })
 }
 

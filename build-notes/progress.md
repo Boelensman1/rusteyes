@@ -179,6 +179,10 @@
   active-time events advance the same scheduler path without rebroadcasting, and
   existing scheduler disabled/pending states suppress remote active-time
   increments.
+- Completed `break-disable-sync`: local scheduled/manual break starts and local
+  disable/enable controls now broadcast authenticated sync events, inbound
+  authenticated break-start and disable/enable events apply locally without
+  rebroadcasting, and synced lock-after-current-break remains deferred.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -258,6 +262,9 @@
 - `cargo test --all-targets --all-features runtime` passes after adding
   active-time sync.
 - `make check` passes after adding active-time sync.
+- `cargo test --all-targets --all-features runtime` passes after adding
+  break/disable sync behavior.
+- `make check` passes after adding break/disable sync behavior.
 - A bounded `timeout 3s make run` on macOS stays alive until terminated by
   `timeout` and no longer emits helper stderr during startup after AppKit setup
   was made lazy.
@@ -274,7 +281,7 @@
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next planned increment is `break-disable-sync`.
+- The next planned increment is `notification-tray-ui`.
 - The later build order now brings macOS backend parity before sync protocol,
   then separates sync protocol, LAN discovery, authenticated peer transport,
   active-time sync, synced break/disable behavior, tray UI, and synced
