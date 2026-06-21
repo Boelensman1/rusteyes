@@ -41,42 +41,62 @@ where
         });
     }
 
-    pub(super) fn bind_peer(&mut self, endpoint: E, peer_id: PeerId) -> PeerBindUpdate<E> {
+    pub(super) fn authenticate_peer(
+        &mut self,
+        endpoint: E,
+        peer_id: PeerId,
+    ) -> PeerAuthentication<E> {
         if peer_id == self.self_id {
             self.remove_endpoint(endpoint);
-            return PeerBindUpdate {
-                result: PeerBindResult::RejectedSelf,
-                disconnect: vec![endpoint],
+            return PeerAuthentication {
+                result: PeerAuthenticationResult::RejectedSelf { peer_id },
+                endpoints_to_close: vec![endpoint],
             };
         }
 
         let had_peer = self.peer_is_connected(peer_id);
         let Some(connection) = self.connection_mut(endpoint) else {
-            return PeerBindUpdate {
-                result: PeerBindResult::RejectedUnknownEndpoint,
-                disconnect: vec![endpoint],
+            return PeerAuthentication {
+                result: PeerAuthenticationResult::RejectedUnknownEndpoint { peer_id },
+                endpoints_to_close: vec![endpoint],
             };
         };
 
         connection.peer_id = Some(peer_id);
-        let disconnect = self.collapse_duplicate_peer_connections(peer_id);
-        let peer_connected = !had_peer
-            && self
-                .connection(endpoint)
-                .is_some_and(|connection| connection.peer_id == Some(peer_id));
+        let endpoints_to_close = self.collapse_duplicate_peer_connections(peer_id);
+        let authenticated_endpoint_retained = self
+            .connection(endpoint)
+            .is_some_and(|connection| connection.peer_id == Some(peer_id));
+        let result = if !had_peer && authenticated_endpoint_retained {
+            PeerAuthenticationResult::AuthenticatedNewPeer { peer_id }
+        } else {
+            PeerAuthenticationResult::AuthenticatedExistingPeer { peer_id }
+        };
 
-        PeerBindUpdate {
-            result: PeerBindResult::Authenticated { peer_connected },
-            disconnect,
+        PeerAuthentication {
+            result,
+            endpoints_to_close,
         }
     }
 
-    pub(super) fn remove_endpoint(&mut self, endpoint: E) -> Option<PeerId> {
-        let index = self
+    pub(super) fn remove_endpoint(&mut self, endpoint: E) -> EndpointRemoval {
+        let Some(index) = self
             .connections
             .iter()
-            .position(|connection| connection.endpoint == endpoint)?;
-        self.connections.remove(index).peer_id
+            .position(|connection| connection.endpoint == endpoint)
+        else {
+            return EndpointRemoval::UnknownEndpoint;
+        };
+
+        let peer_id = self.connections.remove(index).peer_id;
+
+        match peer_id {
+            Some(peer_id) if self.peer_is_connected(peer_id) => {
+                EndpointRemoval::PeerStillConnected { peer_id }
+            }
+            Some(peer_id) => EndpointRemoval::PeerDisconnected { peer_id },
+            None => EndpointRemoval::UnauthenticatedEndpoint,
+        }
     }
 
     pub(super) fn peer_for_endpoint(&self, endpoint: E) -> Option<PeerId> {
@@ -195,16 +215,25 @@ struct Connection<E> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct PeerBindUpdate<E> {
-    pub(super) result: PeerBindResult,
-    pub(super) disconnect: Vec<E>,
+pub(super) struct PeerAuthentication<E> {
+    pub(super) result: PeerAuthenticationResult,
+    pub(super) endpoints_to_close: Vec<E>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PeerBindResult {
-    Authenticated { peer_connected: bool },
-    RejectedSelf,
-    RejectedUnknownEndpoint,
+pub(super) enum PeerAuthenticationResult {
+    AuthenticatedNewPeer { peer_id: PeerId },
+    AuthenticatedExistingPeer { peer_id: PeerId },
+    RejectedSelf { peer_id: PeerId },
+    RejectedUnknownEndpoint { peer_id: PeerId },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EndpointRemoval {
+    PeerDisconnected { peer_id: PeerId },
+    PeerStillConnected { peer_id: PeerId },
+    UnauthenticatedEndpoint,
+    UnknownEndpoint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

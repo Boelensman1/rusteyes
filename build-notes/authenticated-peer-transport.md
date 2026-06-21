@@ -42,6 +42,11 @@
   renamed outbound facade calls to `broadcast_event` and `send_event`, hid wire
   sequence numbers from runtime-facing events, and simplified connection binding
   results to a peer result plus endpoints to disconnect.
+- Follow-up API cleanup moved transport frame encoding, hello framing, inbound
+  decoding, and outbound sequence allocation behind a private transport session
+  helper, renamed nonblocking inbound polling to `try_recv_event`, added a
+  facade event drain helper, made connection authentication/removal outcomes
+  explicit, and centralized failed endpoint closure in the worker.
 - Removed the temporary `RESTEYES_DISCOVERY_SMOKE` path now that discovery is
   started by normal sync-enabled runtime startup.
 
@@ -65,6 +70,10 @@
 - `cargo test --all-targets --all-features sync_transport`
 - Re-ran `cargo test --all-targets --all-features sync_transport` and
   `make check` after the unified event facade cleanup.
+- Re-ran `cargo test --all-targets --all-features sync_transport` after the
+  transport session and connection outcome API cleanup.
+- `make check` passes after the transport session and connection outcome API
+  cleanup.
 
 ## Follow-up
 

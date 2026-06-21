@@ -1,18 +1,15 @@
 use super::commands::TransportCommand;
 use super::connections::{
-    ConnectionDirection, ConnectionTracker, InboundEventAcceptance, PeerBindResult,
+    ConnectionDirection, ConnectionTracker, EndpointRemoval, InboundEventAcceptance,
+    PeerAuthenticationResult,
 };
+use super::session::{TransportFrameError, TransportSession};
 use super::{SyncTransportError, SyncTransportEvent};
-use crate::config::SharedSecret;
-use crate::sync_protocol::{
-    PeerId, SyncEvent, SyncFramePayload, SyncMessage, SyncProtocolError, TransportControlFrame,
-    decode_authenticated, encode_authenticated,
-};
+use crate::sync_protocol::{PeerId, SyncEvent, SyncFramePayload, TransportControlFrame};
 use crate::sync_transport_io::{
     TransportEndpoint, TransportIoEvent, TransportIoHandle, TransportIoReceiver,
     TransportSendStatus,
 };
-use std::str;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -43,37 +40,35 @@ pub(super) fn spawn_worker_thread(
             worker.handle.remove(endpoint);
         }
 
-        trace!(peer_id = %worker.self_id, "stopped Resteyes sync transport worker");
+        trace!(peer_id = %worker.self_id(), "stopped Resteyes sync transport worker");
     })
 }
 
 pub(super) struct WorkerState {
-    self_id: PeerId,
-    shared_secret: SharedSecret,
-    hello: Vec<u8>,
+    session: TransportSession,
     handle: TransportIoHandle,
     tracker: ConnectionTracker<TransportEndpoint>,
-    next_sequence: u64,
     event_sender: mpsc::Sender<SyncTransportEvent>,
 }
 
 impl WorkerState {
     pub(super) fn new(
-        self_id: PeerId,
-        shared_secret: SharedSecret,
-        hello: Vec<u8>,
+        session: TransportSession,
         handle: TransportIoHandle,
         event_sender: mpsc::Sender<SyncTransportEvent>,
     ) -> Self {
+        let self_id = session.self_id();
+
         Self {
-            self_id,
-            shared_secret,
-            hello,
+            session,
             handle,
             tracker: ConnectionTracker::new(self_id),
-            next_sequence: 1,
             event_sender,
         }
+    }
+
+    fn self_id(&self) -> PeerId {
+        self.session.self_id()
     }
 
     fn handle_transport_commands(&mut self, command_receiver: &mpsc::Receiver<TransportCommand>) {
@@ -94,7 +89,7 @@ impl WorkerState {
     }
 
     fn broadcast_domain_event(&mut self, event: SyncEvent) -> Result<usize, SyncTransportError> {
-        let payload = self.domain_event_payload(event)?;
+        let payload = self.session.encode_event(event)?;
         let mut sent_count = 0;
 
         for endpoint in self.tracker.authenticated_endpoints() {
@@ -115,22 +110,8 @@ impl WorkerState {
             return Ok(false);
         };
 
-        let payload = self.domain_event_payload(event)?;
+        let payload = self.session.encode_event(event)?;
         Ok(self.send_payload(endpoint, &payload))
-    }
-
-    fn domain_event_payload(&mut self, event: SyncEvent) -> Result<Vec<u8>, SyncTransportError> {
-        let sequence = self.next_sequence;
-        if sequence == u64::MAX {
-            return Err(SyncTransportError::SequenceExhausted);
-        }
-
-        let message = SyncMessage::event(self.self_id, sequence, event);
-        let payload = encode_authenticated(&message, &self.shared_secret)
-            .map_err(SyncTransportError::Protocol)?;
-        self.next_sequence += 1;
-
-        Ok(payload.into_bytes())
     }
 
     fn send_payload(&mut self, endpoint: TransportEndpoint, payload: &[u8]) -> bool {
@@ -138,7 +119,7 @@ impl WorkerState {
             TransportSendStatus::Sent => true,
             status => {
                 warn!(endpoint = %endpoint, ?status, "failed to send sync domain event");
-                self.remove_endpoint(endpoint);
+                self.close_endpoint(endpoint);
                 false
             }
         }
@@ -152,7 +133,7 @@ impl WorkerState {
                 self.send_hello(endpoint);
             }
             TransportIoEvent::ConnectFailed(endpoint) => {
-                self.tracker.remove_endpoint(endpoint);
+                self.close_endpoint(endpoint);
                 warn!(endpoint = %endpoint, "sync peer connection failed");
             }
             TransportIoEvent::Accepted(endpoint) => {
@@ -164,29 +145,22 @@ impl WorkerState {
                 self.handle_peer_message(endpoint, &bytes);
             }
             TransportIoEvent::Disconnected(endpoint) => {
-                if let Some(peer_id) = self.tracker.remove_endpoint(endpoint) {
-                    info!(peer_id = %peer_id, endpoint = %endpoint, "sync peer disconnected");
-                    self.emit(SyncTransportEvent::PeerDisconnected(peer_id));
-                }
+                self.close_endpoint(endpoint);
             }
         }
     }
 
     fn handle_peer_message(&mut self, endpoint: TransportEndpoint, bytes: &[u8]) {
-        let input = match str::from_utf8(bytes) {
-            Ok(input) => input,
-            Err(error) => {
+        let message = match self.session.decode_message(bytes) {
+            Ok(message) => message,
+            Err(TransportFrameError::NonUtf8(error)) => {
                 warn!(endpoint = %endpoint, %error, "sync peer sent non-UTF-8 frame");
-                self.remove_endpoint(endpoint);
+                self.close_endpoint(endpoint);
                 return;
             }
-        };
-
-        let message = match decode_authenticated(input, &self.shared_secret) {
-            Ok(message) => message,
-            Err(error) => {
+            Err(TransportFrameError::Protocol(error)) => {
                 warn!(endpoint = %endpoint, %error, "sync peer message authentication failed");
-                self.remove_endpoint(endpoint);
+                self.close_endpoint(endpoint);
                 return;
             }
         };
@@ -205,30 +179,29 @@ impl WorkerState {
     }
 
     fn handle_peer_hello(&mut self, endpoint: TransportEndpoint, sender: PeerId) {
-        let update = self.tracker.bind_peer(endpoint, sender);
-        self.remove_endpoints(update.disconnect);
+        let authentication = self.tracker.authenticate_peer(endpoint, sender);
+        self.close_untracked_endpoints(authentication.endpoints_to_close);
 
-        match update.result {
-            PeerBindResult::Authenticated { peer_connected } => {
-                if peer_connected {
-                    info!(
-                        peer_id = %sender,
-                        endpoint = %endpoint,
-                        "authenticated Resteyes sync peer"
-                    );
-                    self.emit(SyncTransportEvent::PeerAuthenticated(sender));
-                }
+        match authentication.result {
+            PeerAuthenticationResult::AuthenticatedNewPeer { peer_id } => {
+                info!(
+                    peer_id = %peer_id,
+                    endpoint = %endpoint,
+                    "authenticated Resteyes sync peer"
+                );
+                self.emit(SyncTransportEvent::PeerAuthenticated(peer_id));
             }
-            PeerBindResult::RejectedSelf => {
+            PeerAuthenticationResult::AuthenticatedExistingPeer { .. } => {}
+            PeerAuthenticationResult::RejectedSelf { peer_id } => {
                 warn!(
-                    peer_id = %sender,
+                    peer_id = %peer_id,
                     endpoint = %endpoint,
                     "rejected sync connection from local peer id"
                 );
             }
-            PeerBindResult::RejectedUnknownEndpoint => {
+            PeerAuthenticationResult::RejectedUnknownEndpoint { peer_id } => {
                 warn!(
-                    peer_id = %sender,
+                    peer_id = %peer_id,
                     endpoint = %endpoint,
                     "rejected sync hello from unknown endpoint"
                 );
@@ -254,7 +227,7 @@ impl WorkerState {
                     ?event,
                     "sync peer sent domain event before authenticated hello"
                 );
-                self.remove_endpoint(endpoint);
+                self.close_endpoint(endpoint);
                 return;
             }
             InboundEventAcceptance::SenderMismatch {
@@ -266,7 +239,7 @@ impl WorkerState {
                     frame_sender = %sender,
                     "sync peer sent frame with mismatched sender"
                 );
-                self.remove_endpoint(endpoint);
+                self.close_endpoint(endpoint);
                 return;
             }
             InboundEventAcceptance::Replayed { highest_seen } => {
@@ -288,8 +261,8 @@ impl WorkerState {
         });
     }
 
-    fn send_hello(&self, endpoint: TransportEndpoint) {
-        match self.handle.send(endpoint, &self.hello) {
+    fn send_hello(&mut self, endpoint: TransportEndpoint) {
+        match self.handle.send(endpoint, self.session.hello_payload()) {
             TransportSendStatus::Sent => {
                 trace!(endpoint = %endpoint, "sent sync peer hello");
             }
@@ -299,36 +272,29 @@ impl WorkerState {
                     ?status,
                     "failed to send sync peer hello"
                 );
+                self.close_endpoint(endpoint);
             }
         }
     }
 
-    fn remove_endpoint(&mut self, endpoint: TransportEndpoint) {
-        if let Some(peer_id) = self.tracker.remove_endpoint(endpoint) {
+    fn close_endpoint(&mut self, endpoint: TransportEndpoint) {
+        if let EndpointRemoval::PeerDisconnected { peer_id } =
+            self.tracker.remove_endpoint(endpoint)
+        {
+            info!(peer_id = %peer_id, endpoint = %endpoint, "sync peer disconnected");
             self.emit(SyncTransportEvent::PeerDisconnected(peer_id));
         }
 
         self.handle.remove(endpoint);
     }
 
-    fn remove_endpoints(&mut self, endpoints: Vec<TransportEndpoint>) {
+    fn close_untracked_endpoints(&self, endpoints: Vec<TransportEndpoint>) {
         for endpoint in endpoints {
-            self.remove_endpoint(endpoint);
+            self.handle.remove(endpoint);
         }
     }
 
     fn emit(&self, event: SyncTransportEvent) {
         _ = self.event_sender.send(event);
     }
-}
-
-pub(super) fn peer_hello_payload(
-    self_id: PeerId,
-    shared_secret: &SharedSecret,
-) -> Result<Vec<u8>, SyncProtocolError> {
-    encode_authenticated(
-        &SyncMessage::control(self_id, 0, TransportControlFrame::PeerHello),
-        shared_secret,
-    )
-    .map(String::into_bytes)
 }

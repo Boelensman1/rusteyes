@@ -1,9 +1,11 @@
 mod commands;
 mod connections;
+mod session;
 mod worker;
 
 use self::commands::TransportCommand;
-use self::worker::{WorkerState, peer_hello_payload, spawn_worker_thread};
+use self::session::TransportSession;
+use self::worker::{WorkerState, spawn_worker_thread};
 use crate::config::{SharedSecret, SyncConfig};
 use crate::sync_discovery::{DiscoveredPeer, LanDiscovery, SyncDiscoveryError};
 use crate::sync_protocol::{PeerId, SyncEvent, SyncProtocolError};
@@ -60,7 +62,7 @@ impl SyncTransport {
         let self_id = PeerId::generate().map_err(SyncTransportError::Protocol)?;
         Self::start_internal(
             self_id,
-            shared_secret,
+            &shared_secret,
             PRODUCTION_LISTEN_ADDR,
             DiscoveryMode::Advertise,
         )
@@ -68,12 +70,12 @@ impl SyncTransport {
 
     fn start_internal(
         self_id: PeerId,
-        shared_secret: SharedSecret,
+        shared_secret: &SharedSecret,
         listen_addr: impl ToSocketAddrs,
         discovery_mode: DiscoveryMode,
     ) -> Result<Self, SyncTransportError> {
-        let hello =
-            peer_hello_payload(self_id, &shared_secret).map_err(SyncTransportError::Protocol)?;
+        let session = TransportSession::new(self_id, shared_secret.clone())
+            .map_err(SyncTransportError::Protocol)?;
         let mut binding = TransportIo::listen(listen_addr).map_err(SyncTransportError::Listen)?;
         let handle = binding.io.handle();
         let (command_sender, command_receiver) = mpsc::channel();
@@ -96,7 +98,7 @@ impl SyncTransport {
             DiscoveryMode::Disabled => None,
         };
 
-        let worker = WorkerState::new(self_id, shared_secret, hello, handle.clone(), event_sender);
+        let worker = WorkerState::new(session, handle.clone(), event_sender);
         let worker_thread = spawn_worker_thread(
             worker,
             binding.event_receiver,
@@ -151,18 +153,27 @@ impl SyncTransport {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn try_recv(&self) -> Result<Option<SyncTransportEvent>, SyncTransportError> {
+    pub(crate) fn try_recv_event(&self) -> Result<Option<SyncTransportEvent>, SyncTransportError> {
         let SyncTransportState::Active(active) = &self.state else {
             return Ok(None);
         };
 
-        active.try_recv()
+        active.try_recv_event()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn drain_events(&self) -> Result<Vec<SyncTransportEvent>, SyncTransportError> {
+        let SyncTransportState::Active(active) = &self.state else {
+            return Ok(Vec::new());
+        };
+
+        active.drain_events()
     }
 
     #[cfg(test)]
     fn start_for_test(
         self_id: PeerId,
-        shared_secret: SharedSecret,
+        shared_secret: &SharedSecret,
     ) -> Result<Self, SyncTransportError> {
         Self::start_internal(
             self_id,
@@ -238,12 +249,22 @@ impl ActiveSyncTransport {
             .map_err(|_| SyncTransportError::WorkerStopped)?
     }
 
-    fn try_recv(&self) -> Result<Option<SyncTransportEvent>, SyncTransportError> {
+    fn try_recv_event(&self) -> Result<Option<SyncTransportEvent>, SyncTransportError> {
         match self.event_receiver.try_recv() {
             Ok(event) => Ok(Some(event)),
             Err(mpsc::TryRecvError::Empty) => Ok(None),
             Err(mpsc::TryRecvError::Disconnected) => Err(SyncTransportError::WorkerStopped),
         }
+    }
+
+    fn drain_events(&self) -> Result<Vec<SyncTransportEvent>, SyncTransportError> {
+        let mut events = Vec::new();
+
+        while let Some(event) = self.try_recv_event()? {
+            events.push(event);
+        }
+
+        Ok(events)
     }
 
     #[cfg(test)]

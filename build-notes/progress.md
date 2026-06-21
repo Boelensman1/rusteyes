@@ -158,6 +158,10 @@
   the connection tracker. Later cleanup unified peer/auth/domain output behind
   one `SyncTransportEvent` facade stream, hid wire sequence numbers from
   runtime-facing domain events, and simplified connection binding results.
+  Later cleanup moved transport framing and sequence state behind a private
+  session helper, renamed nonblocking inbound polling to `try_recv_event`,
+  added a facade event drain helper, made connection authentication/removal
+  outcomes explicit, and centralized failed endpoint closure in the worker.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -227,6 +231,10 @@
 - `cargo test --all-targets --all-features sync_transport` passes after
   unifying the sync transport event facade.
 - `make check` passes after unifying the sync transport event facade.
+- `cargo test --all-targets --all-features sync_transport` passes after the
+  transport session and connection outcome API cleanup.
+- `make check` passes after the transport session and connection outcome API
+  cleanup.
 - A bounded `timeout 3s make run` on macOS stays alive until terminated by
   `timeout` and no longer emits helper stderr during startup after AppKit setup
   was made lazy.
