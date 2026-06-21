@@ -3,14 +3,19 @@ use crate::config::Config;
 #[cfg(target_os = "macos")]
 use crate::macos_helper::MacOSHelperBackend;
 use crate::scheduler::{BreakSchedule, BreakScheduler, ScheduledBreak};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use crate::sync_transport::SyncTransport;
 #[cfg(target_os = "linux")]
 use crate::x11_activity::X11ActivityBackend;
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 pub(crate) fn run() -> Result<(), crate::Error> {
-    let Config { breaks, lock, .. } = Config::load()?;
+    let Config {
+        breaks, lock, sync, ..
+    } = Config::load()?;
     let schedule = BreakSchedule::try_from(breaks)?;
+    let _sync_transport = SyncTransport::start(sync)?;
     let mut backend = X11ActivityBackend::connect(lock)?;
 
     run_with_backend(schedule, &mut backend);
@@ -19,8 +24,11 @@ pub(crate) fn run() -> Result<(), crate::Error> {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn run() -> Result<(), crate::Error> {
-    let Config { breaks, lock, .. } = Config::load()?;
+    let Config {
+        breaks, lock, sync, ..
+    } = Config::load()?;
     let schedule = BreakSchedule::try_from(breaks)?;
+    let _sync_transport = SyncTransport::start(sync)?;
     let mut backend = MacOSHelperBackend::connect(lock)?;
 
     run_with_backend(schedule, &mut backend);

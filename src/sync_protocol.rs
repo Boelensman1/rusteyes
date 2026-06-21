@@ -83,6 +83,12 @@ impl SyncMessage {
             });
         }
 
+        if matches!(self.event, SyncEvent::PeerHello) && self.sequence != 0 {
+            return Err(SyncProtocolError::InvalidHelloSequence {
+                sequence: self.sequence,
+            });
+        }
+
         self.event.validate()
     }
 }
@@ -90,6 +96,7 @@ impl SyncMessage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub(crate) enum SyncEvent {
+    PeerHello,
     ActiveTimeElapsed {
         #[serde(rename = "elapsedMs", with = "duration_millis")]
         elapsed: Duration,
@@ -121,6 +128,7 @@ impl SyncEvent {
                 Err(SyncProtocolError::InvalidBreakName { name: name.clone() })
             }
             Self::ActiveTimeElapsed { .. }
+            | Self::PeerHello
             | Self::BreakStarted { .. }
             | Self::DisableFor { .. }
             | Self::DisableUntilRestart
@@ -275,6 +283,9 @@ pub(crate) enum SyncProtocolError {
     InvalidBreakName {
         name: String,
     },
+    InvalidHelloSequence {
+        sequence: u64,
+    },
     AuthenticationFailed,
 }
 
@@ -306,6 +317,10 @@ impl fmt::Display for SyncProtocolError {
             Self::InvalidBreakName { name } => write!(
                 formatter,
                 "sync break name {name:?} must not be empty or contain surrounding whitespace"
+            ),
+            Self::InvalidHelloSequence { sequence } => write!(
+                formatter,
+                "sync peer hello sequence must be 0, got {sequence}"
             ),
             Self::AuthenticationFailed => formatter.write_str("sync message authentication failed"),
         }

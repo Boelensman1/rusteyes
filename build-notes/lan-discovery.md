@@ -8,19 +8,22 @@
 ## Changes
 
 - Added crate-internal mDNS/DNS-SD discovery using the `mdns-sd` crate.
-- Added a Resteyes sync service type, `_resteyes-sync._udp.local.`, with
+- Added a Resteyes sync service type, `_resteyes-sync._tcp.local.`, with
   peer-specific instance and host names derived from the transient `PeerId`.
 - Added authenticated TXT metadata for discovery protocol version, transient
   peer ID, advertised transport port, and HMAC-SHA256 over that metadata using
   the configured sync shared secret.
 - Added conversion from resolved mDNS services into crate-internal discovered
   peer records with peer ID, socket address, and observation time.
-- Added a temporary discovery smoke mode for manual verification:
+- Initially added a temporary discovery smoke mode for manual verification:
   `RESTEYES_DISCOVERY_SMOKE=1 RUST_LOG=info RESTEYES_CONFIG=test-configs/sync-discovery.yaml make run`.
   It starts discovery without the platform backend, logs that it is searching,
   and logs each authenticated peer it finds.
 - Added trace logging inside discovery startup and peer discovery so the same
   visibility remains useful when the module is wired into runtime sync later.
+- Follow-up cleanup in `authenticated-peer-transport` removed the temporary
+  smoke environment path and replaced blocking discovery reads with timeout
+  polling for transport-owned background shutdown.
 
 ## Decisions
 
@@ -30,12 +33,6 @@
 - Keep discovery as an internal capability only; no daemon runtime wiring,
   active-time transport, scheduler changes, or synced control behavior was
   added in this step.
-- The smoke mode is intentionally temporary and should be removed when
-  `authenticated-peer-transport` starts discovery from the normal daemon
-  runtime.
-- The smoke mode advertises a temporary default transport port, `47373`,
-  because the actual peer transport is still a later step. Override it with
-  `RESTEYES_DISCOVERY_SMOKE_PORT` if needed.
 - Treat discovery authentication as a filter only. Future peer transport must
   still authenticate every sync message because mDNS records can be replayed.
 
@@ -48,4 +45,4 @@
 
 ## Follow-up
 
-- Continue with `authenticated-peer-transport`.
+- Continue with runtime sync behavior over authenticated peer transport.

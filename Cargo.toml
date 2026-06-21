@@ -9,6 +9,7 @@ publish = false
 getrandom = "0.3.4"
 hmac = "0.12.1"
 humantime = "2.3.0"
+message-io = { version = "0.19.0", default-features = false, features = ["tcp"] }
 mdns-sd = "0.20.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

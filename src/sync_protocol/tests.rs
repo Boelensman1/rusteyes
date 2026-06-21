@@ -26,6 +26,7 @@ fn generated_peer_id_is_valid_protocol_id() -> Result<(), Box<dyn Error>> {
 #[test]
 fn authenticates_all_sync_event_variants() -> Result<(), Box<dyn Error>> {
     let events = [
+        SyncEvent::PeerHello,
         SyncEvent::ActiveTimeElapsed {
             elapsed: Duration::from_millis(1_500),
         },
@@ -47,6 +48,18 @@ fn authenticates_all_sync_event_variants() -> Result<(), Box<dyn Error>> {
 
         assert_eq!(decode_authenticated(&encoded, &shared_secret())?, message);
     }
+
+    Ok(())
+}
+
+#[test]
+fn rejects_peer_hello_with_non_zero_sequence() -> Result<(), Box<dyn Error>> {
+    let message = SyncMessage::new(peer_id()?, 1, SyncEvent::PeerHello);
+
+    assert_eq!(
+        encode_authenticated(&message, &shared_secret()),
+        Err(SyncProtocolError::InvalidHelloSequence { sequence: 1 })
+    );
 
     Ok(())
 }

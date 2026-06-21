@@ -1,5 +1,5 @@
-use crate::config::{SharedSecret, SyncConfig};
-use crate::sync_protocol::{PeerId, SyncProtocolError};
+use crate::config::SharedSecret;
+use crate::sync_protocol::PeerId;
 use hmac::{Hmac, Mac};
 use mdns_sd::{Receiver, ResolvedService, ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo};
 use serde::Serialize;
@@ -7,16 +7,11 @@ use sha2::Sha256;
 use std::fmt;
 use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::str::FromStr;
-use std::time::Instant;
-use tracing::{info, trace};
+use std::time::{Duration, Instant};
+use tracing::trace;
 
-pub(crate) const SERVICE_TYPE: &str = "_resteyes-sync._udp.local.";
+pub(crate) const SERVICE_TYPE: &str = "_resteyes-sync._tcp.local.";
 
-// Temporary manual verification path. Remove this once authenticated peer
-// transport starts discovery from the normal daemon runtime.
-const ENV_DISCOVERY_SMOKE: &str = "RESTEYES_DISCOVERY_SMOKE";
-const ENV_DISCOVERY_SMOKE_PORT: &str = "RESTEYES_DISCOVERY_SMOKE_PORT";
-const DEFAULT_DISCOVERY_SMOKE_PORT: u16 = 47_373;
 const DISCOVERY_VERSION: u8 = 1;
 const KEY_VERSION: &str = "version";
 const KEY_PEER: &str = "peer";
@@ -25,41 +20,6 @@ const KEY_MAC: &str = "mac";
 const MAC_BYTES: usize = 32;
 
 type HmacSha256 = Hmac<Sha256>;
-
-pub(crate) fn smoke_enabled_from_env() -> bool {
-    std::env::var(ENV_DISCOVERY_SMOKE).is_ok_and(|value| smoke_enabled_value(&value))
-}
-
-pub(crate) fn run_smoke(sync: SyncConfig) -> Result<(), SyncDiscoveryError> {
-    if !sync.enabled {
-        return Err(SyncDiscoveryError::SyncDisabled);
-    }
-
-    let Some(shared_secret) = sync.shared_secret else {
-        return Err(SyncDiscoveryError::MissingSharedSecret);
-    };
-
-    let self_id = PeerId::generate().map_err(|error| sync_protocol_error(&error))?;
-    let transport_port = smoke_port_from_env()?;
-    let discovery = LanDiscovery::start(self_id, shared_secret, transport_port)?;
-
-    info!(
-        peer_id = %self_id,
-        service_type = SERVICE_TYPE,
-        advertised_port = transport_port,
-        "started Resteyes LAN discovery smoke test; waiting for authenticated peers"
-    );
-
-    loop {
-        let peer = discovery.next_peer(Instant::now())?;
-
-        info!(
-            peer_id = %peer.peer_id,
-            address = %peer.address,
-            "found authenticated Resteyes peer"
-        );
-    }
-}
 
 pub(crate) struct LanDiscovery {
     daemon: ServiceDaemon,
@@ -110,32 +70,28 @@ impl LanDiscovery {
         })
     }
 
-    pub(crate) fn next_peer(
+    pub(crate) fn next_peer_timeout(
         &self,
         observed_at: Instant,
-    ) -> Result<DiscoveredPeer, SyncDiscoveryError> {
-        loop {
-            let event = self
-                .events
-                .recv()
-                .map_err(|error| SyncDiscoveryError::Mdns {
-                    message: error.to_string(),
-                })?;
+        timeout: Duration,
+    ) -> Option<DiscoveredPeer> {
+        let Ok(event) = self.events.recv_timeout(timeout) else {
+            return None;
+        };
 
-            match discovered_peer_from_event(&event, self.self_id, &self.shared_secret, observed_at)
-            {
-                Ok(Some(peer)) => {
-                    trace!(
-                        peer_id = %peer.peer_id,
-                        address = %peer.address,
-                        "discovered authenticated Resteyes peer"
-                    );
-                    return Ok(peer);
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    trace!(%error, "ignored Resteyes LAN discovery service");
-                }
+        match discovered_peer_from_event(&event, self.self_id, &self.shared_secret, observed_at) {
+            Ok(Some(peer)) => {
+                trace!(
+                    peer_id = %peer.peer_id,
+                    address = %peer.address,
+                    "discovered authenticated Resteyes peer"
+                );
+                Some(peer)
+            }
+            Ok(None) => None,
+            Err(error) => {
+                trace!(%error, "ignored Resteyes LAN discovery service");
+                None
             }
         }
     }
@@ -439,49 +395,11 @@ fn mdns_error(error: &mdns_sd::Error) -> SyncDiscoveryError {
     }
 }
 
-fn sync_protocol_error(error: &SyncProtocolError) -> SyncDiscoveryError {
-    SyncDiscoveryError::Protocol {
-        message: error.to_string(),
-    }
-}
-
-fn smoke_enabled_value(value: &str) -> bool {
-    let value = value.trim();
-
-    !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
-}
-
-fn smoke_port_from_env() -> Result<u16, SyncDiscoveryError> {
-    match std::env::var(ENV_DISCOVERY_SMOKE_PORT) {
-        Ok(value) if value.trim().is_empty() => Ok(DEFAULT_DISCOVERY_SMOKE_PORT),
-        Ok(value) => parse_smoke_port(&value),
-        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_DISCOVERY_SMOKE_PORT),
-        Err(std::env::VarError::NotUnicode(value)) => Err(SyncDiscoveryError::InvalidSmokePort {
-            value: value.to_string_lossy().into_owned(),
-        }),
-    }
-}
-
-fn parse_smoke_port(value: &str) -> Result<u16, SyncDiscoveryError> {
-    let port = value
-        .parse::<u16>()
-        .map_err(|_| SyncDiscoveryError::InvalidSmokePort {
-            value: value.to_owned(),
-        })?;
-
-    validate_port(port)?;
-    Ok(port)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SyncDiscoveryError {
     Mdns { message: String },
     Json { message: String },
     MacKey { message: String },
-    Protocol { message: String },
-    SyncDisabled,
-    MissingSharedSecret,
-    InvalidSmokePort { value: String },
     MissingTxt { key: &'static str },
     InvalidVersion { value: String },
     UnsupportedVersion { version: u8 },
@@ -501,21 +419,6 @@ impl fmt::Display for SyncDiscoveryError {
             Self::Mdns { message } => write!(formatter, "mDNS discovery failed: {message}"),
             Self::Json { message } => write!(formatter, "invalid discovery JSON: {message}"),
             Self::MacKey { message } => write!(formatter, "invalid discovery MAC key: {message}"),
-            Self::Protocol { message } => {
-                write!(formatter, "sync discovery setup failed: {message}")
-            }
-            Self::SyncDisabled => formatter.write_str(
-                "RESTEYES_DISCOVERY_SMOKE requires sync.enabled: true in the active config",
-            ),
-            Self::MissingSharedSecret => formatter.write_str(
-                "RESTEYES_DISCOVERY_SMOKE requires sync.shared_secret in the active config",
-            ),
-            Self::InvalidSmokePort { value } => {
-                write!(
-                    formatter,
-                    "RESTEYES_DISCOVERY_SMOKE_PORT must be a non-zero u16 port, got {value:?}"
-                )
-            }
             Self::MissingTxt { key } => write!(formatter, "missing discovery TXT key {key}"),
             Self::InvalidVersion { value } => {
                 write!(formatter, "invalid discovery version {value:?}")
