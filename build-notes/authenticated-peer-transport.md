@@ -27,6 +27,12 @@
 - Added a crate-internal transport API for broadcasting to all authenticated
   peers, sending to one authenticated peer, and receiving authenticated inbound
   domain events with sender and sequence metadata.
+- Follow-up cleanup split the transport facade, worker commands, worker loop,
+  and connection tracking into smaller modules while preserving the
+  crate-internal transport API.
+- Added protocol-level replay protection for inbound domain events: the
+  transport now tracks the highest accepted event sequence per authenticated
+  peer and drops stale or repeated sequences before forwarding events.
 - Removed the temporary `RESTEYES_DISCOVERY_SMOKE` path now that discovery is
   started by normal sync-enabled runtime startup.
 
@@ -47,6 +53,7 @@
 - `cargo test --all-targets --all-features`
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `make check`
+- `cargo test --all-targets --all-features sync_transport`
 
 ## Follow-up
 
