@@ -29,6 +29,13 @@
           version = "0.1.0";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
+          nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.pkg-config
+          ];
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.gtk3
+            pkgs.libappindicator-gtk3
+          ];
         };
       });
 
@@ -41,6 +48,10 @@
             rust-analyzer
             rustc
             rustfmt
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkg-config
+            gtk3
+            libappindicator-gtk3
           ];
         };
       });

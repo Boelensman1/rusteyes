@@ -6,6 +6,7 @@ use crate::config::{BreakTypeConfig, Breaks, Config, ConfigError, LockConfig, Sy
 use crate::scheduler::{BreakOrigin, BreakSchedule, ScheduledBreak};
 use crate::sync_protocol::{PeerId, SyncEvent};
 use crate::sync_transport::{SyncTransportError, SyncTransportEvent};
+use crate::ui::{PreBreakNotification, RuntimeUi, UiCommand};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::str::FromStr;
@@ -611,6 +612,177 @@ fn remote_active_time_is_not_rebroadcast() -> Result<(), Box<dyn std::error::Err
 }
 
 #[test]
+fn pre_break_notification_fires_once_when_notice_window_is_reached()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+    let (ui, ui_commands) = recording_ui();
+
+    run_config_with_inputs_and_ui(
+        test_config(),
+        backend,
+        ui,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(4))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(1))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(1))),
+        ],
+    )?;
+
+    assert!(received_commands(&commands).is_empty());
+    assert_eq!(
+        received_ui_commands(&ui_commands),
+        vec![UiCommand::ShowPreBreakNotification(PreBreakNotification {
+            break_name: String::from("short"),
+            starts_after: Duration::from_secs(5),
+        },)]
+    );
+    Ok(())
+}
+
+#[test]
+fn pre_break_notification_is_skipped_when_active_time_immediately_starts_break()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+    let (ui, ui_commands) = recording_ui();
+
+    run_config_with_inputs_and_ui(
+        test_config(),
+        backend,
+        ui,
+        [backend_input(RuntimeEvent::ActiveTimeElapsed(
+            Duration::from_secs(10),
+        ))],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+    );
+    assert!(received_ui_commands(&ui_commands).is_empty());
+    Ok(())
+}
+
+#[test]
+fn pre_break_notification_resets_after_break_finishes() -> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+    let (ui, ui_commands) = recording_ui();
+
+    run_config_with_inputs_and_ui(
+        test_config(),
+        backend,
+        ui,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
+            backend_input(RuntimeEvent::BreakFinished),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::FinishBreak { lock_after: false },
+        ]
+    );
+    assert_eq!(
+        received_ui_commands(&ui_commands),
+        vec![
+            UiCommand::ShowPreBreakNotification(PreBreakNotification {
+                break_name: String::from("short"),
+                starts_after: Duration::from_secs(5),
+            }),
+            UiCommand::ShowPreBreakNotification(PreBreakNotification {
+                break_name: String::from("long"),
+                starts_after: Duration::from_secs(5),
+            }),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn disabled_and_pending_states_suppress_pre_break_notifications()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+    let (ui, ui_commands) = recording_ui();
+
+    run_config_with_inputs_and_ui(
+        test_config(),
+        backend,
+        ui,
+        [
+            backend_input(RuntimeEvent::Disable(DisableRequest::UntilRestart)),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(100))),
+            backend_input(RuntimeEvent::Enable),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+    );
+    assert!(received_ui_commands(&ui_commands).is_empty());
+    Ok(())
+}
+
+#[test]
+fn synced_active_time_can_trigger_pre_break_notification() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (backend, commands) = test_backend();
+    let (ui, ui_commands) = recording_ui();
+
+    run_config_with_inputs_and_ui(
+        test_config(),
+        backend,
+        ui,
+        [sync_input(remote_active_time(Duration::from_secs(5))?)],
+    )?;
+
+    assert!(received_commands(&commands).is_empty());
+    assert_eq!(
+        received_ui_commands(&ui_commands),
+        vec![UiCommand::ShowPreBreakNotification(PreBreakNotification {
+            break_name: String::from("short"),
+            starts_after: Duration::from_secs(5),
+        },)]
+    );
+    Ok(())
+}
+
+#[test]
+fn ui_events_use_local_runtime_control_path() {
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = test_backend();
+
+    assert_eq!(
+        run_config_with_inputs_and_sync_broadcaster(
+            test_config(),
+            backend,
+            &sync_broadcaster,
+            [ui_input(RuntimeEvent::StartManualBreak(String::from(
+                "long"
+            )))],
+        ),
+        Ok(())
+    );
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(manual_break("long", 300))]
+    );
+    assert_eq!(
+        sync_broadcaster.events(),
+        vec![SyncEvent::BreakStarted {
+            name: String::from("long"),
+        }]
+    );
+}
+
+#[test]
 fn disabled_scheduler_suppresses_remote_active_time() -> Result<(), Box<dyn std::error::Error>> {
     let (backend, commands) = test_backend();
 
@@ -665,7 +837,7 @@ fn run_config_with_runtime_sync(
     sync_runtime: RuntimeSync<'_>,
 ) -> Result<(), ConfigError> {
     let schedule = BreakSchedule::try_from(config.breaks)?;
-    run_with_event_sources(schedule, backend, sync_runtime);
+    run_with_event_sources(schedule, backend, sync_runtime, RuntimeUi::inactive());
     Ok(())
 }
 
@@ -688,9 +860,40 @@ fn run_config_with_inputs_and_sync_broadcaster(
     sync_broadcaster: &dyn SyncEventBroadcaster,
     inputs: impl IntoIterator<Item = RuntimeInput>,
 ) -> Result<(), ConfigError> {
+    run_config_with_inputs_and_sync_broadcaster_and_ui(
+        config,
+        backend,
+        sync_broadcaster,
+        RuntimeUi::inactive(),
+        inputs,
+    )
+}
+
+fn run_config_with_inputs_and_ui(
+    config: Config,
+    backend: BackendActor,
+    ui: RuntimeUi,
+    inputs: impl IntoIterator<Item = RuntimeInput>,
+) -> Result<(), ConfigError> {
+    run_config_with_inputs_and_sync_broadcaster_and_ui(
+        config,
+        backend,
+        &NOOP_SYNC_BROADCASTER_FOR_TEST,
+        ui,
+        inputs,
+    )
+}
+
+fn run_config_with_inputs_and_sync_broadcaster_and_ui(
+    config: Config,
+    backend: BackendActor,
+    sync_broadcaster: &dyn SyncEventBroadcaster,
+    ui: RuntimeUi,
+    inputs: impl IntoIterator<Item = RuntimeInput>,
+) -> Result<(), ConfigError> {
     let schedule = BreakSchedule::try_from(config.breaks)?;
     let sync_runtime = RuntimeSync::new(None, sync_broadcaster);
-    let mut daemon = DaemonRuntime::new(schedule, backend, sync_runtime);
+    let mut daemon = DaemonRuntime::new(schedule, backend, sync_runtime, ui);
 
     for input in inputs {
         if !daemon.handle_input(input) {
@@ -745,6 +948,16 @@ fn received_commands(receiver: &flume::Receiver<BackendCommand>) -> Vec<BackendC
     receiver.try_iter().collect()
 }
 
+fn recording_ui() -> (RuntimeUi, flume::Receiver<UiCommand>) {
+    let (sender, receiver) = flume::unbounded();
+
+    (RuntimeUi::with_command_sender(sender), receiver)
+}
+
+fn received_ui_commands(receiver: &flume::Receiver<UiCommand>) -> Vec<UiCommand> {
+    receiver.try_iter().collect()
+}
+
 fn peer_id() -> Result<PeerId, Box<dyn std::error::Error>> {
     Ok(PeerId::from_str("0102030405060708090a0b0c0d0e0f10")?)
 }
@@ -762,6 +975,10 @@ fn remote_sync_event(event: SyncEvent) -> Result<SyncTransportEvent, Box<dyn std
 
 fn backend_input(event: RuntimeEvent) -> RuntimeInput {
     RuntimeInput::Backend(event)
+}
+
+fn ui_input(event: RuntimeEvent) -> RuntimeInput {
+    RuntimeInput::Ui(event)
 }
 
 fn sync_input(event: SyncTransportEvent) -> RuntimeInput {

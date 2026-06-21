@@ -1,4 +1,4 @@
-use super::{BreakOrigin, BreakSchedule, BreakScheduler, ScheduledBreak};
+use super::{BreakOrigin, BreakSchedule, BreakScheduler, ScheduledBreak, UpcomingScheduledBreak};
 use crate::config::{BreakTypeConfig, Breaks, Config, ConfigError, DEFAULT_BREAK_AFTER_ACTIVE};
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -289,6 +289,57 @@ fn manual_break_resets_active_accumulation_without_advancing_slots() {
 }
 
 #[test]
+fn upcoming_scheduled_break_reports_remaining_active_time() {
+    let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20), ("long", 2, 300)]));
+
+    let upcoming = upcoming_break(scheduler.upcoming_scheduled_break());
+    assert_eq!(upcoming.scheduled_break.name, "short");
+    assert_eq!(
+        upcoming.scheduled_break.origin,
+        BreakOrigin::Scheduled { slot: 1 }
+    );
+    assert_eq!(upcoming.starts_after, Duration::from_secs(10));
+
+    assert_eq!(scheduler.advance_active(Duration::from_secs(4)), None);
+
+    let upcoming = upcoming_break(scheduler.upcoming_scheduled_break());
+    assert_eq!(upcoming.scheduled_break.name, "short");
+    assert_eq!(upcoming.starts_after, Duration::from_secs(6));
+}
+
+#[test]
+fn upcoming_scheduled_break_skips_empty_slots() {
+    let mut scheduler = scheduler(custom_breaks(10, &[("short", 3, 20), ("long", 5, 300)]));
+
+    let upcoming = upcoming_break(scheduler.upcoming_scheduled_break());
+    assert_eq!(upcoming.scheduled_break.name, "short");
+    assert_eq!(
+        upcoming.scheduled_break.origin,
+        BreakOrigin::Scheduled { slot: 3 }
+    );
+    assert_eq!(upcoming.starts_after, Duration::from_secs(30));
+
+    assert_eq!(scheduler.advance_active(Duration::from_secs(25)), None);
+
+    let upcoming = upcoming_break(scheduler.upcoming_scheduled_break());
+    assert_eq!(upcoming.scheduled_break.name, "short");
+    assert_eq!(upcoming.starts_after, Duration::from_secs(5));
+}
+
+#[test]
+fn upcoming_scheduled_break_is_absent_while_disabled_or_pending() {
+    let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20)]));
+
+    assert!(!scheduler.disable());
+    assert_eq!(scheduler.upcoming_scheduled_break(), None);
+
+    scheduler.enable();
+    let scheduled_break = started_break(scheduler.advance_active(Duration::from_secs(10)));
+    assert_eq!(scheduled_break.origin, BreakOrigin::Scheduled { slot: 1 });
+    assert_eq!(scheduler.upcoming_scheduled_break(), None);
+}
+
+#[test]
 fn schedule_rejects_empty_break_types() {
     let mut breaks = custom_breaks(10, &[("short", 1, 20)]);
     breaks.types.clear();
@@ -336,6 +387,13 @@ fn started_break(action: Option<ScheduledBreak>) -> ScheduledBreak {
     match action {
         Some(scheduled_break) => scheduled_break,
         None => panic!("expected break to start"),
+    }
+}
+
+fn upcoming_break(action: Option<UpcomingScheduledBreak>) -> UpcomingScheduledBreak {
+    match action {
+        Some(upcoming_break) => upcoming_break,
+        None => panic!("expected upcoming break"),
     }
 }
 

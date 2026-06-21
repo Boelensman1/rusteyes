@@ -13,6 +13,7 @@ mod sync_discovery;
 pub(crate) mod sync_protocol;
 mod sync_transport;
 mod sync_transport_io;
+mod ui;
 #[cfg(target_os = "linux")]
 mod x11_activity;
 #[cfg(target_os = "linux")]
@@ -65,6 +66,13 @@ impl Error {
             kind: ErrorKind::SyncTransport(error),
         }
     }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    const fn ui(error: ui::UiError) -> Self {
+        Self {
+            kind: ErrorKind::Ui(error),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -76,6 +84,8 @@ enum ErrorKind {
     #[cfg(target_os = "macos")]
     MacOSHelper(macos_helper::MacOSHelperError),
     SyncTransport(sync_transport::SyncTransportError),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    Ui(ui::UiError),
     #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
     UnsupportedPlatform {
         platform: &'static str,
@@ -92,6 +102,8 @@ impl fmt::Display for Error {
             #[cfg(target_os = "macos")]
             ErrorKind::MacOSHelper(error) => write!(formatter, "{error}"),
             ErrorKind::SyncTransport(error) => write!(formatter, "{error}"),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            ErrorKind::Ui(error) => write!(formatter, "{error}"),
             #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
             ErrorKind::UnsupportedPlatform { platform } => {
                 write!(formatter, "no backend is available for {platform} yet")
@@ -110,6 +122,8 @@ impl std::error::Error for Error {
             #[cfg(target_os = "macos")]
             ErrorKind::MacOSHelper(error) => Some(error),
             ErrorKind::SyncTransport(error) => Some(error),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            ErrorKind::Ui(error) => Some(error),
             #[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
             ErrorKind::UnsupportedPlatform { .. } => None,
         }
@@ -131,6 +145,13 @@ impl From<config::ConfigError> for Error {
 impl From<sync_transport::SyncTransportError> for Error {
     fn from(error: sync_transport::SyncTransportError) -> Self {
         Self::sync_transport(error)
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl From<ui::UiError> for Error {
+    fn from(error: ui::UiError) -> Self {
+        Self::ui(error)
     }
 }
 

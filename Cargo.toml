@@ -19,8 +19,16 @@ sha2 = "0.10.9"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+notify-rust = "4.18.0"
+tao = "0.35.3"
+
 [target.'cfg(target_os = "linux")'.dependencies]
+tray-icon = { version = "0.24.1", default-features = false, features = ["gtk"] }
 x11rb = { version = "0.13.2", default-features = false, features = ["randr", "screensaver"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tray-icon = { version = "0.24.1", default-features = false }
 
 [lints.rust]
 unsafe_code = "forbid"

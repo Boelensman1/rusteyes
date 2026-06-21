@@ -2,37 +2,50 @@ use crate::backend::{BackendActor, BackendCommand, DisableRequest, RuntimeEvent}
 use crate::config::Config;
 #[cfg(target_os = "macos")]
 use crate::macos_helper::MacOSHelperBackend;
-use crate::scheduler::{BreakSchedule, BreakScheduler, ScheduledBreak};
+use crate::scheduler::{BreakOrigin, BreakSchedule, BreakScheduler, ScheduledBreak};
 use crate::sync_protocol::{PeerId, SyncEvent};
 use crate::sync_transport::{SyncTransport, SyncTransportError, SyncTransportEvent};
+use crate::ui::{PreBreakNotification, RuntimeUi, UiCommand, UiConfig};
 #[cfg(target_os = "linux")]
 use crate::x11_activity::X11ActivityBackend;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::thread;
 use std::time::Duration;
 use tracing::{trace, warn};
+
+const DEFAULT_PRE_BREAK_NOTICE_LEAD: Duration = Duration::from_secs(30);
 
 #[cfg(target_os = "linux")]
 pub(crate) fn run() -> Result<(), crate::Error> {
     let Config {
-        breaks, lock, sync, ..
+        breaks,
+        disable_presets,
+        lock,
+        sync,
     } = Config::load()?;
+    let ui_config = UiConfig::from_config(&breaks, &disable_presets);
     let schedule = BreakSchedule::try_from(breaks)?;
     let sync_transport = SyncTransport::start(sync)?;
     let backend = X11ActivityBackend::spawn(lock)?;
 
-    run_with_backend(schedule, backend, &sync_transport);
+    run_with_ui(schedule, backend, sync_transport, ui_config)?;
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
 pub(crate) fn run() -> Result<(), crate::Error> {
     let Config {
-        breaks, lock, sync, ..
+        breaks,
+        disable_presets,
+        lock,
+        sync,
     } = Config::load()?;
+    let ui_config = UiConfig::from_config(&breaks, &disable_presets);
     let schedule = BreakSchedule::try_from(breaks)?;
     let sync_transport = SyncTransport::start(sync)?;
     let backend = MacOSHelperBackend::spawn(lock)?;
 
-    run_with_backend(schedule, backend, &sync_transport);
+    run_with_ui(schedule, backend, sync_transport, ui_config)?;
     Ok(())
 }
 
@@ -41,21 +54,35 @@ pub(crate) fn run() -> Result<(), crate::Error> {
     Err(crate::Error::unsupported_platform())
 }
 
-fn run_with_backend(
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn run_with_ui(
     schedule: BreakSchedule,
     backend: BackendActor,
-    sync_transport: &SyncTransport,
-) {
-    let sync_runtime = RuntimeSync::new(sync_transport.event_receiver(), sync_transport);
-    run_with_event_sources(schedule, backend, sync_runtime);
+    sync_transport: SyncTransport,
+    ui_config: UiConfig,
+) -> Result<(), crate::Error> {
+    crate::ui::run(ui_config, move |ui_proxy, ui_handle| {
+        thread::Builder::new()
+            .name(String::from("resteyes-runtime"))
+            .spawn(move || {
+                let ui_runtime = crate::ui::runtime_ui_from_handle(ui_handle);
+                let sync_runtime =
+                    RuntimeSync::new(sync_transport.event_receiver(), &sync_transport);
+                run_with_event_sources(schedule, backend, sync_runtime, ui_runtime);
+                ui_proxy.runtime_stopped();
+            })
+            .map_err(|error| crate::ui::UiError::runtime_thread(&error))
+    })?;
+    Ok(())
 }
 
 fn run_with_event_sources(
     schedule: BreakSchedule,
     backend: BackendActor,
     sync_runtime: RuntimeSync<'_>,
+    ui_runtime: RuntimeUi,
 ) {
-    let mut daemon = DaemonRuntime::new(schedule, backend, sync_runtime);
+    let mut daemon = DaemonRuntime::new(schedule, backend, sync_runtime, ui_runtime);
     daemon.run();
 }
 
@@ -84,12 +111,19 @@ struct DaemonRuntime<'a> {
     backend_event_receiver: flume::Receiver<RuntimeEvent>,
     sync_event_receiver: Option<flume::Receiver<SyncTransportEvent>>,
     sync_broadcaster: &'a dyn SyncEventBroadcaster,
+    ui: RuntimeUi,
     disable_mode: DisableMode,
     current_break: Option<CurrentBreakState>,
+    notified_break: Option<NotifiedBreak>,
 }
 
 impl<'a> DaemonRuntime<'a> {
-    fn new(schedule: BreakSchedule, backend: BackendActor, sync_runtime: RuntimeSync<'a>) -> Self {
+    fn new(
+        schedule: BreakSchedule,
+        backend: BackendActor,
+        sync_runtime: RuntimeSync<'a>,
+        ui: RuntimeUi,
+    ) -> Self {
         let backend_event_receiver = backend.clone_event_receiver();
 
         Self {
@@ -98,8 +132,10 @@ impl<'a> DaemonRuntime<'a> {
             backend_event_receiver,
             sync_event_receiver: sync_runtime.event_receiver,
             sync_broadcaster: sync_runtime.broadcaster,
+            ui,
             disable_mode: DisableMode::Enabled,
             current_break: None,
+            notified_break: None,
         }
     }
 
@@ -113,12 +149,21 @@ impl<'a> DaemonRuntime<'a> {
 
     fn next_input(&mut self) -> Option<RuntimeInput> {
         loop {
-            let selected = match &self.sync_event_receiver {
-                Some(sync_event_receiver) => flume::Selector::new()
+            let selected = match (&self.sync_event_receiver, self.ui.event_receiver()) {
+                (Some(sync_event_receiver), Some(ui_event_receiver)) => flume::Selector::new()
+                    .recv(&self.backend_event_receiver, SelectedRuntimeInput::Backend)
+                    .recv(sync_event_receiver, SelectedRuntimeInput::SyncTransport)
+                    .recv(ui_event_receiver, SelectedRuntimeInput::Ui)
+                    .wait(),
+                (Some(sync_event_receiver), None) => flume::Selector::new()
                     .recv(&self.backend_event_receiver, SelectedRuntimeInput::Backend)
                     .recv(sync_event_receiver, SelectedRuntimeInput::SyncTransport)
                     .wait(),
-                None => flume::Selector::new()
+                (None, Some(ui_event_receiver)) => flume::Selector::new()
+                    .recv(&self.backend_event_receiver, SelectedRuntimeInput::Backend)
+                    .recv(ui_event_receiver, SelectedRuntimeInput::Ui)
+                    .wait(),
+                (None, None) => flume::Selector::new()
                     .recv(&self.backend_event_receiver, SelectedRuntimeInput::Backend)
                     .wait(),
             };
@@ -138,13 +183,20 @@ impl<'a> DaemonRuntime<'a> {
                     warn!("sync transport event channel closed");
                     self.sync_event_receiver = None;
                 }
+                SelectedRuntimeInput::Ui(Ok(event)) => {
+                    return Some(RuntimeInput::Ui(event));
+                }
+                SelectedRuntimeInput::Ui(Err(_)) => {
+                    warn!("ui event channel closed");
+                    self.ui.clear_event_receiver();
+                }
             }
         }
     }
 
     fn handle_input(&mut self, input: RuntimeInput) -> bool {
         match input {
-            RuntimeInput::Backend(event) => self.handle_event(event),
+            RuntimeInput::Backend(event) | RuntimeInput::Ui(event) => self.handle_event(event),
             RuntimeInput::SyncTransport(event) => self.handle_sync_transport_event(event),
         }
     }
@@ -241,6 +293,7 @@ impl<'a> DaemonRuntime<'a> {
         if let Some(scheduled_break) = self.scheduler.advance_active(elapsed) {
             self.start_break(scheduled_break, propagation)
         } else {
+            self.notify_upcoming_break();
             true
         }
     }
@@ -259,6 +312,7 @@ impl<'a> DaemonRuntime<'a> {
         propagation: SyncPropagation,
     ) -> bool {
         let name = scheduled_break.name.clone();
+        self.clear_pre_break_notice();
         self.current_break = Some(CurrentBreakState::for_break(&scheduled_break));
 
         if self.handle_command(BackendCommand::StartBreak(scheduled_break)) {
@@ -270,6 +324,7 @@ impl<'a> DaemonRuntime<'a> {
     }
 
     fn finish_break(&mut self) -> bool {
+        self.clear_pre_break_notice();
         let should_lock = self
             .current_break
             .take()
@@ -328,6 +383,7 @@ impl<'a> DaemonRuntime<'a> {
 
     fn disable_scheduler(&mut self) -> bool {
         self.current_break = None;
+        self.clear_pre_break_notice();
 
         if self.scheduler.disable() {
             self.handle_command(BackendCommand::ClearBreak)
@@ -345,15 +401,58 @@ impl<'a> DaemonRuntime<'a> {
             }
         }
     }
+
+    fn notify_upcoming_break(&mut self) {
+        let Some(upcoming_break) = self.scheduler.upcoming_scheduled_break() else {
+            return;
+        };
+
+        if upcoming_break.starts_after > self.pre_break_notice_lead() {
+            return;
+        }
+
+        let Some(notified_break) =
+            NotifiedBreak::from_scheduled_break(&upcoming_break.scheduled_break)
+        else {
+            return;
+        };
+
+        if self.notified_break == Some(notified_break.clone()) {
+            return;
+        }
+
+        let command = UiCommand::ShowPreBreakNotification(PreBreakNotification {
+            break_name: upcoming_break.scheduled_break.name,
+            starts_after: upcoming_break.starts_after,
+        });
+
+        if let Err(error) = self.ui.send_command(command) {
+            warn!(%error, "failed to send pre-break notification command");
+        }
+        self.notified_break = Some(notified_break);
+    }
+
+    fn pre_break_notice_lead(&self) -> Duration {
+        std::cmp::min(
+            DEFAULT_PRE_BREAK_NOTICE_LEAD,
+            self.scheduler.after_active() / 2,
+        )
+    }
+
+    fn clear_pre_break_notice(&mut self) {
+        self.notified_break = None;
+    }
 }
 
 enum RuntimeInput {
     Backend(RuntimeEvent),
+    Ui(RuntimeEvent),
     SyncTransport(SyncTransportEvent),
 }
 
 enum SelectedRuntimeInput {
     Backend(Result<RuntimeEvent, flume::RecvError>),
+    Ui(Result<RuntimeEvent, flume::RecvError>),
     SyncTransport(Result<SyncTransportEvent, flume::RecvError>),
 }
 
@@ -422,6 +521,25 @@ impl CurrentBreakState {
 
     const fn lock_after(self) -> bool {
         self.lock_after
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NotifiedBreak {
+    name: String,
+    slot: usize,
+}
+
+impl NotifiedBreak {
+    fn from_scheduled_break(scheduled_break: &ScheduledBreak) -> Option<Self> {
+        let BreakOrigin::Scheduled { slot } = scheduled_break.origin else {
+            return None;
+        };
+
+        Some(Self {
+            name: scheduled_break.name.clone(),
+            slot,
+        })
     }
 }
 

@@ -14,6 +14,19 @@ impl BreakSchedule {
         self.after_active
     }
 
+    fn next_due_break_after(&self, slot: usize) -> Option<ScheduledBreak> {
+        let max_interval = self.rules.iter().map(|rule| rule.interval).max()?;
+
+        for offset in 1..=max_interval {
+            let next_slot = slot.checked_add(offset)?;
+            if let Some(scheduled_break) = self.due_break(next_slot) {
+                return Some(scheduled_break);
+            }
+        }
+
+        None
+    }
+
     fn due_break(&self, slot: usize) -> Option<ScheduledBreak> {
         self.rules
             .iter()
@@ -102,6 +115,34 @@ impl BreakScheduler {
             slot: 0,
             state: SchedulerState::Ready(SchedulerMode::Active),
         }
+    }
+
+    pub(crate) const fn after_active(&self) -> Duration {
+        self.schedule.after_active()
+    }
+
+    pub(crate) fn upcoming_scheduled_break(&self) -> Option<UpcomingScheduledBreak> {
+        if self.state != SchedulerState::Ready(SchedulerMode::Active) {
+            return None;
+        }
+
+        let scheduled_break = self.schedule.next_due_break_after(self.slot)?;
+        let BreakOrigin::Scheduled { slot: next_slot } = scheduled_break.origin else {
+            return None;
+        };
+
+        let mut starts_after = self
+            .schedule
+            .after_active()
+            .saturating_sub(self.active_elapsed);
+        for _ in self.slot + 1..next_slot {
+            starts_after = starts_after.saturating_add(self.schedule.after_active());
+        }
+
+        Some(UpcomingScheduledBreak {
+            scheduled_break,
+            starts_after,
+        })
     }
 
     pub(crate) fn advance_active(&mut self, elapsed: Duration) -> Option<ScheduledBreak> {
@@ -217,6 +258,12 @@ pub(crate) struct ScheduledBreak {
 pub(crate) enum BreakOrigin {
     Scheduled { slot: usize },
     Manual,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UpcomingScheduledBreak {
+    pub(crate) scheduled_break: ScheduledBreak,
+    pub(crate) starts_after: Duration,
 }
 
 #[cfg(test)]

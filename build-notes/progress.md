@@ -188,6 +188,15 @@
   Follow-up cleanup collapsed duplicated local/synced runtime helper paths,
   removed thin backend actor channel wrappers, and made sync runtime tests drive
   ordered inputs without sleep-delayed event sources.
+- Completed `notification-tray-ui`: Linux and macOS production runs now start a
+  main-thread tray/menu-bar UI with controls to start configured break types,
+  disable for configured presets, disable until restart, and quit. Runtime now
+  sends one passive pre-break notification when active time enters the fixed
+  `min(30s, breaks.after_active / 2)` notice window for the next scheduled
+  break, and UI-originated controls reuse the existing local runtime paths so
+  manual breaks and disable actions can sync to authenticated peers. Follow-up
+  fix configures macOS as an accessory app and hides Dock visibility so Resteyes
+  is menu-bar only.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -271,6 +280,7 @@
   break/disable sync behavior.
 - `make check` passes after adding break/disable sync behavior.
 - `make check` passes after the break/disable sync runtime cleanup.
+- `make check` passes after adding notification tray UI behavior.
 - A bounded `timeout 3s make run` on macOS stays alive until terminated by
   `timeout` and no longer emits helper stderr during startup after AppKit setup
   was made lazy.
@@ -281,13 +291,14 @@
 - Manual X11 overlay, input-blocking, overlay UI, and trace-output verification
   is still pending because this environment does not provide usable X server
   access.
+- Manual Linux/macOS tray and notification verification is pending.
 - Manual macOS input-blocking verification with Accessibility/Input Monitoring
   permissions granted is still pending.
 
 ## Notes
 
 - Build work should proceed one step at a time.
-- The next planned increment is `notification-tray-ui`.
+- The next planned increment is `synced-lock-after-break`.
 - The later build order now brings macOS backend parity before sync protocol,
   then separates sync protocol, LAN discovery, authenticated peer transport,
   active-time sync, synced break/disable behavior, tray UI, and synced
