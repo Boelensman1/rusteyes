@@ -8,7 +8,7 @@ use crate::config::{SharedSecret, SyncConfig};
 use crate::sync_discovery::{DiscoveredPeer, LanDiscovery, SyncDiscoveryError};
 use crate::sync_protocol::{PeerId, SyncEvent, SyncProtocolError};
 #[cfg(test)]
-use crate::sync_transport_io::TransportEndpoint;
+use crate::sync_transport_io::{TransportEndpoint, TransportSendStatus};
 use crate::sync_transport_io::{TransportIo, TransportIoHandle};
 use std::fmt;
 use std::io;
@@ -26,8 +26,18 @@ const PRODUCTION_LISTEN_ADDR: &str = "0.0.0.0:0";
 const DISCOVERY_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 pub(crate) struct SyncTransport {
+    state: SyncTransportState,
+}
+
+enum SyncTransportState {
+    Inactive,
+    Active(Box<ActiveSyncTransport>),
+}
+
+struct ActiveSyncTransport {
     io: TransportIo,
     command_sender: mpsc::Sender<TransportCommand>,
+    inbound_receiver: mpsc::Receiver<SyncInboundEvent>,
     #[cfg(test)]
     local_addr: SocketAddr,
     worker_thread: Option<JoinHandle<()>>,
@@ -36,18 +46,18 @@ pub(crate) struct SyncTransport {
 }
 
 impl SyncTransport {
-    pub(crate) fn start(
-        sync: SyncConfig,
-    ) -> Result<Option<(Self, SyncInboundReceiver)>, SyncTransportError> {
+    pub(crate) fn start(sync: SyncConfig) -> Result<Self, SyncTransportError> {
         if !sync.enabled {
-            return Ok(None);
+            return Ok(Self {
+                state: SyncTransportState::Inactive,
+            });
         }
 
         let Some(shared_secret) = sync.shared_secret else {
             return Err(SyncTransportError::MissingSharedSecret);
         };
 
-        let self_id = PeerId::generate().map_err(|error| sync_protocol_error(&error))?;
+        let self_id = PeerId::generate().map_err(SyncTransportError::Protocol)?;
         Self::start_internal(
             self_id,
             shared_secret,
@@ -55,7 +65,6 @@ impl SyncTransport {
             DiscoveryMode::Advertise,
             None,
         )
-        .map(Some)
     }
 
     fn start_internal(
@@ -64,25 +73,23 @@ impl SyncTransport {
         listen_addr: impl ToSocketAddrs,
         discovery_mode: DiscoveryMode,
         observer: Option<mpsc::Sender<TransportNotification>>,
-    ) -> Result<(Self, SyncInboundReceiver), SyncTransportError> {
-        let hello = peer_hello_payload(self_id, &shared_secret)
-            .map_err(|error| sync_protocol_error(&error))?;
-        let (mut io, event_receiver, local_addr) =
-            TransportIo::listen(listen_addr).map_err(|error| sync_listen_error(&error))?;
-        let handle = io.handle();
+    ) -> Result<Self, SyncTransportError> {
+        let hello =
+            peer_hello_payload(self_id, &shared_secret).map_err(SyncTransportError::Protocol)?;
+        let mut binding = TransportIo::listen(listen_addr).map_err(SyncTransportError::Listen)?;
+        let handle = binding.io.handle();
         let (command_sender, command_receiver) = mpsc::channel();
         let (inbound_sender, inbound_receiver) = mpsc::channel();
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let discovery = match discovery_mode {
             DiscoveryMode::Advertise => {
-                match LanDiscovery::start(self_id, shared_secret.clone(), local_addr.port()) {
+                match LanDiscovery::start(self_id, shared_secret.clone(), binding.local_addr.port())
+                {
                     Ok(discovery) => Some(discovery),
                     Err(error) => {
                         shutdown.store(true, Ordering::Relaxed);
-                        io.remove_listener();
-                        io.stop();
-                        io.wait();
+                        binding.io.shutdown();
                         return Err(SyncTransportError::Discovery(error));
                     }
                 }
@@ -99,37 +106,123 @@ impl SyncTransport {
             inbound_sender,
             observer,
         );
-        let worker_thread =
-            spawn_worker_thread(worker, event_receiver, command_receiver, shutdown.clone());
+        let worker_thread = spawn_worker_thread(
+            worker,
+            binding.event_receiver,
+            command_receiver,
+            shutdown.clone(),
+        );
         let discovery_thread = discovery.map(|discovery| {
             spawn_discovery_thread(self_id, discovery, handle.clone(), shutdown.clone())
         });
 
         info!(
             peer_id = %self_id,
-            listen_addr = %local_addr,
+            listen_addr = %binding.local_addr,
             discovery = discovery_mode.as_str(),
             "started Resteyes sync transport"
         );
 
-        Ok((
-            Self {
-                io,
+        Ok(Self {
+            state: SyncTransportState::Active(Box::new(ActiveSyncTransport {
+                io: binding.io,
                 command_sender,
+                inbound_receiver,
                 #[cfg(test)]
-                local_addr,
+                local_addr: binding.local_addr,
                 worker_thread: Some(worker_thread),
                 discovery_thread,
                 shutdown,
-            },
-            SyncInboundReceiver {
-                receiver: inbound_receiver,
-            },
-        ))
+            })),
+        })
     }
 
     #[allow(dead_code)]
     pub(crate) fn broadcast(&self, event: SyncEvent) -> Result<usize, SyncTransportError> {
+        let SyncTransportState::Active(active) = &self.state else {
+            return Ok(0);
+        };
+
+        active.broadcast(event)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn send(
+        &self,
+        peer_id: PeerId,
+        event: SyncEvent,
+    ) -> Result<bool, SyncTransportError> {
+        let SyncTransportState::Active(active) = &self.state else {
+            return Ok(false);
+        };
+
+        active.send(peer_id, event)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn try_recv_event(&self) -> Result<Option<SyncInboundEvent>, SyncTransportError> {
+        let SyncTransportState::Active(active) = &self.state else {
+            return Ok(None);
+        };
+
+        active.try_recv_event()
+    }
+
+    #[cfg(test)]
+    fn start_for_test(
+        self_id: PeerId,
+        shared_secret: SharedSecret,
+    ) -> Result<(Self, mpsc::Receiver<TransportNotification>), SyncTransportError> {
+        let (sender, receiver) = mpsc::channel();
+        let transport = Self::start_internal(
+            self_id,
+            shared_secret,
+            "127.0.0.1:0",
+            DiscoveryMode::Disabled,
+            Some(sender),
+        )?;
+
+        Ok((transport, receiver))
+    }
+
+    #[cfg(test)]
+    fn connect_for_test(&self, address: SocketAddr) -> io::Result<TransportEndpoint> {
+        self.active_for_test().io.handle().connect(address)
+    }
+
+    #[cfg(test)]
+    fn send_raw_for_test(
+        &self,
+        endpoint: TransportEndpoint,
+        payload: &[u8],
+    ) -> TransportSendStatus {
+        self.active_for_test().io.handle().send(endpoint, payload)
+    }
+
+    #[cfg(test)]
+    fn local_addr_for_test(&self) -> SocketAddr {
+        self.active_for_test().local_addr
+    }
+
+    #[cfg(test)]
+    fn recv_event_timeout_for_test(
+        &self,
+        timeout: Duration,
+    ) -> Result<Option<SyncInboundEvent>, SyncTransportError> {
+        self.active_for_test().recv_event_timeout(timeout)
+    }
+
+    #[cfg(test)]
+    fn active_for_test(&self) -> &ActiveSyncTransport {
+        match &self.state {
+            SyncTransportState::Active(active) => active,
+            SyncTransportState::Inactive => panic!("test transport should be active"),
+        }
+    }
+}
+
+impl ActiveSyncTransport {
+    fn broadcast(&self, event: SyncEvent) -> Result<usize, SyncTransportError> {
         let (reply_sender, reply_receiver) = mpsc::channel();
         self.command_sender
             .send(TransportCommand::Broadcast {
@@ -143,12 +236,7 @@ impl SyncTransport {
             .map_err(|_| SyncTransportError::WorkerStopped)?
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn send(
-        &self,
-        peer_id: PeerId,
-        event: SyncEvent,
-    ) -> Result<bool, SyncTransportError> {
+    fn send(&self, peer_id: PeerId, event: SyncEvent) -> Result<bool, SyncTransportError> {
         let (reply_sender, reply_receiver) = mpsc::channel();
         self.command_sender
             .send(TransportCommand::Send {
@@ -163,43 +251,27 @@ impl SyncTransport {
             .map_err(|_| SyncTransportError::WorkerStopped)?
     }
 
-    #[cfg(test)]
-    fn start_for_test(
-        self_id: PeerId,
-        shared_secret: SharedSecret,
-    ) -> Result<
-        (
-            Self,
-            SyncInboundReceiver,
-            mpsc::Receiver<TransportNotification>,
-        ),
-        SyncTransportError,
-    > {
-        let (sender, receiver) = mpsc::channel();
-        let (transport, inbound_receiver) = Self::start_internal(
-            self_id,
-            shared_secret,
-            "127.0.0.1:0",
-            DiscoveryMode::Disabled,
-            Some(sender),
-        )?;
-
-        Ok((transport, inbound_receiver, receiver))
+    fn try_recv_event(&self) -> Result<Option<SyncInboundEvent>, SyncTransportError> {
+        match self.inbound_receiver.try_recv() {
+            Ok(event) => Ok(Some(event)),
+            Err(mpsc::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::TryRecvError::Disconnected) => Err(SyncTransportError::WorkerStopped),
+        }
     }
 
     #[cfg(test)]
-    fn connect_for_test(&self, address: SocketAddr) -> io::Result<TransportEndpoint> {
-        self.io.handle().connect(address)
+    fn recv_event_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<Option<SyncInboundEvent>, SyncTransportError> {
+        match self.inbound_receiver.recv_timeout(timeout) {
+            Ok(event) => Ok(Some(event)),
+            Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(SyncTransportError::WorkerStopped),
+        }
     }
 
-    #[cfg(test)]
-    fn local_addr_for_test(&self) -> SocketAddr {
-        self.local_addr
-    }
-}
-
-impl Drop for SyncTransport {
-    fn drop(&mut self) {
+    fn shutdown(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
         self.io.remove_listener();
         self.io.stop();
@@ -216,31 +288,19 @@ impl Drop for SyncTransport {
     }
 }
 
-#[allow(dead_code)]
+impl Drop for SyncTransport {
+    fn drop(&mut self) {
+        if let SyncTransportState::Active(active) = &mut self.state {
+            active.shutdown();
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SyncInboundEvent {
     pub(crate) sender: PeerId,
     pub(crate) sequence: u64,
     pub(crate) event: SyncEvent,
-}
-
-#[allow(dead_code)]
-pub(crate) struct SyncInboundReceiver {
-    receiver: mpsc::Receiver<SyncInboundEvent>,
-}
-
-#[allow(dead_code)]
-impl SyncInboundReceiver {
-    pub(crate) fn try_recv(&self) -> Result<SyncInboundEvent, mpsc::TryRecvError> {
-        self.receiver.try_recv()
-    }
-
-    pub(crate) fn recv_timeout(
-        &self,
-        timeout: Duration,
-    ) -> Result<SyncInboundEvent, mpsc::RecvTimeoutError> {
-        self.receiver.recv_timeout(timeout)
-    }
 }
 
 fn spawn_discovery_thread(
@@ -308,8 +368,8 @@ enum TransportNotification {
 #[derive(Debug)]
 pub(crate) enum SyncTransportError {
     MissingSharedSecret,
-    Protocol { message: String },
-    Listen { message: String },
+    Protocol(SyncProtocolError),
+    Listen(io::Error),
     Discovery(SyncDiscoveryError),
     WorkerStopped,
     SequenceExhausted,
@@ -321,11 +381,11 @@ impl fmt::Display for SyncTransportError {
             Self::MissingSharedSecret => {
                 formatter.write_str("sync shared_secret is required when sync transport is enabled")
             }
-            Self::Protocol { message } => {
-                write!(formatter, "sync transport protocol setup failed: {message}")
+            Self::Protocol(error) => {
+                write!(formatter, "sync transport protocol setup failed: {error}")
             }
-            Self::Listen { message } => {
-                write!(formatter, "sync transport listener setup failed: {message}")
+            Self::Listen(error) => {
+                write!(formatter, "sync transport listener setup failed: {error}")
             }
             Self::Discovery(error) => write!(formatter, "{error}"),
             Self::WorkerStopped => formatter.write_str("sync transport worker stopped"),
@@ -337,25 +397,11 @@ impl fmt::Display for SyncTransportError {
 impl std::error::Error for SyncTransportError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Protocol(error) => Some(error),
+            Self::Listen(error) => Some(error),
             Self::Discovery(error) => Some(error),
-            Self::MissingSharedSecret
-            | Self::Protocol { .. }
-            | Self::Listen { .. }
-            | Self::WorkerStopped
-            | Self::SequenceExhausted => None,
+            Self::MissingSharedSecret | Self::WorkerStopped | Self::SequenceExhausted => None,
         }
-    }
-}
-
-fn sync_protocol_error(error: &SyncProtocolError) -> SyncTransportError {
-    SyncTransportError::Protocol {
-        message: error.to_string(),
-    }
-}
-
-fn sync_listen_error(error: &io::Error) -> SyncTransportError {
-    SyncTransportError::Listen {
-        message: error.to_string(),
     }
 }
 

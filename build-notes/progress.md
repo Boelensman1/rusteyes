@@ -151,7 +151,11 @@
   and authenticated inbound domain-event receiver APIs before runtime sync
   behavior is added. Later follow-up cleanup split the transport facade,
   worker commands, worker loop, and connection tracking into smaller modules
-  and added per-peer inbound event sequence replay protection.
+  and added per-peer inbound event sequence replay protection. Later API
+  cleanup made disabled sync an inert transport value, moved inbound polling
+  onto the transport facade, named the transport IO listener binding, split
+  connection success/failure events, and moved sender/replay acceptance behind
+  the connection tracker.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.

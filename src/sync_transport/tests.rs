@@ -1,9 +1,9 @@
 use super::connections::{
-    BindPeerStatus, ConnectionDirection, ConnectionTracker, EventSequenceAcceptance,
+    BindPeerOutcome, ConnectionDirection, ConnectionTracker, InboundEventAcceptance,
 };
 use super::worker::peer_hello_payload;
-use super::{SyncInboundEvent, SyncInboundReceiver, SyncTransport, TransportNotification};
-use crate::config::SharedSecret;
+use super::{SyncInboundEvent, SyncTransport, TransportNotification};
+use crate::config::{SharedSecret, SyncConfig};
 use crate::sync_protocol::{
     PeerId, SyncEvent, SyncFramePayload, SyncMessage, SyncProtocolError, TransportControlFrame,
     decode_authenticated, encode_authenticated,
@@ -54,18 +54,18 @@ fn peer_hello_rejects_wrong_shared_secret() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn tracker_binds_endpoint_to_authenticated_peer() -> Result<(), Box<dyn Error>> {
-    let mut tracker = ConnectionTracker::default();
+    let mut tracker = ConnectionTracker::new(local_peer()?);
     tracker.record_endpoint(1, ConnectionDirection::Incoming);
 
-    let result = tracker.bind_peer(local_peer()?, 1, remote_peer()?);
+    let outcome = tracker.bind_peer(1, remote_peer()?);
 
     assert_eq!(
-        result.status,
-        BindPeerStatus::Accepted {
+        outcome,
+        BindPeerOutcome::Authenticated {
             peer_connected: true,
+            close_endpoints: vec![],
         }
     );
-    assert!(result.remove_endpoints.is_empty());
     assert_eq!(tracker.peer_for_endpoint(1), Some(remote_peer()?));
 
     Ok(())
@@ -73,13 +73,17 @@ fn tracker_binds_endpoint_to_authenticated_peer() -> Result<(), Box<dyn Error>> 
 
 #[test]
 fn tracker_rejects_self_peer_id() -> Result<(), Box<dyn Error>> {
-    let mut tracker = ConnectionTracker::default();
+    let mut tracker = ConnectionTracker::new(local_peer()?);
     tracker.record_endpoint(1, ConnectionDirection::Incoming);
 
-    let result = tracker.bind_peer(local_peer()?, 1, local_peer()?);
+    let outcome = tracker.bind_peer(1, local_peer()?);
 
-    assert_eq!(result.status, BindPeerStatus::RejectedSelf);
-    assert_eq!(result.remove_endpoints, vec![1]);
+    assert_eq!(
+        outcome,
+        BindPeerOutcome::RejectedSelf {
+            close_endpoints: vec![1],
+        }
+    );
     assert!(tracker.endpoints().is_empty());
 
     Ok(())
@@ -87,32 +91,36 @@ fn tracker_rejects_self_peer_id() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn tracker_rejects_unknown_endpoint() -> Result<(), Box<dyn Error>> {
-    let mut tracker = ConnectionTracker::default();
+    let mut tracker = ConnectionTracker::new(local_peer()?);
 
-    let result = tracker.bind_peer(local_peer()?, 1, remote_peer()?);
+    let outcome = tracker.bind_peer(1, remote_peer()?);
 
-    assert_eq!(result.status, BindPeerStatus::RejectedUnknownEndpoint);
-    assert_eq!(result.remove_endpoints, vec![1]);
+    assert_eq!(
+        outcome,
+        BindPeerOutcome::RejectedUnknownEndpoint {
+            close_endpoints: vec![1],
+        }
+    );
 
     Ok(())
 }
 
 #[test]
 fn lower_peer_keeps_outgoing_duplicate_connection() -> Result<(), Box<dyn Error>> {
-    let mut tracker = ConnectionTracker::default();
+    let mut tracker = ConnectionTracker::new(local_peer()?);
     tracker.record_endpoint(1, ConnectionDirection::Incoming);
-    tracker.bind_peer(local_peer()?, 1, remote_peer()?);
+    tracker.bind_peer(1, remote_peer()?);
     tracker.record_endpoint(2, ConnectionDirection::Outgoing);
 
-    let result = tracker.bind_peer(local_peer()?, 2, remote_peer()?);
+    let outcome = tracker.bind_peer(2, remote_peer()?);
 
     assert_eq!(
-        result.status,
-        BindPeerStatus::Accepted {
+        outcome,
+        BindPeerOutcome::Authenticated {
             peer_connected: false,
+            close_endpoints: vec![1],
         }
     );
-    assert_eq!(result.remove_endpoints, vec![1]);
     assert_eq!(tracker.peer_for_endpoint(1), None);
     assert_eq!(tracker.peer_for_endpoint(2), Some(remote_peer()?));
 
@@ -121,20 +129,20 @@ fn lower_peer_keeps_outgoing_duplicate_connection() -> Result<(), Box<dyn Error>
 
 #[test]
 fn higher_peer_keeps_incoming_duplicate_connection() -> Result<(), Box<dyn Error>> {
-    let mut tracker = ConnectionTracker::default();
+    let mut tracker = ConnectionTracker::new(remote_peer()?);
     tracker.record_endpoint(1, ConnectionDirection::Incoming);
-    tracker.bind_peer(remote_peer()?, 1, local_peer()?);
+    tracker.bind_peer(1, local_peer()?);
     tracker.record_endpoint(2, ConnectionDirection::Outgoing);
 
-    let result = tracker.bind_peer(remote_peer()?, 2, local_peer()?);
+    let outcome = tracker.bind_peer(2, local_peer()?);
 
     assert_eq!(
-        result.status,
-        BindPeerStatus::Accepted {
+        outcome,
+        BindPeerOutcome::Authenticated {
             peer_connected: false,
+            close_endpoints: vec![2],
         }
     );
-    assert_eq!(result.remove_endpoints, vec![2]);
     assert_eq!(tracker.peer_for_endpoint(1), Some(local_peer()?));
     assert_eq!(tracker.peer_for_endpoint(2), None);
 
@@ -143,9 +151,9 @@ fn higher_peer_keeps_incoming_duplicate_connection() -> Result<(), Box<dyn Error
 
 #[test]
 fn disconnect_removes_endpoint_peer_binding() -> Result<(), Box<dyn Error>> {
-    let mut tracker = ConnectionTracker::default();
+    let mut tracker = ConnectionTracker::new(local_peer()?);
     tracker.record_endpoint(1, ConnectionDirection::Incoming);
-    tracker.bind_peer(local_peer()?, 1, remote_peer()?);
+    tracker.bind_peer(1, remote_peer()?);
 
     assert_eq!(tracker.remove_endpoint(1), Some(remote_peer()?));
     assert!(tracker.endpoints().is_empty());
@@ -157,27 +165,49 @@ fn disconnect_removes_endpoint_peer_binding() -> Result<(), Box<dyn Error>> {
 fn tracker_rejects_stale_event_sequences_per_peer() -> Result<(), Box<dyn Error>> {
     let remote = remote_peer()?;
     let third = third_peer()?;
-    let mut tracker: ConnectionTracker<u8> = ConnectionTracker::default();
+    let mut tracker: ConnectionTracker<u8> = ConnectionTracker::new(local_peer()?);
+    tracker.record_endpoint(1, ConnectionDirection::Incoming);
+    tracker.bind_peer(1, remote);
+    tracker.record_endpoint(2, ConnectionDirection::Incoming);
+    tracker.bind_peer(2, third);
 
     assert_eq!(
-        tracker.accept_event_sequence(remote, 1),
-        EventSequenceAcceptance::Accepted
+        tracker.accept_inbound_event(1, remote, 1),
+        InboundEventAcceptance::Accepted
     );
     assert_eq!(
-        tracker.accept_event_sequence(remote, 1),
-        EventSequenceAcceptance::Replayed { highest_seen: 1 }
+        tracker.accept_inbound_event(1, remote, 1),
+        InboundEventAcceptance::Replayed { highest_seen: 1 }
     );
     assert_eq!(
-        tracker.accept_event_sequence(remote, 0),
-        EventSequenceAcceptance::Replayed { highest_seen: 1 }
+        tracker.accept_inbound_event(1, remote, 0),
+        InboundEventAcceptance::Replayed { highest_seen: 1 }
     );
     assert_eq!(
-        tracker.accept_event_sequence(remote, 2),
-        EventSequenceAcceptance::Accepted
+        tracker.accept_inbound_event(1, remote, 2),
+        InboundEventAcceptance::Accepted
     );
     assert_eq!(
-        tracker.accept_event_sequence(third, 1),
-        EventSequenceAcceptance::Accepted
+        tracker.accept_inbound_event(2, third, 1),
+        InboundEventAcceptance::Accepted
+    );
+
+    Ok(())
+}
+
+#[test]
+fn tracker_rejects_inbound_event_sender_mismatch() -> Result<(), Box<dyn Error>> {
+    let remote = remote_peer()?;
+    let third = third_peer()?;
+    let mut tracker = ConnectionTracker::new(local_peer()?);
+    tracker.record_endpoint(1, ConnectionDirection::Incoming);
+    tracker.bind_peer(1, remote);
+
+    assert_eq!(
+        tracker.accept_inbound_event(1, third, 1),
+        InboundEventAcceptance::SenderMismatch {
+            authenticated_peer_id: remote,
+        }
     );
 
     Ok(())
@@ -187,36 +217,50 @@ fn tracker_rejects_stale_event_sequences_per_peer() -> Result<(), Box<dyn Error>
 fn tracker_preserves_sequence_state_after_reconnect() -> Result<(), Box<dyn Error>> {
     let local = local_peer()?;
     let remote = remote_peer()?;
-    let mut tracker = ConnectionTracker::default();
+    let mut tracker = ConnectionTracker::new(local);
 
     tracker.record_endpoint(1, ConnectionDirection::Incoming);
-    tracker.bind_peer(local, 1, remote);
+    tracker.bind_peer(1, remote);
     assert_eq!(
-        tracker.accept_event_sequence(remote, 7),
-        EventSequenceAcceptance::Accepted
+        tracker.accept_inbound_event(1, remote, 7),
+        InboundEventAcceptance::Accepted
     );
     assert_eq!(tracker.remove_endpoint(1), Some(remote));
 
     tracker.record_endpoint(2, ConnectionDirection::Incoming);
-    tracker.bind_peer(local, 2, remote);
+    tracker.bind_peer(2, remote);
     assert_eq!(
-        tracker.accept_event_sequence(remote, 7),
-        EventSequenceAcceptance::Replayed { highest_seen: 7 }
+        tracker.accept_inbound_event(2, remote, 7),
+        InboundEventAcceptance::Replayed { highest_seen: 7 }
     );
     assert_eq!(
-        tracker.accept_event_sequence(remote, 8),
-        EventSequenceAcceptance::Accepted
+        tracker.accept_inbound_event(2, remote, 8),
+        InboundEventAcceptance::Accepted
     );
 
     Ok(())
 }
 
 #[test]
+fn disabled_transport_is_inert() -> Result<(), Box<dyn Error>> {
+    let transport = SyncTransport::start(SyncConfig::default())?;
+
+    assert_eq!(
+        transport.broadcast(SyncEvent::ActiveTimeElapsed {
+            elapsed: Duration::from_millis(1),
+        })?,
+        0
+    );
+    assert!(!transport.send(remote_peer()?, SyncEvent::Enable)?);
+    assert_eq!(transport.try_recv_event()?, None);
+
+    Ok(())
+}
+
+#[test]
 fn loopback_transports_authenticate_after_hello_exchange() -> Result<(), Box<dyn Error>> {
-    let (left, _left_inbound, left_events) =
-        SyncTransport::start_for_test(local_peer()?, shared_secret())?;
-    let (right, _right_inbound, right_events) =
-        SyncTransport::start_for_test(remote_peer()?, shared_secret())?;
+    let (left, left_events) = SyncTransport::start_for_test(local_peer()?, shared_secret())?;
+    let (right, right_events) = SyncTransport::start_for_test(remote_peer()?, shared_secret())?;
 
     left.connect_for_test(right.local_addr_for_test())?;
 
@@ -228,10 +272,8 @@ fn loopback_transports_authenticate_after_hello_exchange() -> Result<(), Box<dyn
 
 #[test]
 fn broadcast_sends_domain_event_to_authenticated_peer() -> Result<(), Box<dyn Error>> {
-    let (left, _left_inbound, left_events) =
-        SyncTransport::start_for_test(local_peer()?, shared_secret())?;
-    let (right, right_inbound, right_events) =
-        SyncTransport::start_for_test(remote_peer()?, shared_secret())?;
+    let (left, left_events) = SyncTransport::start_for_test(local_peer()?, shared_secret())?;
+    let (right, right_events) = SyncTransport::start_for_test(remote_peer()?, shared_secret())?;
 
     left.connect_for_test(right.local_addr_for_test())?;
     expect_peer_authenticated(&left_events, remote_peer()?)?;
@@ -245,7 +287,7 @@ fn broadcast_sends_domain_event_to_authenticated_peer() -> Result<(), Box<dyn Er
     );
 
     assert_eq!(
-        expect_inbound_event(&right_inbound)?,
+        expect_inbound_event(&right)?,
         SyncInboundEvent {
             sender: local_peer()?,
             sequence: 1,
@@ -260,12 +302,9 @@ fn broadcast_sends_domain_event_to_authenticated_peer() -> Result<(), Box<dyn Er
 
 #[test]
 fn directed_send_delivers_only_to_requested_authenticated_peer() -> Result<(), Box<dyn Error>> {
-    let (left, _left_inbound, left_events) =
-        SyncTransport::start_for_test(local_peer()?, shared_secret())?;
-    let (right, right_inbound, right_events) =
-        SyncTransport::start_for_test(remote_peer()?, shared_secret())?;
-    let (third, third_inbound, third_events) =
-        SyncTransport::start_for_test(third_peer()?, shared_secret())?;
+    let (left, left_events) = SyncTransport::start_for_test(local_peer()?, shared_secret())?;
+    let (right, right_events) = SyncTransport::start_for_test(remote_peer()?, shared_secret())?;
+    let (third, third_events) = SyncTransport::start_for_test(third_peer()?, shared_secret())?;
 
     left.connect_for_test(right.local_addr_for_test())?;
     left.connect_for_test(third.local_addr_for_test())?;
@@ -276,7 +315,7 @@ fn directed_send_delivers_only_to_requested_authenticated_peer() -> Result<(), B
     assert!(left.send(remote_peer()?, SyncEvent::Enable)?);
 
     assert_eq!(
-        expect_inbound_event(&right_inbound)?,
+        expect_inbound_event(&right)?,
         SyncInboundEvent {
             sender: local_peer()?,
             sequence: 1,
@@ -284,9 +323,9 @@ fn directed_send_delivers_only_to_requested_authenticated_peer() -> Result<(), B
         }
     );
     assert!(
-        third_inbound
-            .recv_timeout(Duration::from_millis(100))
-            .is_err()
+        third
+            .recv_event_timeout_for_test(Duration::from_millis(100))?
+            .is_none()
     );
 
     Ok(())
@@ -294,8 +333,7 @@ fn directed_send_delivers_only_to_requested_authenticated_peer() -> Result<(), B
 
 #[test]
 fn directed_send_returns_false_for_unknown_peer() -> Result<(), Box<dyn Error>> {
-    let (left, _left_inbound, _left_events) =
-        SyncTransport::start_for_test(local_peer()?, shared_secret())?;
+    let (left, _left_events) = SyncTransport::start_for_test(local_peer()?, shared_secret())?;
 
     assert!(!left.send(remote_peer()?, SyncEvent::Enable)?);
 
@@ -304,13 +342,12 @@ fn directed_send_returns_false_for_unknown_peer() -> Result<(), Box<dyn Error>> 
 
 #[test]
 fn domain_event_before_authenticated_hello_is_rejected() -> Result<(), Box<dyn Error>> {
-    let (server, server_inbound, _server_events) =
-        SyncTransport::start_for_test(local_peer()?, shared_secret())?;
-    let (mut client_io, mut client_events, _) = TransportIo::listen("127.0.0.1:0")?;
-    let client_handle = client_io.handle();
+    let (server, _server_events) = SyncTransport::start_for_test(local_peer()?, shared_secret())?;
+    let mut client_binding = TransportIo::listen("127.0.0.1:0")?;
+    let client_handle = client_binding.io.handle();
     client_handle.connect(server.local_addr_for_test())?;
 
-    let endpoint = expect_client_connected(&mut client_events)?;
+    let endpoint = expect_client_connected(&mut client_binding.event_receiver)?;
     let payload = encode_authenticated(
         &SyncMessage::event(remote_peer()?, 1, SyncEvent::Enable),
         &shared_secret(),
@@ -320,26 +357,22 @@ fn domain_event_before_authenticated_hello_is_rejected() -> Result<(), Box<dyn E
         client_handle.send(endpoint, payload.as_bytes()),
         TransportSendStatus::Sent
     );
-    expect_client_disconnected(&mut client_events)?;
+    expect_client_disconnected(&mut client_binding.event_receiver)?;
     assert!(
-        server_inbound
-            .recv_timeout(Duration::from_millis(100))
-            .is_err()
+        server
+            .recv_event_timeout_for_test(Duration::from_millis(100))?
+            .is_none()
     );
 
-    client_io.remove_listener();
-    client_io.stop();
-    client_io.wait();
+    client_binding.io.shutdown();
 
     Ok(())
 }
 
 #[test]
 fn authenticated_endpoint_rejects_spoofed_sender() -> Result<(), Box<dyn Error>> {
-    let (left, left_inbound, left_events) =
-        SyncTransport::start_for_test(local_peer()?, shared_secret())?;
-    let (right, _right_inbound, right_events) =
-        SyncTransport::start_for_test(remote_peer()?, shared_secret())?;
+    let (left, left_events) = SyncTransport::start_for_test(local_peer()?, shared_secret())?;
+    let (right, right_events) = SyncTransport::start_for_test(remote_peer()?, shared_secret())?;
 
     let right_endpoint = right.connect_for_test(left.local_addr_for_test())?;
     expect_peer_authenticated(&left_events, remote_peer()?)?;
@@ -351,14 +384,13 @@ fn authenticated_endpoint_rejects_spoofed_sender() -> Result<(), Box<dyn Error>>
     )?;
 
     assert_eq!(
-        right.io.handle().send(right_endpoint, payload.as_bytes()),
+        right.send_raw_for_test(right_endpoint, payload.as_bytes()),
         TransportSendStatus::Sent
     );
     expect_peer_disconnected(&left_events, remote_peer()?)?;
     assert!(
-        left_inbound
-            .recv_timeout(Duration::from_millis(100))
-            .is_err()
+        left.recv_event_timeout_for_test(Duration::from_millis(100))?
+            .is_none()
     );
 
     Ok(())
@@ -366,10 +398,8 @@ fn authenticated_endpoint_rejects_spoofed_sender() -> Result<(), Box<dyn Error>>
 
 #[test]
 fn authenticated_endpoint_rejects_replayed_sequence() -> Result<(), Box<dyn Error>> {
-    let (left, left_inbound, left_events) =
-        SyncTransport::start_for_test(local_peer()?, shared_secret())?;
-    let (right, _right_inbound, right_events) =
-        SyncTransport::start_for_test(remote_peer()?, shared_secret())?;
+    let (left, left_events) = SyncTransport::start_for_test(local_peer()?, shared_secret())?;
+    let (right, right_events) = SyncTransport::start_for_test(remote_peer()?, shared_secret())?;
 
     let right_endpoint = right.connect_for_test(left.local_addr_for_test())?;
     expect_peer_authenticated(&left_events, remote_peer()?)?;
@@ -381,14 +411,11 @@ fn authenticated_endpoint_rejects_replayed_sequence() -> Result<(), Box<dyn Erro
     )?;
 
     assert_eq!(
-        right
-            .io
-            .handle()
-            .send(right_endpoint, replayed_payload.as_bytes()),
+        right.send_raw_for_test(right_endpoint, replayed_payload.as_bytes()),
         TransportSendStatus::Sent
     );
     assert_eq!(
-        expect_inbound_event(&left_inbound)?,
+        expect_inbound_event(&left)?,
         SyncInboundEvent {
             sender: remote_peer()?,
             sequence: 1,
@@ -397,16 +424,12 @@ fn authenticated_endpoint_rejects_replayed_sequence() -> Result<(), Box<dyn Erro
     );
 
     assert_eq!(
-        right
-            .io
-            .handle()
-            .send(right_endpoint, replayed_payload.as_bytes()),
+        right.send_raw_for_test(right_endpoint, replayed_payload.as_bytes()),
         TransportSendStatus::Sent
     );
     assert!(
-        left_inbound
-            .recv_timeout(Duration::from_millis(100))
-            .is_err()
+        left.recv_event_timeout_for_test(Duration::from_millis(100))?
+            .is_none()
     );
 
     let fresh_payload = encode_authenticated(
@@ -415,14 +438,11 @@ fn authenticated_endpoint_rejects_replayed_sequence() -> Result<(), Box<dyn Erro
     )?;
 
     assert_eq!(
-        right
-            .io
-            .handle()
-            .send(right_endpoint, fresh_payload.as_bytes()),
+        right.send_raw_for_test(right_endpoint, fresh_payload.as_bytes()),
         TransportSendStatus::Sent
     );
     assert_eq!(
-        expect_inbound_event(&left_inbound)?,
+        expect_inbound_event(&left)?,
         SyncInboundEvent {
             sender: remote_peer()?,
             sequence: 2,
@@ -503,10 +523,10 @@ fn expect_peer_disconnected(
     }
 }
 
-fn expect_inbound_event(
-    receiver: &SyncInboundReceiver,
-) -> Result<SyncInboundEvent, Box<dyn Error>> {
-    Ok(receiver.recv_timeout(Duration::from_secs(2))?)
+fn expect_inbound_event(transport: &SyncTransport) -> Result<SyncInboundEvent, Box<dyn Error>> {
+    transport
+        .recv_event_timeout_for_test(Duration::from_secs(2))?
+        .ok_or_else(|| "timed out waiting for inbound sync event".into())
 }
 
 fn expect_client_connected(
@@ -522,7 +542,7 @@ fn expect_client_connected(
         }
 
         match receiver.receive_timeout(remaining) {
-            Some(TransportIoEvent::Connected(endpoint, true)) => return Ok(endpoint),
+            Some(TransportIoEvent::Connected(endpoint)) => return Ok(endpoint),
             Some(_) => {}
             None => return Err("timed out waiting for raw client connection".into()),
         }

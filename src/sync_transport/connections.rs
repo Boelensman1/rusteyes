@@ -9,13 +9,15 @@ pub(super) enum ConnectionDirection {
 
 #[derive(Debug)]
 pub(super) struct ConnectionTracker<E> {
+    self_id: PeerId,
     connections: Vec<Connection<E>>,
     highest_accepted_sequences: BTreeMap<PeerId, u64>,
 }
 
-impl<E> Default for ConnectionTracker<E> {
-    fn default() -> Self {
+impl<E> ConnectionTracker<E> {
+    pub(super) fn new(self_id: PeerId) -> Self {
         Self {
+            self_id,
             connections: Vec::new(),
             highest_accepted_sequences: BTreeMap::new(),
         }
@@ -39,38 +41,31 @@ where
         });
     }
 
-    pub(super) fn bind_peer(
-        &mut self,
-        self_id: PeerId,
-        endpoint: E,
-        peer_id: PeerId,
-    ) -> BindPeerResult<E> {
-        if peer_id == self_id {
+    pub(super) fn bind_peer(&mut self, endpoint: E, peer_id: PeerId) -> BindPeerOutcome<E> {
+        if peer_id == self.self_id {
             self.remove_endpoint(endpoint);
-            return BindPeerResult {
-                status: BindPeerStatus::RejectedSelf,
-                remove_endpoints: vec![endpoint],
+            return BindPeerOutcome::RejectedSelf {
+                close_endpoints: vec![endpoint],
             };
         }
 
         let had_peer = self.peer_is_connected(peer_id);
         let Some(connection) = self.connection_mut(endpoint) else {
-            return BindPeerResult {
-                status: BindPeerStatus::RejectedUnknownEndpoint,
-                remove_endpoints: vec![endpoint],
+            return BindPeerOutcome::RejectedUnknownEndpoint {
+                close_endpoints: vec![endpoint],
             };
         };
 
         connection.peer_id = Some(peer_id);
-        let remove_endpoints = self.collapse_duplicate_peer_connections(self_id, peer_id);
+        let close_endpoints = self.collapse_duplicate_peer_connections(peer_id);
         let peer_connected = !had_peer
             && self
                 .connection(endpoint)
                 .is_some_and(|connection| connection.peer_id == Some(peer_id));
 
-        BindPeerResult {
-            status: BindPeerStatus::Accepted { peer_connected },
-            remove_endpoints,
+        BindPeerOutcome::Authenticated {
+            peer_connected,
+            close_endpoints,
         }
     }
 
@@ -109,19 +104,30 @@ where
             .collect()
     }
 
-    pub(super) fn accept_event_sequence(
+    pub(super) fn accept_inbound_event(
         &mut self,
-        peer_id: PeerId,
+        endpoint: E,
+        sender: PeerId,
         sequence: u64,
-    ) -> EventSequenceAcceptance {
+    ) -> InboundEventAcceptance {
+        let Some(peer_id) = self.peer_for_endpoint(endpoint) else {
+            return InboundEventAcceptance::UnauthenticatedEndpoint;
+        };
+
+        if peer_id != sender {
+            return InboundEventAcceptance::SenderMismatch {
+                authenticated_peer_id: peer_id,
+            };
+        }
+
         if let Some(&highest_seen) = self.highest_accepted_sequences.get(&peer_id)
             && sequence <= highest_seen
         {
-            return EventSequenceAcceptance::Replayed { highest_seen };
+            return InboundEventAcceptance::Replayed { highest_seen };
         }
 
         self.highest_accepted_sequences.insert(peer_id, sequence);
-        EventSequenceAcceptance::Accepted
+        InboundEventAcceptance::Accepted
     }
 
     fn peer_is_connected(&self, peer_id: PeerId) -> bool {
@@ -130,8 +136,8 @@ where
             .any(|connection| connection.peer_id == Some(peer_id))
     }
 
-    fn collapse_duplicate_peer_connections(&mut self, self_id: PeerId, peer_id: PeerId) -> Vec<E> {
-        let Some(keep_endpoint) = self.endpoint_to_keep(self_id, peer_id) else {
+    fn collapse_duplicate_peer_connections(&mut self, peer_id: PeerId) -> Vec<E> {
+        let Some(keep_endpoint) = self.endpoint_to_keep(peer_id) else {
             return Vec::new();
         };
 
@@ -150,8 +156,8 @@ where
         remove_endpoints
     }
 
-    fn endpoint_to_keep(&self, self_id: PeerId, peer_id: PeerId) -> Option<E> {
-        let desired_direction = desired_connection_direction(self_id, peer_id);
+    fn endpoint_to_keep(&self, peer_id: PeerId) -> Option<E> {
+        let desired_direction = desired_connection_direction(self.self_id, peer_id);
 
         self.connections
             .iter()
@@ -187,21 +193,24 @@ struct Connection<E> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct BindPeerResult<E> {
-    pub(super) status: BindPeerStatus,
-    pub(super) remove_endpoints: Vec<E>,
+pub(super) enum BindPeerOutcome<E> {
+    Authenticated {
+        peer_connected: bool,
+        close_endpoints: Vec<E>,
+    },
+    RejectedSelf {
+        close_endpoints: Vec<E>,
+    },
+    RejectedUnknownEndpoint {
+        close_endpoints: Vec<E>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum BindPeerStatus {
-    Accepted { peer_connected: bool },
-    RejectedSelf,
-    RejectedUnknownEndpoint,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum EventSequenceAcceptance {
+pub(super) enum InboundEventAcceptance {
     Accepted,
+    UnauthenticatedEndpoint,
+    SenderMismatch { authenticated_peer_id: PeerId },
     Replayed { highest_seen: u64 },
 }
 

@@ -8,38 +8,38 @@ use std::time::Duration;
 
 pub(crate) struct TransportIo {
     handle: TransportIoHandle,
-    listener_id: ResourceId,
+    listener_id: Option<ResourceId>,
     node_task: Option<NodeTask>,
 }
 
 impl TransportIo {
-    pub(crate) fn listen(
-        address: impl ToSocketAddrs,
-    ) -> io::Result<(Self, TransportIoReceiver, SocketAddr)> {
+    pub(crate) fn listen(address: impl ToSocketAddrs) -> io::Result<TransportBinding> {
         let (handler, listener) = node::split::<()>();
         let (listener_id, local_addr) = handler.network().listen(Transport::FramedTcp, address)?;
         let (node_task, event_receiver) = listener.enqueue();
         let handle = TransportIoHandle { handler };
 
-        Ok((
-            Self {
+        Ok(TransportBinding {
+            io: Self {
                 handle,
-                listener_id,
+                listener_id: Some(listener_id),
                 node_task: Some(node_task),
             },
-            TransportIoReceiver {
+            event_receiver: TransportIoReceiver {
                 receiver: event_receiver,
             },
             local_addr,
-        ))
+        })
     }
 
     pub(crate) fn handle(&self) -> TransportIoHandle {
         self.handle.clone()
     }
 
-    pub(crate) fn remove_listener(&self) {
-        _ = self.handle.handler.network().remove(self.listener_id);
+    pub(crate) fn remove_listener(&mut self) {
+        if let Some(listener_id) = self.listener_id.take() {
+            _ = self.handle.handler.network().remove(listener_id);
+        }
     }
 
     pub(crate) fn stop(&self) {
@@ -51,6 +51,18 @@ impl TransportIo {
             node_task.wait();
         }
     }
+
+    pub(crate) fn shutdown(&mut self) {
+        self.remove_listener();
+        self.stop();
+        self.wait();
+    }
+}
+
+pub(crate) struct TransportBinding {
+    pub(crate) io: TransportIo,
+    pub(crate) event_receiver: TransportIoReceiver,
+    pub(crate) local_addr: SocketAddr,
 }
 
 #[derive(Clone)]
@@ -96,7 +108,8 @@ impl TransportIoReceiver {
 
 #[derive(Debug, Clone)]
 pub(crate) enum TransportIoEvent {
-    Connected(TransportEndpoint, bool),
+    Connected(TransportEndpoint),
+    ConnectFailed(TransportEndpoint),
     Accepted(TransportEndpoint),
     Message(TransportEndpoint, Vec<u8>),
     Disconnected(TransportEndpoint),
@@ -105,8 +118,11 @@ pub(crate) enum TransportIoEvent {
 impl From<StoredNetEvent> for TransportIoEvent {
     fn from(event: StoredNetEvent) -> Self {
         match event {
-            StoredNetEvent::Connected(endpoint, status) => {
-                Self::Connected(TransportEndpoint(endpoint), status)
+            StoredNetEvent::Connected(endpoint, true) => {
+                Self::Connected(TransportEndpoint(endpoint))
+            }
+            StoredNetEvent::Connected(endpoint, false) => {
+                Self::ConnectFailed(TransportEndpoint(endpoint))
             }
             StoredNetEvent::Accepted(endpoint, _) => Self::Accepted(TransportEndpoint(endpoint)),
             StoredNetEvent::Message(endpoint, bytes) => {

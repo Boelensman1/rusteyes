@@ -1,8 +1,8 @@
 use super::commands::TransportCommand;
 use super::connections::{
-    BindPeerResult, BindPeerStatus, ConnectionDirection, ConnectionTracker, EventSequenceAcceptance,
+    BindPeerOutcome, ConnectionDirection, ConnectionTracker, InboundEventAcceptance,
 };
-use super::{SyncInboundEvent, SyncTransportError, TransportNotification, sync_protocol_error};
+use super::{SyncInboundEvent, SyncTransportError, TransportNotification};
 use crate::config::SharedSecret;
 use crate::sync_protocol::{
     PeerId, SyncEvent, SyncFramePayload, SyncMessage, SyncProtocolError, TransportControlFrame,
@@ -72,7 +72,7 @@ impl WorkerState {
             shared_secret,
             hello,
             handle,
-            tracker: ConnectionTracker::default(),
+            tracker: ConnectionTracker::new(self_id),
             next_sequence: 1,
             inbound_sender,
             observer,
@@ -130,7 +130,7 @@ impl WorkerState {
 
         let message = SyncMessage::event(self.self_id, sequence, event);
         let payload = encode_authenticated(&message, &self.shared_secret)
-            .map_err(|error| sync_protocol_error(&error))?;
+            .map_err(SyncTransportError::Protocol)?;
         self.next_sequence += 1;
 
         Ok(payload.into_bytes())
@@ -149,12 +149,12 @@ impl WorkerState {
 
     fn handle_network_event(&mut self, event: TransportIoEvent) {
         match event {
-            TransportIoEvent::Connected(endpoint, true) => {
+            TransportIoEvent::Connected(endpoint) => {
                 self.tracker
                     .record_endpoint(endpoint, ConnectionDirection::Outgoing);
                 self.send_hello(endpoint);
             }
-            TransportIoEvent::Connected(endpoint, false) => {
+            TransportIoEvent::ConnectFailed(endpoint) => {
                 self.tracker.remove_endpoint(endpoint);
                 warn!(endpoint = %endpoint, "sync peer connection failed");
             }
@@ -208,30 +208,31 @@ impl WorkerState {
     }
 
     fn handle_peer_hello(&mut self, endpoint: TransportEndpoint, sender: PeerId) {
-        let BindPeerResult {
-            status,
-            remove_endpoints,
-        } = self.tracker.bind_peer(self.self_id, endpoint, sender);
-        self.remove_endpoints(remove_endpoints);
-
-        match status {
-            BindPeerStatus::Accepted { peer_connected } if peer_connected => {
-                info!(
-                    peer_id = %sender,
-                    endpoint = %endpoint,
-                    "authenticated Resteyes sync peer"
-                );
-                self.notify(TransportNotification::PeerAuthenticated(sender));
+        match self.tracker.bind_peer(endpoint, sender) {
+            BindPeerOutcome::Authenticated {
+                peer_connected,
+                close_endpoints,
+            } => {
+                self.remove_endpoints(close_endpoints);
+                if peer_connected {
+                    info!(
+                        peer_id = %sender,
+                        endpoint = %endpoint,
+                        "authenticated Resteyes sync peer"
+                    );
+                    self.notify(TransportNotification::PeerAuthenticated(sender));
+                }
             }
-            BindPeerStatus::Accepted { .. } => {}
-            BindPeerStatus::RejectedSelf => {
+            BindPeerOutcome::RejectedSelf { close_endpoints } => {
+                self.remove_endpoints(close_endpoints);
                 warn!(
                     peer_id = %sender,
                     endpoint = %endpoint,
                     "rejected sync connection from local peer id"
                 );
             }
-            BindPeerStatus::RejectedUnknownEndpoint => {
+            BindPeerOutcome::RejectedUnknownEndpoint { close_endpoints } => {
+                self.remove_endpoints(close_endpoints);
                 warn!(
                     peer_id = %sender,
                     endpoint = %endpoint,
@@ -248,33 +249,36 @@ impl WorkerState {
         sequence: u64,
         event: SyncEvent,
     ) {
-        let Some(peer_id) = self.tracker.peer_for_endpoint(endpoint) else {
-            warn!(
-                endpoint = %endpoint,
-                ?event,
-                "sync peer sent domain event before authenticated hello"
-            );
-            self.remove_endpoint(endpoint);
-            return;
-        };
-
-        if peer_id != sender {
-            warn!(
-                endpoint = %endpoint,
-                authenticated_peer_id = %peer_id,
-                frame_sender = %sender,
-                "sync peer sent frame with mismatched sender"
-            );
-            self.remove_endpoint(endpoint);
-            return;
-        }
-
-        match self.tracker.accept_event_sequence(peer_id, sequence) {
-            EventSequenceAcceptance::Accepted => {}
-            EventSequenceAcceptance::Replayed { highest_seen } => {
+        match self
+            .tracker
+            .accept_inbound_event(endpoint, sender, sequence)
+        {
+            InboundEventAcceptance::Accepted => {}
+            InboundEventAcceptance::UnauthenticatedEndpoint => {
                 warn!(
                     endpoint = %endpoint,
-                    peer_id = %peer_id,
+                    ?event,
+                    "sync peer sent domain event before authenticated hello"
+                );
+                self.remove_endpoint(endpoint);
+                return;
+            }
+            InboundEventAcceptance::SenderMismatch {
+                authenticated_peer_id,
+            } => {
+                warn!(
+                    endpoint = %endpoint,
+                    authenticated_peer_id = %authenticated_peer_id,
+                    frame_sender = %sender,
+                    "sync peer sent frame with mismatched sender"
+                );
+                self.remove_endpoint(endpoint);
+                return;
+            }
+            InboundEventAcceptance::Replayed { highest_seen } => {
+                warn!(
+                    endpoint = %endpoint,
+                    peer_id = %sender,
                     sequence,
                     highest_seen,
                     ?event,

@@ -33,6 +33,10 @@
 - Added protocol-level replay protection for inbound domain events: the
   transport now tracks the highest accepted event sequence per authenticated
   peer and drops stale or repeated sequences before forwarding events.
+- Follow-up API cleanup made disabled sync an inert `SyncTransport`, moved
+  inbound event polling onto the transport facade, returned a named transport IO
+  binding from listener setup, split connection success/failure into explicit IO
+  events, and moved sender/replay validation behind the connection tracker.
 - Removed the temporary `RESTEYES_DISCOVERY_SMOKE` path now that discovery is
   started by normal sync-enabled runtime startup.
 
@@ -41,7 +45,7 @@
 - Bind the production transport listener to `0.0.0.0:0` and advertise the
   assigned port through mDNS instead of adding sync port config.
 - Keep this step transport-only: authenticated domain sync events are exposed
-  through the inbound receiver but are not applied to runtime scheduling yet.
+  through the transport facade but are not applied to runtime scheduling yet.
 - Treat listener and discovery startup failures as fatal when sync is enabled;
   later connection/authentication failures are logged and the daemon continues.
 - Reserve sequence `0` for transport hello and start local outbound domain
