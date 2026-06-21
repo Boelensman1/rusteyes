@@ -162,6 +162,9 @@
   session helper, renamed nonblocking inbound polling to `try_recv_event`,
   added a facade event drain helper, made connection authentication/removal
   outcomes explicit, and centralized failed endpoint closure in the worker.
+  Later cleanup removed transport worker timeout polling with `message-io` wake
+  signals and replaced discovery timeout polling with a selected mDNS/shutdown
+  event path.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.

@@ -4,6 +4,7 @@ use message_io::node::{self, NodeHandler, NodeTask, StoredNetEvent, StoredNodeEv
 use std::fmt;
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs};
+#[cfg(test)]
 use std::time::Duration;
 
 pub(crate) struct TransportIo {
@@ -86,6 +87,10 @@ impl TransportIoHandle {
         _ = self.handler.network().remove(endpoint.0.resource_id());
     }
 
+    pub(crate) fn wake(&self) {
+        self.handler.signals().send(());
+    }
+
     pub(crate) fn is_running(&self) -> bool {
         self.handler.is_running()
     }
@@ -96,18 +101,27 @@ pub(crate) struct TransportIoReceiver {
 }
 
 impl TransportIoReceiver {
+    pub(crate) fn receive(&mut self) -> TransportIoEvent {
+        match self.receiver.receive() {
+            StoredNodeEvent::Network(event) => event.into(),
+            StoredNodeEvent::Signal(()) => TransportIoEvent::Wake,
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn receive_timeout(&mut self, timeout: Duration) -> Option<TransportIoEvent> {
         let event = self.receiver.receive_timeout(timeout)?;
 
         match event {
             StoredNodeEvent::Network(event) => Some(event.into()),
-            StoredNodeEvent::Signal(()) => None,
+            StoredNodeEvent::Signal(()) => Some(TransportIoEvent::Wake),
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum TransportIoEvent {
+    Wake,
     Connected(TransportEndpoint),
     ConnectFailed(TransportEndpoint),
     Accepted(TransportEndpoint),

@@ -22,8 +22,8 @@
 - Added trace logging inside discovery startup and peer discovery so the same
   visibility remains useful when the module is wired into runtime sync later.
 - Follow-up cleanup in `authenticated-peer-transport` removed the temporary
-  smoke environment path and replaced blocking discovery reads with timeout
-  polling for transport-owned background shutdown.
+  smoke environment path. A later transport cleanup replaced timeout-based
+  discovery polling with a selected mDNS/shutdown event path.
 
 ## Decisions
 

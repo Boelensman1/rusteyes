@@ -7,7 +7,7 @@ use self::commands::TransportCommand;
 use self::session::TransportSession;
 use self::worker::{WorkerState, spawn_worker_thread};
 use crate::config::{SharedSecret, SyncConfig};
-use crate::sync_discovery::{DiscoveredPeer, LanDiscovery, SyncDiscoveryError};
+use crate::sync_discovery::{DiscoveredPeer, DiscoveryEvent, LanDiscovery, SyncDiscoveryError};
 use crate::sync_protocol::{PeerId, SyncEvent, SyncProtocolError};
 #[cfg(test)]
 use crate::sync_transport_io::{TransportEndpoint, TransportSendStatus};
@@ -21,11 +21,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Duration;
 use tracing::{info, trace, warn};
 
 const PRODUCTION_LISTEN_ADDR: &str = "0.0.0.0:0";
-const DISCOVERY_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 pub(crate) struct SyncTransport {
     state: SyncTransportState,
@@ -44,6 +44,7 @@ struct ActiveSyncTransport {
     local_addr: SocketAddr,
     worker_thread: Option<JoinHandle<()>>,
     discovery_thread: Option<JoinHandle<()>>,
+    discovery_shutdown_sender: Option<flume::Sender<()>>,
     shutdown: Arc<AtomicBool>,
 }
 
@@ -88,7 +89,6 @@ impl SyncTransport {
                 {
                     Ok(discovery) => Some(discovery),
                     Err(error) => {
-                        shutdown.store(true, Ordering::Relaxed);
                         binding.io.shutdown();
                         return Err(SyncTransportError::Discovery(error));
                     }
@@ -105,9 +105,21 @@ impl SyncTransport {
             command_receiver,
             shutdown.clone(),
         );
-        let discovery_thread = discovery.map(|discovery| {
-            spawn_discovery_thread(self_id, discovery, handle.clone(), shutdown.clone())
-        });
+        let (discovery_thread, discovery_shutdown_sender) = match discovery {
+            Some(discovery) => {
+                let (shutdown_sender, shutdown_receiver) = flume::bounded(1);
+                (
+                    Some(spawn_discovery_thread(
+                        self_id,
+                        discovery,
+                        handle.clone(),
+                        shutdown_receiver,
+                    )),
+                    Some(shutdown_sender),
+                )
+            }
+            None => (None, None),
+        };
 
         info!(
             peer_id = %self_id,
@@ -125,6 +137,7 @@ impl SyncTransport {
                 local_addr: binding.local_addr,
                 worker_thread: Some(worker_thread),
                 discovery_thread,
+                discovery_shutdown_sender,
                 shutdown,
             })),
         })
@@ -228,6 +241,7 @@ impl ActiveSyncTransport {
                 reply: reply_sender,
             })
             .map_err(|_| SyncTransportError::WorkerStopped)?;
+        self.io.handle().wake();
 
         reply_receiver
             .recv()
@@ -243,6 +257,7 @@ impl ActiveSyncTransport {
                 reply: reply_sender,
             })
             .map_err(|_| SyncTransportError::WorkerStopped)?;
+        self.io.handle().wake();
 
         reply_receiver
             .recv()
@@ -281,8 +296,13 @@ impl ActiveSyncTransport {
 
     fn shutdown(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
+        self.io.handle().wake();
+
+        if let Some(sender) = self.discovery_shutdown_sender.take() {
+            _ = sender.send(());
+        }
+
         self.io.remove_listener();
-        self.io.stop();
 
         if let Some(handle) = self.discovery_thread.take() {
             _ = handle.join();
@@ -292,6 +312,7 @@ impl ActiveSyncTransport {
             _ = handle.join();
         }
 
+        self.io.stop();
         self.io.wait();
     }
 }
@@ -315,14 +336,11 @@ fn spawn_discovery_thread(
     self_id: PeerId,
     discovery: LanDiscovery,
     handle: TransportIoHandle,
-    shutdown: Arc<AtomicBool>,
+    shutdown_receiver: flume::Receiver<()>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        while !shutdown.load(Ordering::Relaxed) {
-            if let Some(peer) = discovery.next_peer_timeout(Instant::now(), DISCOVERY_POLL_INTERVAL)
-            {
-                connect_discovered_peer(&handle, &peer);
-            }
+        while let DiscoveryEvent::Peer(peer) = discovery.next_event(&shutdown_receiver) {
+            connect_discovered_peer(&handle, &peer);
         }
 
         trace!(peer_id = %self_id, "stopped Resteyes sync discovery thread");

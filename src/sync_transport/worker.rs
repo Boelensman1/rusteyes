@@ -14,10 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
 use tracing::{info, trace, warn};
-
-const NODE_EVENT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 pub(super) fn spawn_worker_thread(
     mut worker: WorkerState,
@@ -27,13 +24,14 @@ pub(super) fn spawn_worker_thread(
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         while !shutdown.load(Ordering::Relaxed) && worker.handle.is_running() {
-            worker.handle_transport_commands(&command_receiver);
-
-            let Some(event) = event_receiver.receive_timeout(NODE_EVENT_POLL_INTERVAL) else {
-                continue;
-            };
-
-            worker.handle_network_event(event);
+            match event_receiver.receive() {
+                TransportIoEvent::Wake => {
+                    worker.handle_transport_commands(&command_receiver);
+                }
+                event => {
+                    worker.handle_network_event(event);
+                }
+            }
         }
 
         for endpoint in worker.tracker.endpoints() {
@@ -127,6 +125,7 @@ impl WorkerState {
 
     fn handle_network_event(&mut self, event: TransportIoEvent) {
         match event {
+            TransportIoEvent::Wake => {}
             TransportIoEvent::Connected(endpoint) => {
                 self.tracker
                     .record_endpoint(endpoint, ConnectionDirection::Outgoing);

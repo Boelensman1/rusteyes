@@ -1,12 +1,12 @@
 use super::{
-    DISCOVERY_VERSION, DiscoveredPeer, DiscoveryMetadata, DiscoveryPayload, KEY_MAC, KEY_PEER,
-    KEY_PORT, KEY_VERSION, SERVICE_TYPE, SyncDiscoveryError, authenticate_payload,
-    discovered_peer_from_resolved_service, discovery_txt_properties, encode_hex, host_name,
-    instance_name, service_address,
+    DISCOVERY_VERSION, DiscoveredPeer, DiscoveryEvent, DiscoveryMetadata, DiscoveryPayload,
+    KEY_MAC, KEY_PEER, KEY_PORT, KEY_VERSION, SERVICE_TYPE, SyncDiscoveryError,
+    authenticate_payload, discovered_peer_from_resolved_service, discovery_txt_properties,
+    encode_hex, host_name, instance_name, receive_discovery_event, service_address,
 };
 use crate::config::SharedSecret;
 use crate::sync_protocol::PeerId;
-use mdns_sd::{ResolvedService, ServiceInfo};
+use mdns_sd::{ResolvedService, ServiceEvent, ServiceInfo};
 use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::str::FromStr;
@@ -20,6 +20,53 @@ const WRONG_SHARED_SECRET: &str = "fedcba9876543210fedcba9876543210";
 #[test]
 fn service_type_advertises_tcp_transport() {
     assert_eq!(SERVICE_TYPE, "_resteyes-sync._tcp.local.");
+}
+
+#[test]
+fn discovery_shutdown_event_wakes_receive() -> Result<(), Box<dyn Error>> {
+    let (_service_sender, service_receiver) = flume::bounded::<ServiceEvent>(1);
+    let (shutdown_sender, shutdown_receiver) = flume::bounded(1);
+
+    shutdown_sender.send(())?;
+
+    assert_eq!(
+        receive_discovery_event(
+            &service_receiver,
+            &shutdown_receiver,
+            local_peer()?,
+            &shared_secret(),
+        ),
+        DiscoveryEvent::Shutdown,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn discovery_service_event_maps_to_peer() -> Result<(), Box<dyn Error>> {
+    let (service_sender, service_receiver) = flume::bounded(1);
+    let (_shutdown_sender, shutdown_receiver) = flume::bounded(1);
+    let service = resolved_service(remote_peer()?, 7821, &shared_secret(), remote_ip())?;
+
+    service_sender.send(ServiceEvent::ServiceResolved(Box::new(service)))?;
+
+    let observed_after = Instant::now();
+    let event = receive_discovery_event(
+        &service_receiver,
+        &shutdown_receiver,
+        local_peer()?,
+        &shared_secret(),
+    );
+
+    let DiscoveryEvent::Peer(peer) = event else {
+        return Err(format!("expected discovered peer, got {event:?}").into());
+    };
+
+    assert_eq!(peer.peer_id, remote_peer()?);
+    assert_eq!(peer.address, SocketAddr::from((remote_ip(), 7821)));
+    assert!(peer.observed_at >= observed_after);
+
+    Ok(())
 }
 
 #[test]

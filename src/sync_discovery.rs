@@ -1,5 +1,6 @@
 use crate::config::SharedSecret;
 use crate::sync_protocol::PeerId;
+use flume::RecvError;
 use hmac::{Hmac, Mac};
 use mdns_sd::{Receiver, ResolvedService, ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo};
 use serde::Serialize;
@@ -7,7 +8,7 @@ use sha2::Sha256;
 use std::fmt;
 use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::str::FromStr;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tracing::trace;
 
 pub(crate) const SERVICE_TYPE: &str = "_resteyes-sync._tcp.local.";
@@ -70,31 +71,69 @@ impl LanDiscovery {
         })
     }
 
-    pub(crate) fn next_peer_timeout(
-        &self,
-        observed_at: Instant,
-        timeout: Duration,
-    ) -> Option<DiscoveredPeer> {
-        let Ok(event) = self.events.recv_timeout(timeout) else {
-            return None;
+    pub(crate) fn next_event(&self, shutdown_receiver: &flume::Receiver<()>) -> DiscoveryEvent {
+        receive_discovery_event(
+            &self.events,
+            shutdown_receiver,
+            self.self_id,
+            &self.shared_secret,
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DiscoveryEvent {
+    Peer(DiscoveredPeer),
+    Shutdown,
+}
+
+fn receive_discovery_event(
+    service_receiver: &Receiver<ServiceEvent>,
+    shutdown_receiver: &flume::Receiver<()>,
+    self_id: PeerId,
+    shared_secret: &SharedSecret,
+) -> DiscoveryEvent {
+    loop {
+        let SelectedDiscoveryEvent::Service(event) =
+            select_discovery_event(service_receiver, shutdown_receiver)
+        else {
+            return DiscoveryEvent::Shutdown;
         };
 
-        match discovered_peer_from_event(&event, self.self_id, &self.shared_secret, observed_at) {
+        let Ok(event) = event else {
+            return DiscoveryEvent::Shutdown;
+        };
+
+        match discovered_peer_from_event(&event, self_id, shared_secret, Instant::now()) {
             Ok(Some(peer)) => {
                 trace!(
                     peer_id = %peer.peer_id,
                     address = %peer.address,
                     "discovered authenticated Resteyes peer"
                 );
-                Some(peer)
+                return DiscoveryEvent::Peer(peer);
             }
-            Ok(None) => None,
+            Ok(None) => {}
             Err(error) => {
                 trace!(%error, "ignored Resteyes LAN discovery service");
-                None
             }
         }
     }
+}
+
+enum SelectedDiscoveryEvent {
+    Service(Result<ServiceEvent, RecvError>),
+    Shutdown,
+}
+
+fn select_discovery_event(
+    service_receiver: &Receiver<ServiceEvent>,
+    shutdown_receiver: &flume::Receiver<()>,
+) -> SelectedDiscoveryEvent {
+    flume::Selector::new()
+        .recv(service_receiver, SelectedDiscoveryEvent::Service)
+        .recv(shutdown_receiver, |_| SelectedDiscoveryEvent::Shutdown)
+        .wait()
 }
 
 impl Drop for LanDiscovery {

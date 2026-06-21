@@ -49,6 +49,10 @@
   explicit, and centralized failed endpoint closure in the worker.
 - Removed the temporary `RESTEYES_DISCOVERY_SMOKE` path now that discovery is
   started by normal sync-enabled runtime startup.
+- Follow-up cleanup removed transport polling: the worker now blocks on
+  `message-io` events and uses node signals to wake for facade commands or
+  shutdown, while discovery uses `flume::Selector` to wait for mDNS events or
+  an explicit shutdown signal.
 
 ## Decisions
 
@@ -60,6 +64,9 @@
   later connection/authentication failures are logged and the daemon continues.
 - Reserve sequence `0` for transport hello and start local outbound domain
   event sequences at `1`.
+- Add direct `flume` dependency with only the `select` feature because
+  discovery needs to select between the `mdns-sd` service receiver and shutdown
+  without reintroducing timeout polling.
 
 ## Verification
 
@@ -74,6 +81,9 @@
   transport session and connection outcome API cleanup.
 - `make check` passes after the transport session and connection outcome API
   cleanup.
+- `cargo check --all-targets --all-features` passes after the wake-driven
+  worker and discovery cleanup.
+- `make check` passes after the wake-driven worker and discovery cleanup.
 
 ## Follow-up
 
