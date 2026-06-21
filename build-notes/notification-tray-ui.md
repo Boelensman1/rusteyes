@@ -18,6 +18,8 @@
 - Use `notify-rust` for passive desktop notifications.
 - On macOS, configure the `tao` event loop as an accessory app and hide Dock
   visibility before the loop runs so Resteyes is menu-bar/tray only.
+- Follow-up refinement: show the scheduler's accumulated active time as a
+  disabled status row in the tray/menu-bar dropdown.
 
 ## Behavior
 
@@ -29,6 +31,9 @@
   a break is pending.
 - UI-originated manual breaks and disable controls use the same local runtime
   paths as backend-originated controls and can be synced to authenticated peers.
+- The active-time row starts at `0s`, updates when local or synced active-time
+  increments change scheduler accumulation, and resets when breaks or disable
+  controls reset scheduler active time.
 
 ## Commands
 

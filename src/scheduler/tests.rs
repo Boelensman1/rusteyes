@@ -308,6 +308,19 @@ fn upcoming_scheduled_break_reports_remaining_active_time() {
 }
 
 #[test]
+fn active_elapsed_reports_current_slot_accumulation() {
+    let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20)]));
+
+    assert_eq!(scheduler.active_elapsed(), Duration::ZERO);
+    assert_eq!(scheduler.advance_active(Duration::from_secs(4)), None);
+    assert_eq!(scheduler.active_elapsed(), Duration::from_secs(4));
+
+    let scheduled_break = started_break(scheduler.advance_active(Duration::from_secs(6)));
+    assert_eq!(scheduled_break.origin, BreakOrigin::Scheduled { slot: 1 });
+    assert_eq!(scheduler.active_elapsed(), Duration::ZERO);
+}
+
+#[test]
 fn upcoming_scheduled_break_skips_empty_slots() {
     let mut scheduler = scheduler(custom_breaks(10, &[("short", 3, 20), ("long", 5, 300)]));
 

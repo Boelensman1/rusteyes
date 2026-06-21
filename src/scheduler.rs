@@ -121,6 +121,10 @@ impl BreakScheduler {
         self.schedule.after_active()
     }
 
+    pub(crate) const fn active_elapsed(&self) -> Duration {
+        self.active_elapsed
+    }
+
     pub(crate) fn upcoming_scheduled_break(&self) -> Option<UpcomingScheduledBreak> {
         if self.state != SchedulerState::Ready(SchedulerMode::Active) {
             return None;

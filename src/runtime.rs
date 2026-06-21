@@ -115,6 +115,7 @@ struct DaemonRuntime<'a> {
     disable_mode: DisableMode,
     current_break: Option<CurrentBreakState>,
     notified_break: Option<NotifiedBreak>,
+    displayed_active_time: Duration,
 }
 
 impl<'a> DaemonRuntime<'a> {
@@ -136,6 +137,7 @@ impl<'a> DaemonRuntime<'a> {
             disable_mode: DisableMode::Enabled,
             current_break: None,
             notified_break: None,
+            displayed_active_time: Duration::ZERO,
         }
     }
 
@@ -292,7 +294,10 @@ impl<'a> DaemonRuntime<'a> {
     fn advance_active(&mut self, elapsed: Duration, propagation: SyncPropagation) -> bool {
         self.broadcast_if_needed(propagation, &SyncEvent::ActiveTimeElapsed { elapsed });
 
-        if let Some(scheduled_break) = self.scheduler.advance_active(elapsed) {
+        let scheduled_break = self.scheduler.advance_active(elapsed);
+        self.update_active_time_display();
+
+        if let Some(scheduled_break) = scheduled_break {
             self.start_break(scheduled_break, propagation)
         } else {
             self.notify_upcoming_break();
@@ -302,6 +307,7 @@ impl<'a> DaemonRuntime<'a> {
 
     fn start_manual_break(&mut self, name: &str, propagation: SyncPropagation) -> bool {
         if let Some(scheduled_break) = self.scheduler.start_manual_break(name) {
+            self.update_active_time_display();
             self.start_break(scheduled_break, propagation)
         } else {
             true
@@ -333,6 +339,7 @@ impl<'a> DaemonRuntime<'a> {
             .is_some_and(CurrentBreakState::lock_after);
 
         if self.scheduler.finish_break() {
+            self.update_active_time_display();
             self.handle_command(BackendCommand::FinishBreak {
                 lock_after: should_lock,
             })
@@ -391,6 +398,7 @@ impl<'a> DaemonRuntime<'a> {
     fn enable(&mut self, propagation: SyncPropagation) {
         self.scheduler.enable();
         self.disable_mode = DisableMode::Enabled;
+        self.update_active_time_display();
         self.broadcast_if_needed(propagation, &SyncEvent::Enable);
     }
 
@@ -399,8 +407,10 @@ impl<'a> DaemonRuntime<'a> {
         self.clear_pre_break_notice();
 
         if self.scheduler.disable() {
+            self.update_active_time_display();
             self.handle_command(BackendCommand::ClearBreak)
         } else {
+            self.update_active_time_display();
             true
         }
     }
@@ -454,6 +464,22 @@ impl<'a> DaemonRuntime<'a> {
 
     fn clear_pre_break_notice(&mut self) {
         self.notified_break = None;
+    }
+
+    fn update_active_time_display(&mut self) {
+        let active_time = self.scheduler.active_elapsed();
+
+        if self.displayed_active_time == active_time {
+            return;
+        }
+
+        self.displayed_active_time = active_time;
+        if let Err(error) = self
+            .ui
+            .send_command(UiCommand::UpdateActiveTime(active_time))
+        {
+            warn!(%error, "failed to send active-time UI update");
+        }
     }
 }
 

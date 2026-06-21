@@ -196,7 +196,8 @@
   break, and UI-originated controls reuse the existing local runtime paths so
   manual breaks and disable actions can sync to authenticated peers. Follow-up
   fix configures macOS as an accessory app and hides Dock visibility so Resteyes
-  is menu-bar only.
+  is menu-bar only. Later follow-up refinement shows accumulated scheduler
+  active time in the tray/menu-bar dropdown and resets it with scheduler state.
 - Completed `synced-lock-after-break`: local lock-after-current-break requests
   now broadcast authenticated sync events, inbound authenticated lock-after
   requests mark the active local break for locking without rebroadcasting, and
@@ -287,6 +288,7 @@
 - `make check` passes after adding break/disable sync behavior.
 - `make check` passes after the break/disable sync runtime cleanup.
 - `make check` passes after adding notification tray UI behavior.
+- `make check` passes after adding the tray/menu-bar active-time status row.
 - `cargo test --all-targets --all-features runtime` passes after adding synced
   lock-after-break behavior.
 - `make check` passes after adding synced lock-after-break behavior.

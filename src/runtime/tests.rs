@@ -783,10 +783,15 @@ fn pre_break_notification_fires_once_when_notice_window_is_reached()
     assert!(received_commands(&commands).is_empty());
     assert_eq!(
         received_ui_commands(&ui_commands),
-        vec![UiCommand::ShowPreBreakNotification(PreBreakNotification {
-            break_name: String::from("short"),
-            starts_after: Duration::from_secs(5),
-        },)]
+        vec![
+            UiCommand::UpdateActiveTime(Duration::from_secs(4)),
+            UiCommand::UpdateActiveTime(Duration::from_secs(5)),
+            UiCommand::ShowPreBreakNotification(PreBreakNotification {
+                break_name: String::from("short"),
+                starts_after: Duration::from_secs(5),
+            }),
+            UiCommand::UpdateActiveTime(Duration::from_secs(6)),
+        ]
     );
     Ok(())
 }
@@ -841,10 +846,13 @@ fn pre_break_notification_resets_after_break_finishes() -> Result<(), Box<dyn st
     assert_eq!(
         received_ui_commands(&ui_commands),
         vec![
+            UiCommand::UpdateActiveTime(Duration::from_secs(5)),
             UiCommand::ShowPreBreakNotification(PreBreakNotification {
                 break_name: String::from("short"),
                 starts_after: Duration::from_secs(5),
             }),
+            UiCommand::UpdateActiveTime(Duration::ZERO),
+            UiCommand::UpdateActiveTime(Duration::from_secs(5)),
             UiCommand::ShowPreBreakNotification(PreBreakNotification {
                 break_name: String::from("long"),
                 starts_after: Duration::from_secs(5),
@@ -897,10 +905,13 @@ fn synced_active_time_can_trigger_pre_break_notification() -> Result<(), Box<dyn
     assert!(received_commands(&commands).is_empty());
     assert_eq!(
         received_ui_commands(&ui_commands),
-        vec![UiCommand::ShowPreBreakNotification(PreBreakNotification {
-            break_name: String::from("short"),
-            starts_after: Duration::from_secs(5),
-        },)]
+        vec![
+            UiCommand::UpdateActiveTime(Duration::from_secs(5)),
+            UiCommand::ShowPreBreakNotification(PreBreakNotification {
+                break_name: String::from("short"),
+                starts_after: Duration::from_secs(5),
+            }),
+        ]
     );
     Ok(())
 }

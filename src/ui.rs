@@ -21,6 +21,7 @@ impl UiConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum UiCommand {
     ShowPreBreakNotification(PreBreakNotification),
+    UpdateActiveTime(Duration),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,6 +152,7 @@ mod app {
     use std::fmt;
     use std::io;
     use std::thread::{self, JoinHandle};
+    use std::time::Duration;
     use tao::event::{Event, StartCause};
     use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
     use tracing::warn;
@@ -160,6 +162,7 @@ mod app {
     const ICON_SIZE: u32 = 16;
     const APP_NAME: &str = "Resteyes";
     const TOOLTIP: &str = "Resteyes";
+    const ACTIVE_TIME_MENU_ID: &str = "active-time";
 
     pub(crate) fn run<F>(config: UiConfig, start_runtime: F) -> Result<(), UiError>
     where
@@ -191,7 +194,7 @@ mod app {
                 }
                 Event::UserEvent(UiLoopEvent::Menu(menu_id)) => app.handle_menu(&menu_id),
                 Event::UserEvent(UiLoopEvent::Command(command)) => {
-                    UiApp::handle_command(command);
+                    app.handle_command(command);
                 }
                 Event::UserEvent(UiLoopEvent::RuntimeStopped) => {
                     app.join_runtime();
@@ -262,6 +265,7 @@ mod app {
         event_sender: flume::Sender<RuntimeEvent>,
         runtime_thread: Option<JoinHandle<()>>,
         tray_icon: Option<TrayIcon>,
+        active_time_item: Option<MenuItem>,
         menu_actions: BTreeMap<String, UiMenuAction>,
         initialized: bool,
     }
@@ -277,6 +281,7 @@ mod app {
                 event_sender,
                 runtime_thread: Some(runtime_thread),
                 tray_icon: None,
+                active_time_item: None,
                 menu_actions: BTreeMap::new(),
                 initialized: false,
             }
@@ -292,7 +297,9 @@ mod app {
                 menu_proxy.send(UiLoopEvent::Menu(event.id().as_ref().to_owned()));
             }));
 
-            self.tray_icon = Some(build_tray_icon(&self.config, &mut self.menu_actions)?);
+            let built_tray_icon = build_tray_icon(&self.config, &mut self.menu_actions)?;
+            self.active_time_item = Some(built_tray_icon.active_time_item);
+            self.tray_icon = Some(built_tray_icon.tray_icon);
             self.initialized = true;
             Ok(())
         }
@@ -308,11 +315,16 @@ mod app {
             }
         }
 
-        fn handle_command(command: UiCommand) {
+        fn handle_command(&mut self, command: UiCommand) {
             match command {
                 UiCommand::ShowPreBreakNotification(notification) => {
                     if let Err(error) = show_pre_break_notification(&notification) {
                         warn!(%error, ?notification, "failed to show pre-break notification");
+                    }
+                }
+                UiCommand::UpdateActiveTime(active_time) => {
+                    if let Some(item) = &self.active_time_item {
+                        item.set_text(active_time_menu_text(active_time));
                     }
                 }
             }
@@ -331,11 +343,26 @@ mod app {
         }
     }
 
+    struct BuiltTrayIcon {
+        tray_icon: TrayIcon,
+        active_time_item: MenuItem,
+    }
+
     fn build_tray_icon(
         config: &UiConfig,
         actions: &mut BTreeMap<String, UiMenuAction>,
-    ) -> Result<TrayIcon, UiError> {
+    ) -> Result<BuiltTrayIcon, UiError> {
         let menu = Submenu::new(APP_NAME, true);
+
+        let active_time_item = MenuItem::with_id(
+            MenuId::new(ACTIVE_TIME_MENU_ID),
+            active_time_menu_text(Duration::ZERO),
+            false,
+            None,
+        );
+        menu.append(&active_time_item)
+            .map_err(|error| UiError::menu(error.to_string()))?;
+        append_separator(&menu)?;
 
         for name in &config.break_names {
             let menu_id = start_break_menu_id(name);
@@ -385,13 +412,18 @@ mod app {
         actions.insert(quit_id, UiMenuAction::Quit);
 
         let icon = resteyes_icon()?;
-        TrayIconBuilder::new()
+        let tray_icon = TrayIconBuilder::new()
             .with_tooltip(TOOLTIP)
             .with_icon(icon)
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(true)
             .build()
-            .map_err(|error| UiError::tray_icon(error.to_string()))
+            .map_err(|error| UiError::tray_icon(error.to_string()))?;
+
+        Ok(BuiltTrayIcon {
+            tray_icon,
+            active_time_item,
+        })
     }
 
     fn append_separator(menu: &Submenu) -> Result<(), UiError> {
@@ -435,6 +467,10 @@ mod app {
             .show()
             .map(|_| ())
             .map_err(|error| UiError::notification(error.to_string()))
+    }
+
+    fn active_time_menu_text(active_time: Duration) -> String {
+        format!("Active time: {}", humantime::format_duration(active_time))
     }
 
     fn start_break_menu_id(name: &str) -> String {
@@ -530,6 +566,14 @@ mod app {
         fn menu_ids_are_stable() {
             assert_eq!(start_break_menu_id("short"), "start-break:short");
             assert_eq!(disable_for_menu_id(2), "disable-for:2");
+        }
+
+        #[test]
+        fn active_time_menu_text_formats_elapsed_duration() {
+            assert_eq!(
+                active_time_menu_text(Duration::from_secs(65)),
+                "Active time: 1m 5s"
+            );
         }
     }
 }
