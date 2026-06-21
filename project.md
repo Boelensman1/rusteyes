@@ -28,6 +28,8 @@ RestEyes is an as-simple-as-possible SafeEyes replacement focused on reliable br
 ## Network sync
 
 - Use LAN discovery to find peers.
+- Use `message-io` over TCP for authenticated peer communication once LAN
+  discovery has resolved peer addresses.
 - Authenticate peer messages with a configured shared secret.
 - Generate a transient sender identity at daemon startup for message
   attribution; it does not need to be configured or persisted.
@@ -127,7 +129,7 @@ step note when implementation begins.
     periods, lock-after-break decisions, and transient sender identity.
 23. `lan-discovery`: discover authenticated peers on the LAN.
 24. `authenticated-peer-transport`: exchange authenticated sync messages with
-    discovered peers.
+    discovered peers using `message-io` over TCP.
 25. `active-time-sync`: broadcast and apply active-time increments across
     authenticated peers.
 26. `break-disable-sync`: broadcast and apply break starts and disable periods

@@ -216,6 +216,8 @@
 
 - Build work should proceed one step at a time.
 - The next planned increment is `authenticated-peer-transport`.
+- Authenticated peer transport should use `message-io` over TCP for peer
+  communication.
 - The later build order now brings macOS backend parity before sync protocol,
   then separates sync protocol, LAN discovery, authenticated peer transport,
   active-time sync, synced break/disable behavior, tray UI, and synced
