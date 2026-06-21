@@ -20,6 +20,7 @@ use tracing::{trace, warn};
 const PROTOCOL_VERSION: u16 = 6;
 const HELPER_PATH_ENV: &str = "RESTEYES_MACOS_HELPER";
 const DEVELOPMENT_HELPER_PATH: &str = "helpers/macos-helper/.build/debug/resteyes-macos-helper";
+const BUNDLED_HELPER_PATH_FROM_EXE: &str = "../Resources/resteyes-macos-helper";
 const HELPER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const HELPER_SHUTDOWN_POLL: Duration = Duration::from_millis(20);
 const ACTIVITY_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -920,10 +921,27 @@ where
 }
 
 fn helper_path() -> PathBuf {
-    env::var_os(HELPER_PATH_ENV).map_or_else(
-        || Path::new(env!("CARGO_MANIFEST_DIR")).join(DEVELOPMENT_HELPER_PATH),
-        PathBuf::from,
-    )
+    if let Some(path) = env::var_os(HELPER_PATH_ENV) {
+        return PathBuf::from(path);
+    }
+
+    if let Some(path) = bundled_helper_path()
+        && path.is_file()
+    {
+        return path;
+    }
+
+    development_helper_path()
+}
+
+fn bundled_helper_path() -> Option<PathBuf> {
+    let executable = env::current_exe().ok()?;
+    let executable_dir = executable.parent()?;
+    Some(executable_dir.join(BUNDLED_HELPER_PATH_FROM_EXE))
+}
+
+fn development_helper_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(DEVELOPMENT_HELPER_PATH)
 }
 
 fn duration_millis(duration: Duration) -> u64 {

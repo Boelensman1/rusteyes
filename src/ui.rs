@@ -177,6 +177,8 @@ mod app {
     const APP_NAME: &str = "Resteyes";
     const TOOLTIP: &str = "Resteyes";
     const ACTIVE_TIME_MENU_ID: &str = "active-time";
+    #[cfg(target_os = "macos")]
+    const MACOS_NOTIFICATION_BUNDLE_ID: &str = "dev.resteyes.Resteyes";
 
     pub(crate) fn run<F>(config: UiConfig, start_runtime: F) -> Result<(), UiError>
     where
@@ -184,6 +186,7 @@ mod app {
     {
         let mut event_loop = EventLoopBuilder::<UiLoopEvent>::with_user_event().build();
         configure_tray_only_app(&mut event_loop);
+        configure_notification_application();
         let proxy = UiLoopProxy::new(event_loop.create_proxy());
         let (ui_handle, app_channels) = ui_channels();
         let UiAppChannels {
@@ -243,6 +246,20 @@ mod app {
 
     #[cfg(not(target_os = "macos"))]
     fn configure_tray_only_app(_event_loop: &mut tao::event_loop::EventLoop<UiLoopEvent>) {}
+
+    #[cfg(target_os = "macos")]
+    fn configure_notification_application() {
+        if let Err(error) = notify_rust::set_application(MACOS_NOTIFICATION_BUNDLE_ID) {
+            warn!(
+                %error,
+                bundle_id = MACOS_NOTIFICATION_BUNDLE_ID,
+                "failed to configure macOS notification application"
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn configure_notification_application() {}
 
     pub(crate) fn runtime_ui_from_handle(handle: UiHandle) -> RuntimeUi {
         RuntimeUi::from_handle(handle)

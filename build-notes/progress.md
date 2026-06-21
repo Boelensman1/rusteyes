@@ -199,7 +199,11 @@
   is menu-bar only. Later follow-up refinement shows accumulated scheduler
   active time in the tray/menu-bar dropdown and resets it with scheduler state.
   Later follow-up refinement orders manual break controls by scheduled cadence
-  from shortest to longest.
+  from shortest to longest. Later follow-up fix adds a local
+  `target/macos/Resteyes.app` bundle with bundle id `dev.resteyes.Resteyes`,
+  configures `notify-rust` with that bundle id before runtime startup, and
+  launches the app bundle from `make run` on macOS so notifications no longer
+  trigger the `use_default` application lookup.
 - Completed `synced-lock-after-break`: local lock-after-current-break requests
   now broadcast authenticated sync events, inbound authenticated lock-after
   requests mark the active local break for locking without rebroadcasting, and
@@ -298,6 +302,14 @@
 - `make check` passes after the break/disable sync runtime cleanup.
 - `make check` passes after adding notification tray UI behavior.
 - `make check` passes after adding the tray/menu-bar active-time status row.
+- `make -B macos-app-build` passes with approved SwiftPM cache and
+  LaunchServices registration access after adding the macOS app bundle.
+- `plutil -lint target/macos/Resteyes.app/Contents/Info.plist` passes.
+- A bounded `timeout 3s make run` on macOS reaches the bundled app path and
+  exits at the existing missing Accessibility/Input Monitoring preflight in
+  this environment.
+- `make check` passes after adding the macOS app bundle notification identity
+  fix.
 - `cargo test --all-targets --all-features runtime` passes after adding synced
   lock-after-break behavior.
 - `make check` passes after adding synced lock-after-break behavior.
@@ -312,7 +324,9 @@
 - Manual X11 overlay, input-blocking, overlay UI, and trace-output verification
   is still pending because this environment does not provide usable X server
   access.
-- Manual Linux/macOS tray and notification verification is pending.
+- Manual Linux tray and notification verification is pending.
+- Manual macOS notification verification is pending after granting
+  Accessibility/Input Monitoring to Resteyes.
 - Manual macOS input-blocking verification with Accessibility/Input Monitoring
   permissions granted is still pending.
 
