@@ -203,6 +203,7 @@ fn finite_disable_suppresses_active_time_and_reenables_after_elapsed() {
         RuntimeEvent::WallClockElapsed(Duration::from_secs(29)),
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
         RuntimeEvent::WallClockElapsed(Duration::from_secs(1)),
+        RuntimeEvent::WallClockElapsed(Duration::from_secs(10)),
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
         RuntimeEvent::Shutdown,
     ])
@@ -567,7 +568,10 @@ fn remote_active_time_event_starts_expected_configured_break()
     run_config_with_inputs(
         test_config(),
         backend,
-        [sync_input(remote_active_time(Duration::from_secs(10))?)],
+        [
+            backend_input(RuntimeEvent::WallClockElapsed(Duration::from_secs(10))),
+            sync_input(remote_active_time(Duration::from_secs(10))?),
+        ],
     )?;
 
     assert_eq!(
@@ -578,17 +582,66 @@ fn remote_active_time_event_starts_expected_configured_break()
 }
 
 #[test]
-fn local_and_remote_active_time_are_additive() -> Result<(), Box<dyn std::error::Error>> {
+fn local_and_remote_active_time_share_wall_clock_budget() -> Result<(), Box<dyn std::error::Error>>
+{
     let (backend, commands) = test_backend();
+    let mut inputs = Vec::new();
 
-    run_config_with_inputs(
-        test_config(),
-        backend,
-        [
-            sync_input(remote_active_time(Duration::from_secs(4))?),
-            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(6))),
-        ],
-    )?;
+    for _ in 0..5 {
+        inputs.push(backend_input(RuntimeEvent::WallClockElapsed(
+            Duration::from_secs(1),
+        )));
+        inputs.push(sync_input(remote_active_time(Duration::from_secs(1))?));
+        inputs.push(backend_input(RuntimeEvent::ActiveTimeElapsed(
+            Duration::from_secs(1),
+        )));
+    }
+
+    run_config_with_inputs(test_config(), backend, inputs)?;
+
+    assert!(received_commands(&commands).is_empty());
+    Ok(())
+}
+
+#[test]
+fn overlapping_local_and_remote_active_time_start_break_after_one_interval()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+    let mut inputs = Vec::new();
+
+    for _ in 0..10 {
+        inputs.push(backend_input(RuntimeEvent::WallClockElapsed(
+            Duration::from_secs(1),
+        )));
+        inputs.push(backend_input(RuntimeEvent::ActiveTimeElapsed(
+            Duration::from_secs(1),
+        )));
+        inputs.push(sync_input(remote_active_time(Duration::from_secs(1))?));
+    }
+
+    run_config_with_inputs(test_config(), backend, inputs)?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+    );
+    Ok(())
+}
+
+#[test]
+fn remote_only_active_time_uses_local_wall_clock_budget() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (backend, commands) = test_backend();
+    let mut inputs = Vec::new();
+
+    for _ in 0..10 {
+        inputs.push(backend_input(RuntimeEvent::WallClockElapsed(
+            Duration::from_secs(1),
+        )));
+        inputs.push(sync_input(remote_active_time(Duration::from_secs(1))?));
+    }
+
+    run_config_with_inputs(test_config(), backend, inputs)?;
 
     assert_eq!(
         received_commands(&commands),

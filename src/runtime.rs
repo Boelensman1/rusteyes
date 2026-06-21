@@ -138,6 +138,7 @@ struct DaemonRuntime<'a> {
     sync_broadcaster: &'a dyn SyncEventBroadcaster,
     ui: RuntimeUi,
     disable_mode: DisableMode,
+    combined_activity: CombinedActivity,
     idle_reset: IdleReset,
     current_break: Option<CurrentBreakState>,
     pre_break_notice: Option<PreBreakNoticeState>,
@@ -163,6 +164,7 @@ impl<'a> DaemonRuntime<'a> {
             sync_broadcaster: sync_runtime.broadcaster,
             ui,
             disable_mode: DisableMode::Enabled,
+            combined_activity: CombinedActivity::default(),
             idle_reset,
             current_break: None,
             pre_break_notice: None,
@@ -236,10 +238,10 @@ impl<'a> DaemonRuntime<'a> {
     fn handle_event(&mut self, event: RuntimeEvent) -> bool {
         match event {
             RuntimeEvent::ActiveTimeElapsed(elapsed) => {
-                return self.advance_active(elapsed, SyncPropagation::Broadcast);
+                return self.observe_active(elapsed, SyncPropagation::Broadcast);
             }
             RuntimeEvent::IdleTimeElapsed(elapsed) => self.advance_idle(elapsed),
-            RuntimeEvent::WallClockElapsed(elapsed) => self.advance_wall_clock(elapsed),
+            RuntimeEvent::WallClockElapsed(elapsed) => return self.advance_wall_clock(elapsed),
             RuntimeEvent::BreakFinished => return self.finish_break(),
             RuntimeEvent::LockAfterCurrentBreak => {
                 return self.request_lock_after_current_break(SyncPropagation::Broadcast);
@@ -281,7 +283,7 @@ impl<'a> DaemonRuntime<'a> {
         match event {
             SyncEvent::ActiveTimeElapsed { elapsed } => {
                 trace!(peer_id = %peer_id, ?elapsed, "applying synced active time");
-                self.advance_active(elapsed, SyncPropagation::Suppress)
+                self.observe_active(elapsed, SyncPropagation::Suppress)
             }
             SyncEvent::BreakStarted { name } => {
                 trace!(peer_id = %peer_id, break_name = %name, "applying synced break start");
@@ -329,10 +331,19 @@ impl<'a> DaemonRuntime<'a> {
         }
     }
 
-    fn advance_active(&mut self, elapsed: Duration, propagation: SyncPropagation) -> bool {
+    fn observe_active(&mut self, elapsed: Duration, propagation: SyncPropagation) -> bool {
         self.idle_reset.reset();
         self.broadcast_if_needed(propagation, &SyncEvent::ActiveTimeElapsed { elapsed });
 
+        let elapsed = self.combined_activity.active_elapsed(elapsed);
+        if elapsed.is_zero() {
+            return true;
+        }
+
+        self.advance_active(elapsed, propagation)
+    }
+
+    fn advance_active(&mut self, elapsed: Duration, propagation: SyncPropagation) -> bool {
         let scheduled_break = self.scheduler.advance_active(elapsed);
         if scheduled_break.is_some() {
             self.clear_pre_break_notice();
@@ -417,7 +428,9 @@ impl<'a> DaemonRuntime<'a> {
         }
     }
 
-    fn advance_wall_clock(&mut self, elapsed: Duration) {
+    fn advance_wall_clock(&mut self, elapsed: Duration) -> bool {
+        self.combined_activity.advance_wall_clock(elapsed);
+
         match self.disable_mode {
             DisableMode::Timed(remaining) if elapsed >= remaining => {
                 self.enable(SyncPropagation::Suppress);
@@ -427,6 +440,8 @@ impl<'a> DaemonRuntime<'a> {
             }
             DisableMode::Enabled | DisableMode::UntilRestart => {}
         }
+
+        true
     }
 
     fn disable_for(&mut self, duration: Duration, propagation: SyncPropagation) -> bool {
@@ -593,6 +608,29 @@ fn short_peer_id(peer_id: PeerId) -> String {
     let mut short = peer_id.to_string().chars().take(8).collect::<String>();
     short.push_str("...");
     short
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct CombinedActivity {
+    active_budget: Duration,
+    wall_clock_seen: bool,
+}
+
+impl CombinedActivity {
+    fn advance_wall_clock(&mut self, elapsed: Duration) {
+        self.wall_clock_seen = true;
+        self.active_budget = elapsed;
+    }
+
+    fn active_elapsed(&mut self, elapsed: Duration) -> Duration {
+        if !self.wall_clock_seen {
+            return elapsed;
+        }
+
+        let elapsed = std::cmp::min(elapsed, self.active_budget);
+        self.active_budget -= elapsed;
+        elapsed
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

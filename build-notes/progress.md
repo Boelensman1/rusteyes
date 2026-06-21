@@ -236,6 +236,10 @@
   notifications now update in place at countdown boundaries, preserve the
   half-interval notice lead for short schedules, and are explicitly cleared
   when the break starts.
+- Completed `idle-activity-grace`: normal activity samples now use an internal
+  10 second idle threshold so slow ongoing input still counts as active, while
+  local and synced active-time signals share one wall-clock budget so synced
+  peers do not multiply active-time accumulation.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -369,6 +373,8 @@
 - `cargo test pre_break_notification --lib` passes after adding countdown
   update and clear behavior.
 - `make check` passes after adding pre-break notification countdown updates.
+- `make check` passes after adding idle activity grace and capped synced
+  active-time accumulation.
 - `make -B macos-app-build` passes after adding pre-break notification
   countdown updates.
 - On unsupported targets, `make run` prints

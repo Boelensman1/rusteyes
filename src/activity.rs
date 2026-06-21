@@ -3,6 +3,8 @@ use std::collections::VecDeque;
 use std::time::Duration;
 use tracing::trace;
 
+const NORMAL_ACTIVITY_IDLE_THRESHOLD: Duration = Duration::from_secs(10);
+
 #[derive(Debug)]
 pub(crate) struct ActivityPoller {
     poll_interval: Duration,
@@ -22,12 +24,13 @@ impl ActivityPoller {
     }
 
     pub(crate) fn queue_sample(&mut self, sample: ActivitySample) -> ActivityState {
-        let state = sample.state_for(self.poll_interval);
+        let state = sample.state_for(NORMAL_ACTIVITY_IDLE_THRESHOLD);
         trace!(
             target: "resteyes::activity",
             idle_for = ?sample.idle_for(),
             ?state,
             poll_interval = ?self.poll_interval,
+            idle_threshold = ?NORMAL_ACTIVITY_IDLE_THRESHOLD,
             "sampled activity"
         );
 
@@ -66,8 +69,8 @@ impl ActivitySample {
         self.idle_for
     }
 
-    pub(crate) fn state_for(self, poll_interval: Duration) -> ActivityState {
-        if self.idle_for <= poll_interval {
+    pub(crate) fn state_for(self, idle_threshold: Duration) -> ActivityState {
+        if self.idle_for <= idle_threshold {
             ActivityState::Active
         } else {
             ActivityState::Idle

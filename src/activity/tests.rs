@@ -1,4 +1,7 @@
-use super::{ActivityPoller, ActivitySample, ActivityState, BreakTimer, break_elapsed_for_sample};
+use super::{
+    ActivityPoller, ActivitySample, ActivityState, BreakTimer, NORMAL_ACTIVITY_IDLE_THRESHOLD,
+    break_elapsed_for_sample,
+};
 use crate::backend::RuntimeEvent;
 use std::time::Duration;
 
@@ -6,34 +9,37 @@ use std::time::Duration;
 fn zero_idle_time_is_active() {
     let sample = ActivitySample::new(Duration::ZERO);
 
+    assert_eq!(sample.state_for(Duration::ZERO), ActivityState::Active);
+}
+
+#[test]
+fn idle_time_equal_to_threshold_is_active() {
+    let sample = ActivitySample::new(NORMAL_ACTIVITY_IDLE_THRESHOLD);
+
     assert_eq!(
-        sample.state_for(Duration::from_secs(1)),
+        sample.state_for(NORMAL_ACTIVITY_IDLE_THRESHOLD),
         ActivityState::Active
     );
 }
 
 #[test]
-fn idle_time_equal_to_poll_interval_is_active() {
-    let poll_interval = Duration::from_secs(1);
-    let sample = ActivitySample::new(poll_interval);
+fn idle_time_below_threshold_is_active() {
+    let sample = ActivitySample::new(Duration::from_secs(2));
 
-    assert_eq!(sample.state_for(poll_interval), ActivityState::Active);
+    assert_eq!(
+        sample.state_for(NORMAL_ACTIVITY_IDLE_THRESHOLD),
+        ActivityState::Active
+    );
 }
 
 #[test]
-fn idle_time_below_poll_interval_is_active() {
-    let poll_interval = Duration::from_secs(1);
-    let sample = ActivitySample::new(Duration::from_millis(500));
+fn idle_time_above_threshold_is_idle() {
+    let sample = ActivitySample::new(NORMAL_ACTIVITY_IDLE_THRESHOLD + Duration::from_millis(1));
 
-    assert_eq!(sample.state_for(poll_interval), ActivityState::Active);
-}
-
-#[test]
-fn idle_time_above_poll_interval_is_idle() {
-    let poll_interval = Duration::from_secs(1);
-    let sample = ActivitySample::new(Duration::from_millis(1_001));
-
-    assert_eq!(sample.state_for(poll_interval), ActivityState::Idle);
+    assert_eq!(
+        sample.state_for(NORMAL_ACTIVITY_IDLE_THRESHOLD),
+        ActivityState::Idle
+    );
 }
 
 #[test]
@@ -42,7 +48,7 @@ fn active_sample_queues_wall_clock_before_active_time() {
     let mut poller = ActivityPoller::new(poll_interval);
 
     assert_eq!(
-        poller.queue_sample(ActivitySample::new(Duration::from_millis(500))),
+        poller.queue_sample(ActivitySample::new(Duration::from_secs(2))),
         ActivityState::Active
     );
     assert_eq!(
@@ -62,7 +68,9 @@ fn idle_sample_queues_wall_clock_before_idle_time() {
     let mut poller = ActivityPoller::new(poll_interval);
 
     assert_eq!(
-        poller.queue_sample(ActivitySample::new(Duration::from_secs(2))),
+        poller.queue_sample(ActivitySample::new(
+            NORMAL_ACTIVITY_IDLE_THRESHOLD + Duration::from_secs(1),
+        )),
         ActivityState::Idle
     );
     assert_eq!(
