@@ -35,6 +35,7 @@ impl UiConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum UiCommand {
     ShowPreBreakNotification(PreBreakNotification),
+    ShowNotification(UiNotification),
     UpdateActiveTime(Duration),
 }
 
@@ -42,6 +43,12 @@ pub(crate) enum UiCommand {
 pub(crate) struct PreBreakNotification {
     pub(crate) break_name: String,
     pub(crate) starts_after: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UiNotification {
+    pub(crate) summary: String,
+    pub(crate) body: String,
 }
 
 #[derive(Debug)]
@@ -159,7 +166,7 @@ impl UiMenuAction {
 mod app {
     use super::{
         PreBreakNotification, RuntimeEvent, RuntimeUi, UiAppChannels, UiCommand, UiConfig,
-        UiHandle, UiMenuAction, ui_channels,
+        UiHandle, UiMenuAction, UiNotification, ui_channels,
     };
     use notify_rust::{Notification, Timeout};
     use std::collections::BTreeMap;
@@ -353,6 +360,11 @@ mod app {
                         warn!(%error, ?notification, "failed to show pre-break notification");
                     }
                 }
+                UiCommand::ShowNotification(notification) => {
+                    if let Err(error) = show_notification(&notification) {
+                        warn!(%error, ?notification, "failed to show notification");
+                    }
+                }
                 UiCommand::UpdateActiveTime(active_time) => {
                     if let Some(item) = &self.active_time_item {
                         item.set_text(active_time_menu_text(active_time));
@@ -484,16 +496,21 @@ mod app {
     }
 
     fn show_pre_break_notification(notification: &PreBreakNotification) -> Result<(), UiError> {
-        let body = format!(
-            "{} break starts in {}.",
-            notification.break_name,
-            humantime::format_duration(notification.starts_after)
-        );
+        show_notification(&UiNotification {
+            summary: String::from("Resteyes break soon"),
+            body: format!(
+                "{} break starts in {}.",
+                notification.break_name,
+                humantime::format_duration(notification.starts_after)
+            ),
+        })
+    }
 
+    fn show_notification(notification: &UiNotification) -> Result<(), UiError> {
         Notification::new()
             .appname(APP_NAME)
-            .summary("Resteyes break soon")
-            .body(&body)
+            .summary(&notification.summary)
+            .body(&notification.body)
             .timeout(Timeout::Milliseconds(6_000))
             .show()
             .map(|_| ())

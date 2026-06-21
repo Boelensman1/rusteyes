@@ -1,8 +1,8 @@
 use super::SyncTransportError;
 use crate::config::SharedSecret;
 use crate::sync_protocol::{
-    PeerId, SyncEvent, SyncMessage, SyncProtocolError, TransportControlFrame, decode_authenticated,
-    encode_authenticated,
+    PeerId, SyncCompatibilityFingerprint, SyncEvent, SyncMessage, SyncProtocolError,
+    TransportControlFrame, decode_authenticated, encode_authenticated,
 };
 use std::fmt;
 use std::str::{self, Utf8Error};
@@ -13,6 +13,7 @@ const FIRST_EVENT_SEQUENCE: u64 = 1;
 pub(super) struct TransportSession {
     self_id: PeerId,
     shared_secret: SharedSecret,
+    compatibility: SyncCompatibilityFingerprint,
     hello_payload: Vec<u8>,
     next_sequence: u64,
 }
@@ -21,12 +22,14 @@ impl TransportSession {
     pub(super) fn new(
         self_id: PeerId,
         shared_secret: SharedSecret,
+        compatibility: SyncCompatibilityFingerprint,
     ) -> Result<Self, SyncProtocolError> {
-        let hello_payload = peer_hello_payload(self_id, &shared_secret)?;
+        let hello_payload = peer_hello_payload(self_id, &shared_secret, compatibility)?;
 
         Ok(Self {
             self_id,
             shared_secret,
+            compatibility,
             hello_payload,
             next_sequence: FIRST_EVENT_SEQUENCE,
         })
@@ -38,6 +41,10 @@ impl TransportSession {
 
     pub(super) fn hello_payload(&self) -> &[u8] {
         &self.hello_payload
+    }
+
+    pub(super) const fn compatibility(&self) -> SyncCompatibilityFingerprint {
+        self.compatibility
     }
 
     pub(super) fn encode_event(&mut self, event: SyncEvent) -> Result<Vec<u8>, SyncTransportError> {
@@ -63,9 +70,14 @@ impl TransportSession {
 pub(super) fn peer_hello_payload(
     self_id: PeerId,
     shared_secret: &SharedSecret,
+    compatibility: SyncCompatibilityFingerprint,
 ) -> Result<Vec<u8>, SyncProtocolError> {
     encode_authenticated(
-        &SyncMessage::control(self_id, HELLO_SEQUENCE, TransportControlFrame::PeerHello),
+        &SyncMessage::control(
+            self_id,
+            HELLO_SEQUENCE,
+            TransportControlFrame::PeerHello { compatibility },
+        ),
         shared_secret,
     )
     .map(String::into_bytes)

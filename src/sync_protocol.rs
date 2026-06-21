@@ -1,14 +1,16 @@
-use crate::config::SharedSecret;
+use crate::config::{Config, SharedSecret};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use sha2::Sha256;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;
 
-const PROTOCOL_VERSION: u8 = 1;
+const PROTOCOL_VERSION: u8 = 2;
 const PEER_ID_BYTES: usize = 16;
 const MAC_BYTES: usize = 32;
+const COMPATIBILITY_FINGERPRINT_DOMAIN: &[u8] = b"resteyes-sync-config-compatibility-v1";
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -58,6 +60,119 @@ impl<'de> Deserialize<'de> for PeerId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct SyncCompatibilityFingerprint([u8; MAC_BYTES]);
+
+impl SyncCompatibilityFingerprint {
+    pub(crate) fn from_config(
+        config: &Config,
+        shared_secret: &SharedSecret,
+    ) -> Result<Self, SyncProtocolError> {
+        let profile = SyncCompatibilityProfile::from_config(config)?;
+        let profile_json = serde_json::to_vec(&profile).map_err(|error| json_error(&error))?;
+        let mut mac = hmac_sha256(shared_secret)?;
+
+        mac.update(COMPATIBILITY_FINGERPRINT_DOMAIN);
+        mac.update(&[0]);
+        mac.update(&profile_json);
+
+        Ok(Self(finish_hmac(mac)))
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn for_test(bytes: [u8; MAC_BYTES]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl fmt::Display for SyncCompatibilityFingerprint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&encode_hex(&self.0))
+    }
+}
+
+impl Serialize for SyncCompatibilityFingerprint {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for SyncCompatibilityFingerprint {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        decode_hex_exact::<MAC_BYTES>(&value, "compatibility")
+            .map(Self)
+            .map_err(de::Error::custom)
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SyncCompatibilityProfile {
+    breaks_after_active_ms: u64,
+    breaks_reset_after_idle_ms: Option<u64>,
+    break_types: BTreeMap<String, SyncCompatibilityBreakType>,
+    disable_preset_ms: Vec<u64>,
+}
+
+impl SyncCompatibilityProfile {
+    fn from_config(config: &Config) -> Result<Self, SyncProtocolError> {
+        let mut disable_preset_ms = config
+            .disable_presets
+            .iter()
+            .map(|duration| duration_millis_u64(*duration, "disablePresets"))
+            .collect::<Result<Vec<_>, _>>()?;
+        disable_preset_ms.sort_unstable();
+
+        Ok(Self {
+            breaks_after_active_ms: duration_millis_u64(
+                config.breaks.after_active,
+                "breaks.afterActive",
+            )?,
+            breaks_reset_after_idle_ms: config
+                .breaks
+                .reset_after_idle
+                .map(|duration| duration_millis_u64(duration, "breaks.resetAfterIdle"))
+                .transpose()?,
+            break_types: config
+                .breaks
+                .types
+                .iter()
+                .map(|(name, break_type)| {
+                    Ok((
+                        name.clone(),
+                        SyncCompatibilityBreakType {
+                            interval: break_type.interval,
+                            duration_ms: duration_millis_u64(
+                                break_type.duration,
+                                "breaks.types.duration",
+                            )?,
+                            messages: break_type.messages.clone(),
+                            autolock: break_type.autolock,
+                        },
+                    ))
+                })
+                .collect::<Result<BTreeMap<_, _>, SyncProtocolError>>()?,
+            disable_preset_ms,
+        })
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SyncCompatibilityBreakType {
+    interval: usize,
+    duration_ms: u64,
+    messages: Vec<String>,
+    autolock: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SyncMessage {
     pub(crate) version: u8,
@@ -95,7 +210,7 @@ impl SyncMessage {
 
         match &self.payload {
             SyncFramePayload::Control {
-                control: TransportControlFrame::PeerHello,
+                control: TransportControlFrame::PeerHello { .. },
             } if self.sequence != 0 => Err(SyncProtocolError::InvalidHelloSequence {
                 sequence: self.sequence,
             }),
@@ -120,7 +235,9 @@ pub(crate) enum SyncFramePayload {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub(crate) enum TransportControlFrame {
-    PeerHello,
+    PeerHello {
+        compatibility: SyncCompatibilityFingerprint,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -209,17 +326,25 @@ fn authenticate_message(
     shared_secret: &SharedSecret,
 ) -> Result<[u8; MAC_BYTES], SyncProtocolError> {
     let payload = serde_json::to_vec(message).map_err(|error| json_error(&error))?;
-    let mut mac = HmacSha256::new_from_slice(shared_secret.as_bytes()).map_err(|error| {
+    let mut mac = hmac_sha256(shared_secret)?;
+
+    mac.update(&payload);
+    Ok(finish_hmac(mac))
+}
+
+fn hmac_sha256(shared_secret: &SharedSecret) -> Result<HmacSha256, SyncProtocolError> {
+    HmacSha256::new_from_slice(shared_secret.as_bytes()).map_err(|error| {
         SyncProtocolError::MacKey {
             message: error.to_string(),
         }
-    })?;
+    })
+}
 
-    mac.update(&payload);
+fn finish_hmac(mac: HmacSha256) -> [u8; MAC_BYTES] {
     let bytes = mac.finalize().into_bytes();
     let mut output = [0; MAC_BYTES];
     output.copy_from_slice(&bytes);
-    Ok(output)
+    output
 }
 
 fn constant_time_eq(left: &[u8; MAC_BYTES], right: &[u8; MAC_BYTES]) -> bool {
@@ -283,6 +408,10 @@ fn json_error(error: &serde_json::Error) -> SyncProtocolError {
     }
 }
 
+fn duration_millis_u64(duration: Duration, field: &'static str) -> Result<u64, SyncProtocolError> {
+    u64::try_from(duration.as_millis()).map_err(|_| SyncProtocolError::DurationOutOfRange { field })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SyncProtocolError {
     Json {
@@ -316,6 +445,9 @@ pub(crate) enum SyncProtocolError {
     },
     InvalidEventSequence {
         sequence: u64,
+    },
+    DurationOutOfRange {
+        field: &'static str,
     },
     AuthenticationFailed,
 }
@@ -357,6 +489,9 @@ impl fmt::Display for SyncProtocolError {
                 formatter,
                 "sync domain event sequence must be greater than 0, got {sequence}"
             ),
+            Self::DurationOutOfRange { field } => {
+                write!(formatter, "sync field {field} duration is too large")
+            }
             Self::AuthenticationFailed => formatter.write_str("sync message authentication failed"),
         }
     }

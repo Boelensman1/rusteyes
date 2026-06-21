@@ -1,10 +1,11 @@
 use super::{
-    AuthenticatedSyncMessage, PeerId, SyncEvent, SyncFramePayload, SyncMessage, SyncProtocolError,
-    TransportControlFrame, authenticate_message, decode_authenticated, encode_authenticated,
-    encode_hex,
+    AuthenticatedSyncMessage, PeerId, SyncCompatibilityFingerprint, SyncEvent, SyncFramePayload,
+    SyncMessage, SyncProtocolError, TransportControlFrame, authenticate_message,
+    decode_authenticated, encode_authenticated, encode_hex,
 };
-use crate::config::SharedSecret;
+use crate::config::{BreakTypeConfig, Config, LockConfig, SharedSecret};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::str::FromStr;
 use std::time::Duration;
@@ -54,7 +55,7 @@ fn authenticates_all_sync_event_variants() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn authenticates_peer_hello_control_frame() -> Result<(), Box<dyn Error>> {
-    let message = SyncMessage::control(peer_id()?, 0, TransportControlFrame::PeerHello);
+    let message = SyncMessage::control(peer_id()?, 0, peer_hello_control());
     let encoded = encode_authenticated(&message, &shared_secret())?;
 
     assert_eq!(decode_authenticated(&encoded, &shared_secret())?, message);
@@ -64,7 +65,7 @@ fn authenticates_peer_hello_control_frame() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn rejects_peer_hello_with_non_zero_sequence() -> Result<(), Box<dyn Error>> {
-    let message = SyncMessage::control(peer_id()?, 1, TransportControlFrame::PeerHello);
+    let message = SyncMessage::control(peer_id()?, 1, peer_hello_control());
 
     assert_eq!(
         encode_authenticated(&message, &shared_secret()),
@@ -98,7 +99,7 @@ fn wire_json_uses_expected_version_sender_sequence_event_and_mac() -> Result<(),
     let encoded = encode_authenticated(&message, &shared_secret())?;
     let value = serde_json::from_str::<Value>(&encoded)?;
 
-    assert_eq!(value["version"], json!(1));
+    assert_eq!(value["version"], json!(2));
     assert_eq!(value["sender"], json!(PEER_ID));
     assert_eq!(value["sequence"], json!(42));
     assert_eq!(value["event"]["type"], json!("activeTimeElapsed"));
@@ -114,14 +115,20 @@ fn wire_json_uses_expected_version_sender_sequence_event_and_mac() -> Result<(),
 
 #[test]
 fn wire_json_uses_control_field_for_peer_hello() -> Result<(), Box<dyn Error>> {
-    let message = SyncMessage::control(peer_id()?, 0, TransportControlFrame::PeerHello);
+    let message = SyncMessage::control(peer_id()?, 0, peer_hello_control());
     let encoded = encode_authenticated(&message, &shared_secret())?;
     let value = serde_json::from_str::<Value>(&encoded)?;
 
-    assert_eq!(value["version"], json!(1));
+    assert_eq!(value["version"], json!(2));
     assert_eq!(value["sender"], json!(PEER_ID));
     assert_eq!(value["sequence"], json!(0));
     assert_eq!(value["control"]["type"], json!("peerHello"));
+    assert_eq!(
+        value["control"]["compatibility"],
+        json!(compatibility_fingerprint().to_string())
+    );
+    assert!(value["control"].get("breaks").is_none());
+    assert!(value["control"].get("disablePresets").is_none());
     assert!(value.get("event").is_none());
     assert_eq!(
         value["mac"].as_str().map(str::len),
@@ -129,6 +136,130 @@ fn wire_json_uses_control_field_for_peer_hello() -> Result<(), Box<dyn Error>> {
         "HMAC-SHA256 should be encoded as 32 bytes of hex"
     );
 
+    Ok(())
+}
+
+#[test]
+fn compatibility_fingerprint_ignores_lock_command() -> Result<(), Box<dyn Error>> {
+    let mut left = compatibility_config();
+    let mut right = compatibility_config();
+    left.lock = LockConfig {
+        command: Some(vec![String::from("loginctl"), String::from("lock-session")]),
+    };
+    right.lock = LockConfig {
+        command: Some(vec![String::from("custom-lock")]),
+    };
+
+    assert_eq!(
+        SyncCompatibilityFingerprint::from_config(&left, &shared_secret())?,
+        SyncCompatibilityFingerprint::from_config(&right, &shared_secret())?
+    );
+    Ok(())
+}
+
+#[test]
+fn compatibility_fingerprint_ignores_sync_config_fields() -> Result<(), Box<dyn Error>> {
+    let mut left = compatibility_config();
+    let mut right = compatibility_config();
+    left.sync.enabled = true;
+    left.sync.shared_secret = Some(SharedSecret::new(String::from(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )));
+    right.sync.shared_secret = Some(SharedSecret::new(String::from(
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    )));
+
+    assert_eq!(fingerprint_for(&left)?, fingerprint_for(&right)?);
+    Ok(())
+}
+
+#[test]
+fn compatibility_fingerprint_changes_for_synced_behavior() -> Result<(), Box<dyn Error>> {
+    let base = compatibility_config();
+
+    let mut changed_after_active = base.clone();
+    changed_after_active.breaks.after_active = Duration::from_secs(11);
+    assert_ne!(
+        fingerprint_for(&base)?,
+        fingerprint_for(&changed_after_active)?,
+        "break cadence should affect compatibility"
+    );
+
+    let mut changed_reset = base.clone();
+    changed_reset.breaks.reset_after_idle = None;
+    assert_ne!(
+        fingerprint_for(&base)?,
+        fingerprint_for(&changed_reset)?,
+        "idle reset should affect compatibility"
+    );
+
+    let mut changed_break = base.clone();
+    changed_break.breaks.types.insert(
+        String::from("short"),
+        BreakTypeConfig {
+            interval: 1,
+            duration: Duration::from_secs(21),
+            messages: vec![String::from("Rest your eyes")],
+            autolock: false,
+        },
+    );
+    assert_ne!(
+        fingerprint_for(&base)?,
+        fingerprint_for(&changed_break)?,
+        "break duration should affect compatibility"
+    );
+
+    let mut changed_message = base.clone();
+    changed_message.breaks.types.insert(
+        String::from("short"),
+        BreakTypeConfig {
+            interval: 1,
+            duration: Duration::from_secs(20),
+            messages: vec![String::from("Look away")],
+            autolock: false,
+        },
+    );
+    assert_ne!(
+        fingerprint_for(&base)?,
+        fingerprint_for(&changed_message)?,
+        "break messages should affect compatibility"
+    );
+
+    let mut changed_autolock = base.clone();
+    changed_autolock.breaks.types.insert(
+        String::from("short"),
+        BreakTypeConfig {
+            interval: 1,
+            duration: Duration::from_secs(20),
+            messages: vec![String::from("Rest your eyes")],
+            autolock: true,
+        },
+    );
+    assert_ne!(
+        fingerprint_for(&base)?,
+        fingerprint_for(&changed_autolock)?,
+        "autolock should affect compatibility"
+    );
+
+    let mut changed_presets = base.clone();
+    changed_presets.disable_presets = vec![Duration::from_secs(60)];
+    assert_ne!(
+        fingerprint_for(&base)?,
+        fingerprint_for(&changed_presets)?,
+        "disable presets should affect compatibility"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn compatibility_fingerprint_normalizes_disable_preset_order() -> Result<(), Box<dyn Error>> {
+    let mut left = compatibility_config();
+    let mut right = compatibility_config();
+    left.disable_presets = vec![Duration::from_secs(30), Duration::from_secs(60)];
+    right.disable_presets = vec![Duration::from_secs(60), Duration::from_secs(30)];
+
+    assert_eq!(fingerprint_for(&left)?, fingerprint_for(&right)?);
     Ok(())
 }
 
@@ -206,12 +337,12 @@ fn rejects_invalid_mac_hex() -> Result<(), Box<dyn Error>> {
 #[test]
 fn rejects_unsupported_version_after_authentication() -> Result<(), Box<dyn Error>> {
     let mut message = SyncMessage::event(peer_id()?, 11, SyncEvent::Enable);
-    message.version = 2;
+    message.version = 3;
     let encoded = authenticated_json(&message)?;
 
     assert_eq!(
         decode_authenticated(&encoded, &shared_secret()),
-        Err(SyncProtocolError::UnsupportedVersion { version: 2 })
+        Err(SyncProtocolError::UnsupportedVersion { version: 3 })
     );
 
     Ok(())
@@ -319,6 +450,43 @@ fn authenticated_json(message: &SyncMessage) -> Result<String, SyncProtocolError
     .map_err(|error| SyncProtocolError::Json {
         message: error.to_string(),
     })
+}
+
+fn peer_hello_control() -> TransportControlFrame {
+    TransportControlFrame::PeerHello {
+        compatibility: compatibility_fingerprint(),
+    }
+}
+
+fn compatibility_fingerprint() -> SyncCompatibilityFingerprint {
+    SyncCompatibilityFingerprint::for_test([0x11; 32])
+}
+
+fn fingerprint_for(config: &Config) -> Result<SyncCompatibilityFingerprint, SyncProtocolError> {
+    SyncCompatibilityFingerprint::from_config(config, &shared_secret())
+}
+
+fn compatibility_config() -> Config {
+    Config {
+        breaks: crate::config::Breaks {
+            after_active: Duration::from_secs(10),
+            reset_after_idle: Some(Duration::from_secs(300)),
+            types: [(
+                String::from("short"),
+                BreakTypeConfig {
+                    interval: 1,
+                    duration: Duration::from_secs(20),
+                    messages: vec![String::from("Rest your eyes")],
+                    autolock: false,
+                },
+            )]
+            .into_iter()
+            .collect::<BTreeMap<_, _>>(),
+        },
+        disable_presets: vec![Duration::from_secs(30)],
+        lock: LockConfig::default(),
+        sync: crate::config::SyncConfig::default(),
+    }
 }
 
 fn peer_id() -> Result<PeerId, SyncProtocolError> {

@@ -3,11 +3,14 @@ use crate::config::Config;
 #[cfg(target_os = "macos")]
 use crate::macos_helper::MacOSHelperBackend;
 use crate::scheduler::{BreakOrigin, BreakSchedule, BreakScheduler, ScheduledBreak};
-use crate::sync_protocol::{PeerId, SyncEvent};
-use crate::sync_transport::{SyncTransport, SyncTransportError, SyncTransportEvent};
-use crate::ui::{PreBreakNotification, RuntimeUi, UiCommand, UiConfig};
+use crate::sync_protocol::{PeerId, SyncCompatibilityFingerprint, SyncEvent};
+use crate::sync_transport::{
+    PeerRejectionReason, SyncTransport, SyncTransportError, SyncTransportEvent,
+};
+use crate::ui::{PreBreakNotification, RuntimeUi, UiCommand, UiConfig, UiNotification};
 #[cfg(target_os = "linux")]
 use crate::x11_activity::X11ActivityBackend;
+use std::collections::BTreeSet;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::thread;
 use std::time::Duration;
@@ -17,15 +20,17 @@ const DEFAULT_PRE_BREAK_NOTICE_LEAD: Duration = Duration::from_secs(30);
 
 #[cfg(target_os = "linux")]
 pub(crate) fn run() -> Result<(), crate::Error> {
+    let config = Config::load()?;
+    let sync_compatibility = sync_compatibility_fingerprint(&config)?;
     let Config {
         breaks,
         disable_presets,
         lock,
         sync,
-    } = Config::load()?;
+    } = config;
     let ui_config = UiConfig::from_config(&breaks, &disable_presets);
     let schedule = BreakSchedule::try_from(breaks)?;
-    let sync_transport = SyncTransport::start(sync)?;
+    let sync_transport = SyncTransport::start(sync, sync_compatibility)?;
     let backend = X11ActivityBackend::spawn(lock)?;
 
     run_with_ui(schedule, backend, sync_transport, ui_config)?;
@@ -34,15 +39,17 @@ pub(crate) fn run() -> Result<(), crate::Error> {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn run() -> Result<(), crate::Error> {
+    let config = Config::load()?;
+    let sync_compatibility = sync_compatibility_fingerprint(&config)?;
     let Config {
         breaks,
         disable_presets,
         lock,
         sync,
-    } = Config::load()?;
+    } = config;
     let ui_config = UiConfig::from_config(&breaks, &disable_presets);
     let schedule = BreakSchedule::try_from(breaks)?;
-    let sync_transport = SyncTransport::start(sync)?;
+    let sync_transport = SyncTransport::start(sync, sync_compatibility)?;
     let backend = MacOSHelperBackend::spawn(lock)?;
 
     run_with_ui(schedule, backend, sync_transport, ui_config)?;
@@ -74,6 +81,23 @@ fn run_with_ui(
             .map_err(|error| crate::ui::UiError::runtime_thread(&error))
     })?;
     Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn sync_compatibility_fingerprint(
+    config: &Config,
+) -> Result<Option<SyncCompatibilityFingerprint>, SyncTransportError> {
+    if !config.sync.enabled {
+        return Ok(None);
+    }
+
+    let Some(shared_secret) = &config.sync.shared_secret else {
+        return Err(SyncTransportError::MissingSharedSecret);
+    };
+
+    SyncCompatibilityFingerprint::from_config(config, shared_secret)
+        .map(Some)
+        .map_err(SyncTransportError::Protocol)
 }
 
 fn run_with_event_sources(
@@ -116,6 +140,7 @@ struct DaemonRuntime<'a> {
     idle_reset: IdleReset,
     current_break: Option<CurrentBreakState>,
     notified_break: Option<NotifiedBreak>,
+    notified_rejected_peers: BTreeSet<PeerId>,
     displayed_active_time: Duration,
 }
 
@@ -140,6 +165,7 @@ impl<'a> DaemonRuntime<'a> {
             idle_reset,
             current_break: None,
             notified_break: None,
+            notified_rejected_peers: BTreeSet::new(),
             displayed_active_time: Duration::ZERO,
         }
     }
@@ -236,6 +262,10 @@ impl<'a> DaemonRuntime<'a> {
     fn handle_sync_transport_event(&mut self, event: SyncTransportEvent) -> bool {
         match event {
             SyncTransportEvent::Domain { peer_id, event } => self.handle_sync_event(peer_id, event),
+            SyncTransportEvent::PeerRejected { peer_id, reason } => {
+                self.notify_peer_rejected(peer_id, reason);
+                true
+            }
             event => {
                 trace!(?event, "received sync transport event");
                 true
@@ -496,6 +526,33 @@ impl<'a> DaemonRuntime<'a> {
             warn!(%error, "failed to send active-time UI update");
         }
     }
+
+    fn notify_peer_rejected(&mut self, peer_id: PeerId, reason: PeerRejectionReason) {
+        if !self.notified_rejected_peers.insert(peer_id) {
+            return;
+        }
+
+        let body = match reason {
+            PeerRejectionReason::IncompatibleConfiguration => format!(
+                "Peer {} was rejected because its break settings do not match.",
+                short_peer_id(peer_id)
+            ),
+        };
+        let command = UiCommand::ShowNotification(UiNotification {
+            summary: String::from("Resteyes sync peer rejected"),
+            body,
+        });
+
+        if let Err(error) = self.ui.send_command(command) {
+            warn!(%error, "failed to send sync peer rejection notification command");
+        }
+    }
+}
+
+fn short_peer_id(peer_id: PeerId) -> String {
+    let mut short = peer_id.to_string().chars().take(8).collect::<String>();
+    short.push_str("...");
+    short
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

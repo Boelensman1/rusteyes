@@ -8,7 +8,7 @@ use self::session::TransportSession;
 use self::worker::{WorkerState, spawn_worker_thread};
 use crate::config::{SharedSecret, SyncConfig};
 use crate::sync_discovery::{DiscoveredPeer, DiscoveryEvent, LanDiscovery, SyncDiscoveryError};
-use crate::sync_protocol::{PeerId, SyncEvent, SyncProtocolError};
+use crate::sync_protocol::{PeerId, SyncCompatibilityFingerprint, SyncEvent, SyncProtocolError};
 #[cfg(test)]
 use crate::sync_transport_io::{TransportEndpoint, TransportSendStatus};
 use crate::sync_transport_io::{TransportIo, TransportIoHandle};
@@ -48,7 +48,10 @@ struct ActiveSyncTransport {
 }
 
 impl SyncTransport {
-    pub(crate) fn start(sync: SyncConfig) -> Result<Self, SyncTransportError> {
+    pub(crate) fn start(
+        sync: SyncConfig,
+        compatibility: Option<SyncCompatibilityFingerprint>,
+    ) -> Result<Self, SyncTransportError> {
         if !sync.enabled {
             return Ok(Self {
                 state: SyncTransportState::Inactive,
@@ -58,11 +61,15 @@ impl SyncTransport {
         let Some(shared_secret) = sync.shared_secret else {
             return Err(SyncTransportError::MissingSharedSecret);
         };
+        let Some(compatibility) = compatibility else {
+            return Err(SyncTransportError::MissingCompatibilityFingerprint);
+        };
 
         let self_id = PeerId::generate().map_err(SyncTransportError::Protocol)?;
         Self::start_internal(
             self_id,
             &shared_secret,
+            compatibility,
             PRODUCTION_LISTEN_ADDR,
             DiscoveryMode::Advertise,
         )
@@ -71,10 +78,11 @@ impl SyncTransport {
     fn start_internal(
         self_id: PeerId,
         shared_secret: &SharedSecret,
+        compatibility: SyncCompatibilityFingerprint,
         listen_addr: impl ToSocketAddrs,
         discovery_mode: DiscoveryMode,
     ) -> Result<Self, SyncTransportError> {
-        let session = TransportSession::new(self_id, shared_secret.clone())
+        let session = TransportSession::new(self_id, shared_secret.clone(), compatibility)
             .map_err(SyncTransportError::Protocol)?;
         let mut binding = TransportIo::listen(listen_addr).map_err(SyncTransportError::Listen)?;
         let handle = binding.io.handle();
@@ -193,9 +201,19 @@ impl SyncTransport {
         self_id: PeerId,
         shared_secret: &SharedSecret,
     ) -> Result<Self, SyncTransportError> {
+        Self::start_for_test_with_fingerprint(self_id, shared_secret, test_fingerprint())
+    }
+
+    #[cfg(test)]
+    fn start_for_test_with_fingerprint(
+        self_id: PeerId,
+        shared_secret: &SharedSecret,
+        compatibility: SyncCompatibilityFingerprint,
+    ) -> Result<Self, SyncTransportError> {
         Self::start_internal(
             self_id,
             shared_secret,
+            compatibility,
             "127.0.0.1:0",
             DiscoveryMode::Disabled,
         )
@@ -337,7 +355,19 @@ impl Drop for SyncTransport {
 pub(crate) enum SyncTransportEvent {
     PeerAuthenticated(PeerId),
     PeerDisconnected(PeerId),
-    Domain { peer_id: PeerId, event: SyncEvent },
+    PeerRejected {
+        peer_id: PeerId,
+        reason: PeerRejectionReason,
+    },
+    Domain {
+        peer_id: PeerId,
+        event: SyncEvent,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PeerRejectionReason {
+    IncompatibleConfiguration,
 }
 
 fn spawn_discovery_thread(
@@ -396,6 +426,7 @@ impl DiscoveryMode {
 #[derive(Debug)]
 pub(crate) enum SyncTransportError {
     MissingSharedSecret,
+    MissingCompatibilityFingerprint,
     Protocol(SyncProtocolError),
     Listen(io::Error),
     Discovery(SyncDiscoveryError),
@@ -409,6 +440,9 @@ impl fmt::Display for SyncTransportError {
             Self::MissingSharedSecret => {
                 formatter.write_str("sync shared_secret is required when sync transport is enabled")
             }
+            Self::MissingCompatibilityFingerprint => formatter.write_str(
+                "sync compatibility fingerprint is required when sync transport is enabled",
+            ),
             Self::Protocol(error) => {
                 write!(formatter, "sync transport protocol setup failed: {error}")
             }
@@ -428,9 +462,17 @@ impl std::error::Error for SyncTransportError {
             Self::Protocol(error) => Some(error),
             Self::Listen(error) => Some(error),
             Self::Discovery(error) => Some(error),
-            Self::MissingSharedSecret | Self::WorkerStopped | Self::SequenceExhausted => None,
+            Self::MissingSharedSecret
+            | Self::MissingCompatibilityFingerprint
+            | Self::WorkerStopped
+            | Self::SequenceExhausted => None,
         }
     }
+}
+
+#[cfg(test)]
+fn test_fingerprint() -> SyncCompatibilityFingerprint {
+    SyncCompatibilityFingerprint::for_test([0x42; 32])
 }
 
 #[cfg(test)]

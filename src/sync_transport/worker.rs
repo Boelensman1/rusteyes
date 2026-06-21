@@ -4,7 +4,7 @@ use super::connections::{
     PeerAuthenticationResult,
 };
 use super::session::{TransportFrameError, TransportSession};
-use super::{SyncTransportError, SyncTransportEvent};
+use super::{PeerRejectionReason, SyncTransportError, SyncTransportEvent};
 use crate::sync_protocol::{PeerId, SyncEvent, SyncFramePayload, TransportControlFrame};
 use crate::sync_transport_io::{
     TransportEndpoint, TransportIoEvent, TransportIoHandle, TransportIoReceiver,
@@ -170,15 +170,34 @@ impl WorkerState {
 
         match message.payload {
             SyncFramePayload::Control {
-                control: TransportControlFrame::PeerHello,
-            } => self.handle_peer_hello(endpoint, sender),
+                control: TransportControlFrame::PeerHello { compatibility },
+            } => self.handle_peer_hello(endpoint, sender, compatibility),
             SyncFramePayload::Event { event } => {
                 self.handle_domain_event(endpoint, sender, sequence, event);
             }
         }
     }
 
-    fn handle_peer_hello(&mut self, endpoint: TransportEndpoint, sender: PeerId) {
+    fn handle_peer_hello(
+        &mut self,
+        endpoint: TransportEndpoint,
+        sender: PeerId,
+        compatibility: crate::sync_protocol::SyncCompatibilityFingerprint,
+    ) {
+        if sender != self.self_id() && compatibility != self.session.compatibility() {
+            warn!(
+                peer_id = %sender,
+                endpoint = %endpoint,
+                "rejected sync peer with incompatible break settings"
+            );
+            self.emit(SyncTransportEvent::PeerRejected {
+                peer_id: sender,
+                reason: PeerRejectionReason::IncompatibleConfiguration,
+            });
+            self.close_endpoint(endpoint);
+            return;
+        }
+
         let authentication = self.tracker.authenticate_peer(endpoint, sender);
         self.close_untracked_endpoints(authentication.endpoints_to_close);
 

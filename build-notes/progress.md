@@ -217,6 +217,12 @@
   pre-break notification state, updates the active-time tray row, and treats
   authenticated remote active-time events as combined activity without changing
   the sync protocol.
+- Completed `peer-config-compatibility`: sync protocol version 2 peer hellos
+  now carry a keyed compatibility fingerprint derived from synced break
+  behavior settings, excluding lock command and raw sync secrets; transport
+  rejects authenticated peers with mismatched fingerprints before domain sync
+  events can flow, and runtime sends one desktop notification per rejected peer
+  ID through the existing UI notification path.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -314,6 +320,16 @@
   lock-after-break behavior.
 - `make check` passes after adding synced lock-after-break behavior.
 - `make check` passes after adding idle reset behavior.
+- `cargo check --all-targets --all-features` passes after adding sync peer
+  compatibility fingerprints.
+- `cargo test --all-targets --all-features sync_protocol` passes after adding
+  sync peer compatibility fingerprints.
+- `cargo test --all-targets --all-features sync_transport` passes after adding
+  sync peer compatibility fingerprints.
+- `cargo test --all-targets --all-features runtime` passes after adding sync
+  peer rejection notifications.
+- `make check` passes after adding sync peer compatibility rejection and
+  notifications.
 - A bounded `timeout 3s make run` on macOS stays alive until terminated by
   `timeout` and no longer emits helper stderr during startup after AppKit setup
   was made lazy.

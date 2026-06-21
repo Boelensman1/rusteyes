@@ -5,8 +5,8 @@ use crate::backend::{BackendActor, BackendCommand, DisableRequest, RuntimeEvent}
 use crate::config::{BreakTypeConfig, Breaks, Config, ConfigError, LockConfig, SyncConfig};
 use crate::scheduler::{BreakOrigin, BreakSchedule, ScheduledBreak};
 use crate::sync_protocol::{PeerId, SyncEvent};
-use crate::sync_transport::{SyncTransportError, SyncTransportEvent};
-use crate::ui::{PreBreakNotification, RuntimeUi, UiCommand};
+use crate::sync_transport::{PeerRejectionReason, SyncTransportError, SyncTransportEvent};
+use crate::ui::{PreBreakNotification, RuntimeUi, UiCommand, UiNotification};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::str::FromStr;
@@ -334,16 +334,50 @@ fn scheduler_setup_error_is_returned() {
 fn sync_transport_peer_events_do_not_trigger_scheduler_behavior()
 -> Result<(), Box<dyn std::error::Error>> {
     let (backend, commands) = test_backend();
+    let (ui, ui_commands) = recording_ui();
+    let peer_id = peer_id()?;
 
-    run_config_with_inputs(
+    run_config_with_inputs_and_ui(
         test_config(),
         backend,
-        [sync_input(
-            SyncTransportEvent::PeerAuthenticated(peer_id()?),
-        )],
+        ui,
+        [
+            sync_input(SyncTransportEvent::PeerAuthenticated(peer_id)),
+            sync_input(SyncTransportEvent::PeerDisconnected(peer_id)),
+        ],
     )?;
 
     assert!(received_commands(&commands).is_empty());
+    assert!(received_ui_commands(&ui_commands).is_empty());
+    Ok(())
+}
+
+#[test]
+fn rejected_sync_peer_shows_notification_once_per_peer() -> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+    let (ui, ui_commands) = recording_ui();
+    let peer_id = peer_id()?;
+
+    run_config_with_inputs_and_ui(
+        test_config(),
+        backend,
+        ui,
+        [
+            sync_input(rejected_peer(peer_id)),
+            sync_input(rejected_peer(peer_id)),
+        ],
+    )?;
+
+    assert!(received_commands(&commands).is_empty());
+    assert_eq!(
+        received_ui_commands(&ui_commands),
+        vec![UiCommand::ShowNotification(UiNotification {
+            summary: String::from("Resteyes sync peer rejected"),
+            body: String::from(
+                "Peer 01020304... was rejected because its break settings do not match."
+            ),
+        })]
+    );
     Ok(())
 }
 
@@ -1287,6 +1321,13 @@ fn remote_sync_event(event: SyncEvent) -> Result<SyncTransportEvent, Box<dyn std
         peer_id: peer_id()?,
         event,
     })
+}
+
+fn rejected_peer(peer_id: PeerId) -> SyncTransportEvent {
+    SyncTransportEvent::PeerRejected {
+        peer_id,
+        reason: PeerRejectionReason::IncompatibleConfiguration,
+    }
 }
 
 fn backend_input(event: RuntimeEvent) -> RuntimeInput {

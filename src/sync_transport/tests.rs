@@ -3,11 +3,11 @@ use super::connections::{
     PeerAuthentication, PeerAuthenticationResult,
 };
 use super::session::peer_hello_payload;
-use super::{SyncTransport, SyncTransportEvent};
+use super::{PeerRejectionReason, SyncTransport, SyncTransportEvent, test_fingerprint};
 use crate::config::{SharedSecret, SyncConfig};
 use crate::sync_protocol::{
-    PeerId, SyncEvent, SyncFramePayload, SyncMessage, SyncProtocolError, TransportControlFrame,
-    decode_authenticated, encode_authenticated,
+    PeerId, SyncCompatibilityFingerprint, SyncEvent, SyncFramePayload, SyncMessage,
+    SyncProtocolError, TransportControlFrame, decode_authenticated, encode_authenticated,
 };
 use crate::sync_transport_io::{TransportIo, TransportIoEvent, TransportSendStatus};
 use std::error::Error;
@@ -23,7 +23,8 @@ const WRONG_SHARED_SECRET: &str = "fedcba9876543210fedcba9876543210";
 
 #[test]
 fn peer_hello_uses_authenticated_sequence_zero_frame() -> Result<(), Box<dyn Error>> {
-    let payload = peer_hello_payload(local_peer()?, &shared_secret())?;
+    let compatibility = test_fingerprint();
+    let payload = peer_hello_payload(local_peer()?, &shared_secret(), compatibility)?;
     let input = str::from_utf8(&payload)?;
     let message = decode_authenticated(input, &shared_secret())?;
 
@@ -32,7 +33,7 @@ fn peer_hello_uses_authenticated_sequence_zero_frame() -> Result<(), Box<dyn Err
     assert_eq!(
         message.payload,
         SyncFramePayload::Control {
-            control: TransportControlFrame::PeerHello,
+            control: TransportControlFrame::PeerHello { compatibility },
         }
     );
 
@@ -41,7 +42,7 @@ fn peer_hello_uses_authenticated_sequence_zero_frame() -> Result<(), Box<dyn Err
 
 #[test]
 fn peer_hello_rejects_wrong_shared_secret() -> Result<(), Box<dyn Error>> {
-    let payload = peer_hello_payload(local_peer()?, &shared_secret())?;
+    let payload = peer_hello_payload(local_peer()?, &shared_secret(), test_fingerprint())?;
     let input = str::from_utf8(&payload)?;
 
     assert_eq!(
@@ -277,7 +278,7 @@ fn tracker_preserves_sequence_state_after_reconnect() -> Result<(), Box<dyn Erro
 
 #[test]
 fn disabled_transport_is_inert() -> Result<(), Box<dyn Error>> {
-    let transport = SyncTransport::start(SyncConfig::default())?;
+    let transport = SyncTransport::start(SyncConfig::default(), None)?;
 
     assert_eq!(
         transport.broadcast_event(SyncEvent::ActiveTimeElapsed {
@@ -288,6 +289,33 @@ fn disabled_transport_is_inert() -> Result<(), Box<dyn Error>> {
     assert!(!transport.send_event(remote_peer()?, SyncEvent::Enable)?);
     assert_eq!(transport.try_recv_event()?, None);
     assert!(transport.drain_events()?.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn loopback_transports_reject_mismatched_compatibility() -> Result<(), Box<dyn Error>> {
+    let left = SyncTransport::start_for_test_with_fingerprint(
+        local_peer()?,
+        &shared_secret(),
+        compatibility_fingerprint(0x11),
+    )?;
+    let right = SyncTransport::start_for_test_with_fingerprint(
+        remote_peer()?,
+        &shared_secret(),
+        compatibility_fingerprint(0x22),
+    )?;
+
+    left.connect_for_test(right.local_addr_for_test())?;
+
+    expect_peer_rejected(&left, remote_peer()?)?;
+    expect_peer_rejected(&right, local_peer()?)?;
+    assert_eq!(left.broadcast_event(SyncEvent::Enable)?, 0);
+    assert!(
+        right
+            .recv_event_timeout_for_test(Duration::from_millis(100))?
+            .is_none()
+    );
 
     Ok(())
 }
@@ -554,6 +582,26 @@ fn expect_peer_disconnected(
     }
 }
 
+fn expect_peer_rejected(transport: &SyncTransport, peer_id: PeerId) -> Result<(), Box<dyn Error>> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+
+    loop {
+        let now = Instant::now();
+        let remaining = deadline.saturating_duration_since(now);
+        if remaining.is_zero() {
+            return Err(format!("timed out waiting for rejected peer {peer_id}").into());
+        }
+
+        match transport.recv_event_timeout_for_test(remaining)? {
+            Some(SyncTransportEvent::PeerRejected {
+                peer_id: actual,
+                reason: PeerRejectionReason::IncompatibleConfiguration,
+            }) if actual == peer_id => return Ok(()),
+            _ => {}
+        }
+    }
+}
+
 fn expect_domain_event(transport: &SyncTransport) -> Result<SyncTransportEvent, Box<dyn Error>> {
     let event = transport
         .recv_event_timeout_for_test(Duration::from_secs(2))?
@@ -615,6 +663,10 @@ fn remote_peer() -> Result<PeerId, Box<dyn Error>> {
 
 fn third_peer() -> Result<PeerId, Box<dyn Error>> {
     Ok(PeerId::from_str(THIRD_PEER)?)
+}
+
+fn compatibility_fingerprint(byte: u8) -> SyncCompatibilityFingerprint {
+    SyncCompatibilityFingerprint::for_test([byte; 32])
 }
 
 fn shared_secret() -> SharedSecret {
