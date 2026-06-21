@@ -191,7 +191,7 @@
 - Completed `notification-tray-ui`: Linux and macOS production runs now start a
   main-thread tray/menu-bar UI with controls to start configured break types,
   disable for configured presets, disable until restart, and quit. Runtime now
-  sends one passive pre-break notification when active time enters the fixed
+  sends one pre-break notification when active time enters the fixed
   `min(30s, breaks.after_active / 2)` notice window for the next scheduled
   break, and UI-originated controls reuse the existing local runtime paths so
   manual breaks and disable actions can sync to authenticated peers. Follow-up
@@ -227,6 +227,11 @@
   development shell and package build use the exact Rust 1.96.0 toolchain from
   `oxalica/rust-overlay`, and Rust 1.96 Clippy compatibility fixes have been
   applied.
+- Completed `macos-user-notifications-api`: macOS builds now enable
+  `notify-rust`'s `UNUserNotificationCenter` backend, request notification
+  authorization during UI startup, keep desktop notifications at normal
+  priority, and ad-hoc sign the generated local app bundle before
+  LaunchServices registration.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -345,6 +350,18 @@
 - `nix develop --command make check` passes after switching to Rust 1.96.0.
 - `nix build` passes after switching to Rust 1.96.0.
 - `.codex/hooks/rustfmt.sh` runs successfully.
+- `make check` passes after moving macOS notifications to the
+  `UNUserNotificationCenter` backend.
+- `make -B macos-app-build` passes after adding explicit ad-hoc signing for the
+  generated local macOS app bundle.
+- `plutil -lint target/macos/Resteyes.app/Contents/Info.plist` passes after
+  moving macOS notifications to the `UNUserNotificationCenter` backend.
+- `codesign -dv target/macos/Resteyes.app` reports ad-hoc signature identity
+  `dev.resteyes.Resteyes` after the signing step.
+- `codesign -d --entitlements - target/macos/Resteyes.app` emits no entitlement
+  dictionary after keeping macOS notifications at normal priority.
+- `timeout 3s make run` launches the macOS app bundle until the timeout sends
+  SIGTERM, avoiding the earlier AMFI `Killed: 9` restricted-entitlement failure.
 - On unsupported targets, `make run` prints
   `resteyes: no backend is available for <platform> yet` and exits non-zero.
 - Manual X11 overlay, input-blocking, overlay UI, and trace-output verification
@@ -353,6 +370,8 @@
 - Manual Linux tray and notification verification is pending.
 - Manual macOS notification verification is pending after granting
   Accessibility/Input Monitoring to Resteyes.
+- Manual macOS Focus/Do Not Disturb notification verification is pending after
+  granting notification permission to Resteyes.
 - Manual macOS input-blocking verification with Accessibility/Input Monitoring
   permissions granted is still pending.
 

@@ -88,6 +88,7 @@ ifeq ($(UNAME_S),Darwin)
 	cp target/debug/resteyes $(MACOS_APP_BIN)
 	cp $(MACOS_HELPER_BIN) $(MACOS_APP_HELPER)
 	chmod +x $(MACOS_APP_BIN) $(MACOS_APP_HELPER)
+	codesign --force --deep --sign - $(MACOS_APP_DIR)
 	$(LSREGISTER) -f $(MACOS_APP_DIR)
 else
 	@printf '%s\n' 'Skipping macOS app bundle build on $(UNAME_S)'

@@ -184,9 +184,6 @@ mod app {
     const APP_NAME: &str = "Resteyes";
     const TOOLTIP: &str = "Resteyes";
     const ACTIVE_TIME_MENU_ID: &str = "active-time";
-    #[cfg(target_os = "macos")]
-    const MACOS_NOTIFICATION_BUNDLE_ID: &str = "dev.resteyes.Resteyes";
-
     pub(crate) fn run<F>(config: UiConfig, start_runtime: F) -> Result<(), UiError>
     where
         F: FnOnce(UiLoopProxy, UiHandle) -> Result<JoinHandle<()>, UiError> + 'static,
@@ -256,12 +253,14 @@ mod app {
 
     #[cfg(target_os = "macos")]
     fn configure_notification_application() {
-        if let Err(error) = notify_rust::set_application(MACOS_NOTIFICATION_BUNDLE_ID) {
-            warn!(
-                %error,
-                bundle_id = MACOS_NOTIFICATION_BUNDLE_ID,
-                "failed to configure macOS notification application"
-            );
+        match notify_rust::request_auth_blocking() {
+            Ok(true) => {}
+            Ok(false) => {
+                warn!("macOS notification permission denied");
+            }
+            Err(error) => {
+                warn!(%error, "failed to request macOS notification permission");
+            }
         }
     }
 
@@ -507,11 +506,14 @@ mod app {
     }
 
     fn show_notification(notification: &UiNotification) -> Result<(), UiError> {
-        Notification::new()
+        let mut notification_builder = Notification::new();
+        notification_builder
             .appname(APP_NAME)
             .summary(&notification.summary)
             .body(&notification.body)
-            .timeout(Timeout::Milliseconds(6_000))
+            .timeout(Timeout::Milliseconds(6_000));
+
+        notification_builder
             .show()
             .map(|_| ())
             .map_err(|error| UiError::notification(error.to_string()))
