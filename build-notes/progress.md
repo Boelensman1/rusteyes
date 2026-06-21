@@ -167,6 +167,13 @@
   event path. Later cleanup moved remaining transport command, reply, and
   facade event channels from `std::sync::mpsc` to `flume`, including bounded
   one-shot reply channels.
+- Completed `backend-actor-runtime`: platform backends now run as actor
+  threads that own X11 or macOS helper state, receive `BackendCommand` values
+  over flume, and send `RuntimeEvent` values over flume. X11 and macOS sampling
+  loops now use `flume::Selector::wait_timeout` so backend commands can
+  interrupt the next sample delay. Runtime now selects over backend events and
+  sync transport events through one internal input path, while sync domain
+  behavior remains deferred to `active-time-sync`.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -240,6 +247,7 @@
   transport session and connection outcome API cleanup.
 - `make check` passes after the transport session and connection outcome API
   cleanup.
+- `make check` passes after adding the backend actor runtime.
 - A bounded `timeout 3s make run` on macOS stays alive until terminated by
   `timeout` and no longer emits helper stderr during startup after AppKit setup
   was made lazy.

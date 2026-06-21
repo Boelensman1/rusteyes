@@ -1,44 +1,50 @@
-use super::run_with_backend;
-use crate::backend::{Backend, BackendCommand, DisableRequest, RuntimeEvent};
+use super::run_with_event_sources;
+use crate::backend::{BackendActor, BackendCommand, DisableRequest, RuntimeEvent};
 use crate::config::{BreakTypeConfig, Breaks, Config, ConfigError, LockConfig, SyncConfig};
 use crate::scheduler::{BreakOrigin, BreakSchedule, ScheduledBreak};
+use crate::sync_protocol::PeerId;
+use crate::sync_transport::SyncTransportEvent;
 use std::collections::{BTreeMap, VecDeque};
+use std::str::FromStr;
+use std::thread;
 use std::time::Duration;
 
 #[test]
 fn shutdown_exits_cleanly_after_scheduler_setup() {
-    let mut backend = ScriptedBackend::new([RuntimeEvent::Shutdown]);
+    let (backend, commands) = ScriptedBackend::new([RuntimeEvent::Shutdown]).into_parts();
 
-    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
-    assert!(backend.commands.is_empty());
+    assert_eq!(run_config_with_backend(test_config(), backend), Ok(()));
+    assert!(received_commands(&commands).is_empty());
 }
 
 #[test]
 fn active_time_event_starts_expected_configured_break() {
-    let mut backend = ScriptedBackend::new([
+    let (backend, commands) = ScriptedBackend::new([
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
         RuntimeEvent::Shutdown,
-    ]);
+    ])
+    .into_parts();
 
-    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), backend), Ok(()));
     assert_eq!(
-        backend.commands,
+        received_commands(&commands),
         vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
     );
 }
 
 #[test]
 fn break_finished_allows_next_scheduled_break_to_advance() {
-    let mut backend = ScriptedBackend::new([
+    let (backend, commands) = ScriptedBackend::new([
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
         RuntimeEvent::BreakFinished,
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
         RuntimeEvent::Shutdown,
-    ]);
+    ])
+    .into_parts();
 
-    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), backend), Ok(()));
     assert_eq!(
-        backend.commands,
+        received_commands(&commands),
         vec![
             BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
             BackendCommand::FinishBreak { lock_after: false },
@@ -49,17 +55,18 @@ fn break_finished_allows_next_scheduled_break_to_advance() {
 
 #[test]
 fn autolock_break_completion_requests_local_lock() {
-    let mut backend = ScriptedBackend::new([
+    let (backend, commands) = ScriptedBackend::new([
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
         RuntimeEvent::BreakFinished,
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
         RuntimeEvent::BreakFinished,
         RuntimeEvent::Shutdown,
-    ]);
+    ])
+    .into_parts();
 
-    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), backend), Ok(()));
     assert_eq!(
-        backend.commands,
+        received_commands(&commands),
         vec![
             BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
             BackendCommand::FinishBreak { lock_after: false },
@@ -71,16 +78,17 @@ fn autolock_break_completion_requests_local_lock() {
 
 #[test]
 fn lock_after_current_break_request_locks_after_non_autolock_break() {
-    let mut backend = ScriptedBackend::new([
+    let (backend, commands) = ScriptedBackend::new([
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
         RuntimeEvent::LockAfterCurrentBreak,
         RuntimeEvent::BreakFinished,
         RuntimeEvent::Shutdown,
-    ]);
+    ])
+    .into_parts();
 
-    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), backend), Ok(()));
     assert_eq!(
-        backend.commands,
+        received_commands(&commands),
         vec![
             BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
             BackendCommand::FinishBreak { lock_after: true }
@@ -90,16 +98,17 @@ fn lock_after_current_break_request_locks_after_non_autolock_break() {
 
 #[test]
 fn stale_lock_after_current_break_request_before_break_is_ignored() {
-    let mut backend = ScriptedBackend::new([
+    let (backend, commands) = ScriptedBackend::new([
         RuntimeEvent::LockAfterCurrentBreak,
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
         RuntimeEvent::BreakFinished,
         RuntimeEvent::Shutdown,
-    ]);
+    ])
+    .into_parts();
 
-    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), backend), Ok(()));
     assert_eq!(
-        backend.commands,
+        received_commands(&commands),
         vec![
             BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
             BackendCommand::FinishBreak { lock_after: false }
@@ -111,18 +120,19 @@ fn stale_lock_after_current_break_request_before_break_is_ignored() {
 fn lock_after_current_break_request_clears_after_break_finishes() {
     let mut config = test_config();
     _ = config.breaks.types.remove("long");
-    let mut backend = ScriptedBackend::new([
+    let (backend, commands) = ScriptedBackend::new([
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
         RuntimeEvent::LockAfterCurrentBreak,
         RuntimeEvent::BreakFinished,
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
         RuntimeEvent::BreakFinished,
         RuntimeEvent::Shutdown,
-    ]);
+    ])
+    .into_parts();
 
-    assert_eq!(run_config_with_backend(config, &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(config, backend), Ok(()));
     assert_eq!(
-        backend.commands,
+        received_commands(&commands),
         vec![
             BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
             BackendCommand::FinishBreak { lock_after: true },
@@ -134,15 +144,16 @@ fn lock_after_current_break_request_clears_after_break_finishes() {
 
 #[test]
 fn disable_clears_pending_backend_break_without_locking() {
-    let mut backend = ScriptedBackend::new([
+    let (backend, commands) = ScriptedBackend::new([
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
         RuntimeEvent::Disable(DisableRequest::For(Duration::from_secs(30))),
         RuntimeEvent::Shutdown,
-    ]);
+    ])
+    .into_parts();
 
-    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), backend), Ok(()));
     assert_eq!(
-        backend.commands,
+        received_commands(&commands),
         vec![
             BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
             BackendCommand::ClearBreak
@@ -154,7 +165,7 @@ fn disable_clears_pending_backend_break_without_locking() {
 fn disable_clears_lock_after_current_break_request() {
     let mut config = test_config();
     _ = config.breaks.types.remove("long");
-    let mut backend = ScriptedBackend::new([
+    let (backend, commands) = ScriptedBackend::new([
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
         RuntimeEvent::LockAfterCurrentBreak,
         RuntimeEvent::Disable(DisableRequest::For(Duration::from_secs(30))),
@@ -162,11 +173,12 @@ fn disable_clears_lock_after_current_break_request() {
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
         RuntimeEvent::BreakFinished,
         RuntimeEvent::Shutdown,
-    ]);
+    ])
+    .into_parts();
 
-    assert_eq!(run_config_with_backend(config, &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(config, backend), Ok(()));
     assert_eq!(
-        backend.commands,
+        received_commands(&commands),
         vec![
             BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
             BackendCommand::ClearBreak,
@@ -178,7 +190,7 @@ fn disable_clears_lock_after_current_break_request() {
 
 #[test]
 fn finite_disable_suppresses_active_time_and_reenables_after_elapsed() {
-    let mut backend = ScriptedBackend::new([
+    let (backend, commands) = ScriptedBackend::new([
         RuntimeEvent::Disable(DisableRequest::For(Duration::from_secs(30))),
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(100)),
         RuntimeEvent::WallClockElapsed(Duration::from_secs(29)),
@@ -186,18 +198,19 @@ fn finite_disable_suppresses_active_time_and_reenables_after_elapsed() {
         RuntimeEvent::WallClockElapsed(Duration::from_secs(1)),
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
         RuntimeEvent::Shutdown,
-    ]);
+    ])
+    .into_parts();
 
-    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), backend), Ok(()));
     assert_eq!(
-        backend.commands,
+        received_commands(&commands),
         vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
     );
 }
 
 #[test]
 fn disable_until_restart_stays_disabled_until_explicit_enable() {
-    let mut backend = ScriptedBackend::new([
+    let (backend, commands) = ScriptedBackend::new([
         RuntimeEvent::Disable(DisableRequest::UntilRestart),
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(100)),
         RuntimeEvent::WallClockElapsed(Duration::from_secs(60 * 60)),
@@ -205,29 +218,31 @@ fn disable_until_restart_stays_disabled_until_explicit_enable() {
         RuntimeEvent::Enable,
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
         RuntimeEvent::Shutdown,
-    ]);
+    ])
+    .into_parts();
 
-    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), backend), Ok(()));
     assert_eq!(
-        backend.commands,
+        received_commands(&commands),
         vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
     );
 }
 
 #[test]
 fn manual_break_event_starts_configured_break_without_advancing_slots() {
-    let mut backend = ScriptedBackend::new([
+    let (backend, commands) = ScriptedBackend::new([
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(9)),
         RuntimeEvent::StartManualBreak(String::from("long")),
         RuntimeEvent::BreakFinished,
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(1)),
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(9)),
         RuntimeEvent::Shutdown,
-    ]);
+    ])
+    .into_parts();
 
-    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), backend), Ok(()));
     assert_eq!(
-        backend.commands,
+        received_commands(&commands),
         vec![
             BackendCommand::StartBreak(manual_break("long", 300)),
             BackendCommand::FinishBreak { lock_after: true },
@@ -238,17 +253,18 @@ fn manual_break_event_starts_configured_break_without_advancing_slots() {
 
 #[test]
 fn manual_break_event_works_while_disabled_and_preserves_disable() {
-    let mut backend = ScriptedBackend::new([
+    let (backend, commands) = ScriptedBackend::new([
         RuntimeEvent::Disable(DisableRequest::For(Duration::from_secs(30))),
         RuntimeEvent::StartManualBreak(String::from("short")),
         RuntimeEvent::BreakFinished,
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(100)),
         RuntimeEvent::Shutdown,
-    ]);
+    ])
+    .into_parts();
 
-    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), backend), Ok(()));
     assert_eq!(
-        backend.commands,
+        received_commands(&commands),
         vec![
             BackendCommand::StartBreak(manual_break("short", 20)),
             BackendCommand::FinishBreak { lock_after: false }
@@ -258,18 +274,19 @@ fn manual_break_event_works_while_disabled_and_preserves_disable() {
 
 #[test]
 fn timed_disable_can_expire_during_manual_break() {
-    let mut backend = ScriptedBackend::new([
+    let (backend, commands) = ScriptedBackend::new([
         RuntimeEvent::Disable(DisableRequest::For(Duration::from_secs(30))),
         RuntimeEvent::StartManualBreak(String::from("short")),
         RuntimeEvent::WallClockElapsed(Duration::from_secs(30)),
         RuntimeEvent::BreakFinished,
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
         RuntimeEvent::Shutdown,
-    ]);
+    ])
+    .into_parts();
 
-    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), backend), Ok(()));
     assert_eq!(
-        backend.commands,
+        received_commands(&commands),
         vec![
             BackendCommand::StartBreak(manual_break("short", 20)),
             BackendCommand::FinishBreak { lock_after: false },
@@ -280,15 +297,16 @@ fn timed_disable_can_expire_during_manual_break() {
 
 #[test]
 fn unknown_manual_break_event_is_ignored() {
-    let mut backend = ScriptedBackend::new([
+    let (backend, commands) = ScriptedBackend::new([
         RuntimeEvent::StartManualBreak(String::from("missing")),
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
         RuntimeEvent::Shutdown,
-    ]);
+    ])
+    .into_parts();
 
-    assert_eq!(run_config_with_backend(test_config(), &mut backend), Ok(()));
+    assert_eq!(run_config_with_backend(test_config(), backend), Ok(()));
     assert_eq!(
-        backend.commands,
+        received_commands(&commands),
         vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
     );
 }
@@ -297,48 +315,88 @@ fn unknown_manual_break_event_is_ignored() {
 fn scheduler_setup_error_is_returned() {
     let mut config = test_config();
     config.breaks.types.clear();
-    let mut backend = ScriptedBackend::new([RuntimeEvent::Shutdown]);
+    let (backend, _commands) = ScriptedBackend::new([RuntimeEvent::Shutdown]).into_parts();
 
     assert_eq!(
-        run_config_with_backend(config, &mut backend),
+        run_config_with_backend(config, backend),
         Err(ConfigError::EmptyBreakTypes)
     );
 }
 
-fn run_config_with_backend<B>(config: Config, backend: &mut B) -> Result<(), ConfigError>
-where
-    B: Backend,
-{
+#[test]
+fn sync_transport_events_are_consumed_without_scheduler_behavior()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (sync_sender, sync_receiver) = flume::unbounded();
+    sync_sender.send(SyncTransportEvent::PeerAuthenticated(peer_id()?))?;
+    drop(sync_sender);
+    let (backend, commands) =
+        ScriptedBackend::new_with_delay([RuntimeEvent::Shutdown], Duration::from_millis(25))
+            .into_parts();
+
+    run_config_with_event_sources(test_config(), backend, Some(sync_receiver.clone()))?;
+
+    assert!(sync_receiver.is_empty());
+    assert!(received_commands(&commands).is_empty());
+    Ok(())
+}
+
+fn run_config_with_backend(config: Config, backend: BackendActor) -> Result<(), ConfigError> {
+    run_config_with_event_sources(config, backend, None)
+}
+
+fn run_config_with_event_sources(
+    config: Config,
+    backend: BackendActor,
+    sync_event_receiver: Option<flume::Receiver<SyncTransportEvent>>,
+) -> Result<(), ConfigError> {
     let schedule = BreakSchedule::try_from(config.breaks)?;
-    run_with_backend(schedule, backend);
+    run_with_event_sources(schedule, backend, sync_event_receiver);
     Ok(())
 }
 
 struct ScriptedBackend {
-    events: VecDeque<RuntimeEvent>,
-    commands: Vec<BackendCommand>,
+    actor: BackendActor,
+    command_receiver: flume::Receiver<BackendCommand>,
 }
 
 impl ScriptedBackend {
     fn new(events: impl IntoIterator<Item = RuntimeEvent>) -> Self {
+        Self::new_with_delay(events, Duration::ZERO)
+    }
+
+    fn new_with_delay(events: impl IntoIterator<Item = RuntimeEvent>, delay: Duration) -> Self {
+        let (command_sender, command_receiver) = flume::unbounded();
+        let (event_sender, event_receiver) = flume::unbounded();
+        let events = events.into_iter().collect::<VecDeque<_>>();
+        let thread = thread::spawn(move || {
+            if !delay.is_zero() {
+                thread::sleep(delay);
+            }
+
+            for event in events {
+                if event_sender.send(event).is_err() {
+                    break;
+                }
+            }
+        });
+
         Self {
-            events: events.into_iter().collect(),
-            commands: Vec::new(),
+            actor: BackendActor::new(command_sender, event_receiver, thread),
+            command_receiver,
         }
+    }
+
+    fn into_parts(self) -> (BackendActor, flume::Receiver<BackendCommand>) {
+        (self.actor, self.command_receiver)
     }
 }
 
-impl Backend for ScriptedBackend {
-    fn next_event(&mut self) -> RuntimeEvent {
-        match self.events.pop_front() {
-            Some(event) => event,
-            None => RuntimeEvent::Shutdown,
-        }
-    }
+fn received_commands(receiver: &flume::Receiver<BackendCommand>) -> Vec<BackendCommand> {
+    receiver.try_iter().collect()
+}
 
-    fn handle_command(&mut self, command: BackendCommand) {
-        self.commands.push(command);
-    }
+fn peer_id() -> Result<PeerId, Box<dyn std::error::Error>> {
+    Ok(PeerId::from_str("0102030405060708090a0b0c0d0e0f10")?)
 }
 
 fn test_config() -> Config {

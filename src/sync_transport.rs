@@ -182,6 +182,13 @@ impl SyncTransport {
         active.drain_events()
     }
 
+    pub(crate) fn event_receiver(&self) -> Option<flume::Receiver<SyncTransportEvent>> {
+        match &self.state {
+            SyncTransportState::Active(active) => Some(active.event_receiver.clone()),
+            SyncTransportState::Inactive => None,
+        }
+    }
+
     #[cfg(test)]
     fn start_for_test(
         self_id: PeerId,

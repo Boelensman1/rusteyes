@@ -1,5 +1,8 @@
 use crate::activity::{ActivityPoller, ActivitySample, BreakTimer, break_elapsed_for_sample};
-use crate::backend::{Backend, BackendCommand, RuntimeEvent};
+use crate::backend::{
+    BackendActor, BackendActorSpawnError, BackendCommand, BackendCommandReceiver,
+    BackendEventSender, BackendWait, RuntimeEvent, wait_for_command_or_timeout,
+};
 use crate::config::LockConfig;
 use crate::lock_command::{LockCommand, LockCommandError, start_lock_command};
 use crate::scheduler::ScheduledBreak;
@@ -28,7 +31,17 @@ pub(crate) struct X11ActivityBackend {
 }
 
 impl X11ActivityBackend {
-    pub(crate) fn connect(lock_config: LockConfig) -> Result<Self, X11ActivityError> {
+    pub(crate) fn spawn(lock_config: LockConfig) -> Result<BackendActor, X11ActivityError> {
+        BackendActor::spawn(
+            "resteyes-x11-backend",
+            move || Self::connect(lock_config),
+            |mut backend, command_receiver, event_sender| {
+                backend.run_actor(&command_receiver, &event_sender);
+            },
+        )
+    }
+
+    fn connect(lock_config: LockConfig) -> Result<Self, X11ActivityError> {
         Ok(Self {
             activity: X11Activity::connect()?,
             poller: ActivityPoller::new(POLL_INTERVAL),
@@ -37,26 +50,56 @@ impl X11ActivityBackend {
         })
     }
 
-    fn poll_once(&mut self) -> Result<(), X11ActivityError> {
-        if self.active_break.is_some() {
-            self.poll_overlay_once()
-        } else {
-            self.poll_activity_once()
+    fn run_actor(
+        &mut self,
+        command_receiver: &BackendCommandReceiver,
+        event_sender: &BackendEventSender,
+    ) {
+        loop {
+            while let Some(event) = self.poller.next_event() {
+                if event_sender.send(event).is_err() {
+                    return;
+                }
+            }
+
+            match wait_for_command_or_timeout(command_receiver, self.next_sample_delay()) {
+                BackendWait::Command(command) => self.handle_command(command),
+                BackendWait::Timeout => {
+                    if let Err(error) = self.sample_once() {
+                        error!(%error, "backend error");
+                        _ = event_sender.send(RuntimeEvent::Shutdown);
+                        return;
+                    }
+                }
+                BackendWait::Disconnected => return,
+            }
         }
     }
 
-    fn poll_activity_once(&mut self) -> Result<(), X11ActivityError> {
-        thread::sleep(self.poller.poll_interval());
+    fn next_sample_delay(&self) -> Duration {
+        if self.active_break.is_some() {
+            OVERLAY_TICK_INTERVAL
+        } else {
+            self.poller.poll_interval()
+        }
+    }
 
+    fn sample_once(&mut self) -> Result<(), X11ActivityError> {
+        if self.active_break.is_some() {
+            self.sample_overlay_once()
+        } else {
+            self.sample_activity_once()
+        }
+    }
+
+    fn sample_activity_once(&mut self) -> Result<(), X11ActivityError> {
         let sample = self.activity.sample()?;
         self.poller.queue_sample(sample);
 
         Ok(())
     }
 
-    fn poll_overlay_once(&mut self) -> Result<(), X11ActivityError> {
-        thread::sleep(OVERLAY_TICK_INTERVAL);
-
+    fn sample_overlay_once(&mut self) -> Result<(), X11ActivityError> {
         let sample = self.activity.sample()?;
         let break_elapsed = break_elapsed_for_sample(sample, OVERLAY_TICK_INTERVAL);
         trace!(
@@ -156,21 +199,6 @@ impl X11ActivityBackend {
     fn queue_backend_error(&mut self, error: &X11ActivityError) {
         error!(%error, "backend error");
         self.poller.queue_event(RuntimeEvent::Shutdown);
-    }
-}
-
-impl Backend for X11ActivityBackend {
-    fn next_event(&mut self) -> RuntimeEvent {
-        loop {
-            if let Some(event) = self.poller.next_event() {
-                return event;
-            }
-
-            if let Err(error) = self.poll_once() {
-                error!(%error, "backend error");
-                return RuntimeEvent::Shutdown;
-            }
-        }
     }
 
     fn handle_command(&mut self, command: BackendCommand) {
@@ -339,6 +367,15 @@ impl X11ActivityError {
 
     fn lock_command(error: LockCommandError) -> Self {
         Self::lock(error.to_string())
+    }
+}
+
+impl From<BackendActorSpawnError> for X11ActivityError {
+    fn from(error: BackendActorSpawnError) -> Self {
+        Self {
+            operation: "start X11 backend actor",
+            message: error.to_string(),
+        }
     }
 }
 
