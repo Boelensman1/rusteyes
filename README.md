@@ -46,9 +46,15 @@ is started by the normal authenticated peer transport/runtime code.
 
 ## NixOS and Home Manager
 
-The flake exposes a Linux package plus NixOS and Home Manager modules. RustEyes
-is a tray/X11 application, so the modules install a `systemd --user` service
-wanted by `graphical-session.target` instead of a system daemon.
+The flake exposes a Linux package and a macOS `RustEyes.app` bundle. On macOS,
+`nix run .` and `nix profile install .` use the app bundle package so RustEyes
+can find its bundled helper and use its app identity for notifications.
+
+RustEyes is a user-session application. On Linux, the modules install a
+`systemd --user` service wanted by `graphical-session.target` instead of a
+system daemon. On macOS, the Home Manager module is install/config only:
+launch RustEyes manually, or set `startup.open_at_login = true` in the config
+and launch the app once so RustEyes can register its Login Item.
 
 NixOS:
 
@@ -91,11 +97,35 @@ Home Manager:
 }
 ```
 
-The modules generate YAML from `services.rusteyes.settings` and pass it through
-`RUSTEYES_CONFIG`. Use `services.rusteyes.configFile` instead when you want to
-manage YAML yourself. Sync secrets should not be placed in generated Nix
-settings; use `syncSharedSecretFile`, which maps to
+The Linux modules generate YAML from `services.rusteyes.settings` and pass it
+through `RUSTEYES_CONFIG`. Use `services.rusteyes.configFile` instead when you
+want to manage YAML yourself. Sync secrets should not be placed in generated
+Nix settings; use `syncSharedSecretFile`, which maps to
 `RUSTEYES_SYNC_SHARED_SECRET_FILE` at runtime.
+
+On macOS, Home Manager writes generated settings to
+`~/.config/rusteyes/config.yaml`. Home Manager's Darwin app handling can expose
+the bundle in `~/Applications/Home Manager Apps`:
+
+```nix
+{
+  imports = [ rusteyes.homeManagerModules.default ];
+
+  services.rusteyes = {
+    enable = true;
+    settings = {
+      breaks.after_active = "20m";
+      startup.open_at_login = true;
+    };
+  };
+
+  targets.darwin.copyApps.enable = true;
+}
+```
+
+The Darwin module does not create a LaunchAgent, so service-only options such
+as `configFile`, `syncSharedSecretFile`, `logLevel`, and `extraEnvironment` are
+not supported there.
 
 ## Common Commands
 

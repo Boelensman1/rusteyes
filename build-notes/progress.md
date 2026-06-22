@@ -263,6 +263,12 @@
   service YAML through `RUSTEYES_CONFIG`, secret-safe sync configuration through
   `RUSTEYES_SYNC_SHARED_SECRET_FILE`, and a graphical-session systemd user
   service.
+- Completed `macos-packaging`: Darwin flake defaults now build a
+  `RustEyes.app` bundle containing the Rust binary, Swift helper, icon, plist,
+  and a `bin/rusteyes` wrapper; the raw Rust package remains available as
+  `packages.<system>.rusteyes`; Darwin Home Manager installs the app and writes
+  generated config to `~/.config/rusteyes/config.yaml` without creating a
+  LaunchAgent.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -424,6 +430,26 @@
 - Attempted `nix build .#packages.x86_64-linux.default --no-link` from this
   `aarch64-darwin` host; it failed with a platform mismatch because no
   `x86_64-linux` builder was available.
+- Darwin package eval confirms `default`, `macos-app`, `macos-helper`, and
+  `rusteyes` package outputs after adding macOS packaging.
+- `nix build .#packages.aarch64-darwin.default --no-link --print-out-paths`
+  builds the Nix `RustEyes.app` bundle after adding macOS packaging.
+- `plutil -lint` passes for the Nix-built
+  `RustEyes.app/Contents/Info.plist`.
+- `codesign -dv` reports ad-hoc signatures for the Nix-built app executable
+  and bundled helper. The Nix build signs Mach-O files with `darwin.sigtool`;
+  it does not sign the `.app` directory itself.
+- Home Manager module eval confirms Darwin installs RustEyes, writes generated
+  `xdg.configFile."rusteyes/config.yaml"`, and does not create a systemd user
+  service.
+- Home Manager module eval confirms Darwin rejects unsupported
+  `configFile` and `syncSharedSecretFile` settings.
+- Linux Home Manager module eval still confirms package installation,
+  graphical-session systemd user service wiring, generated `RUSTEYES_CONFIG`,
+  `RUSTEYES_SYNC_SHARED_SECRET_FILE`, and configured `RUST_LOG` after adding
+  macOS packaging.
+- `nix flake show --json` exposes the macOS packaging outputs.
+- `make check` passes after adding macOS packaging.
 - On unsupported targets, `make run` prints
   `rusteyes: no backend is available for <platform> yet` and exits non-zero.
 - Manual X11 overlay, input-blocking, overlay UI, and trace-output verification
@@ -436,6 +462,8 @@
   granting notification permission to RustEyes.
 - Manual macOS input-blocking verification with Accessibility/Input Monitoring
   permissions granted is still pending.
+- Manual launch verification from a Nix-installed or Home Manager-copied
+  `RustEyes.app` is pending after granting the required macOS permissions.
 
 ## Notes
 

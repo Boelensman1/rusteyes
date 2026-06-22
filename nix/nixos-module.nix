@@ -13,7 +13,12 @@ in
   options.services.rusteyes = common.options;
 
   config = lib.mkIf cfg.enable {
-    assertions = common.assertions;
+    assertions = common.assertions ++ [
+      {
+        assertion = pkgs.stdenv.isLinux;
+        message = "services.rusteyes currently only supports NixOS Linux user services.";
+      }
+    ];
 
     environment.systemPackages = [ cfg.package ];
 

@@ -50,8 +50,10 @@ in
         }
       '';
       description = ''
-        RustEyes settings rendered to YAML and supplied through RUSTEYES_CONFIG.
-        Do not put sync.shared_secret here; use syncSharedSecretFile instead.
+        RustEyes settings rendered to YAML. Linux services receive this through
+        RUSTEYES_CONFIG; Darwin Home Manager installs it at RustEyes' default
+        config path. Do not put sync.shared_secret here; use
+        syncSharedSecretFile instead.
       '';
     };
 
@@ -102,12 +104,9 @@ in
       assertion = cfg.configFile == null || cfg.settings == { };
       message = "services.rusteyes.settings cannot be used when services.rusteyes.configFile is set.";
     }
-    {
-      assertion = !cfg.enable || pkgs.stdenv.isLinux;
-      message = "services.rusteyes currently only supports Linux systemd user services.";
-    }
   ];
 
+  inherit generatedConfig;
   inherit serviceEnvironment;
 
   pathEnvironment = "PATH=${lib.makeBinPath [ pkgs.systemd ]}";
