@@ -279,6 +279,13 @@
   app on macOS). It asserts that `settings.startup.open_at_login` is not also
   set to avoid launching the app twice, and the default-path config write is now
   skipped when an external `configFile` is used.
+- Completed `macos-tray-template-icon`: the macOS menu-bar tray icon is now an
+  NSImage template image via `TrayIconBuilder::with_icon_as_template(true)`
+  (gated to `cfg(target_os = "macos")`), so the system tints the existing icon's
+  alpha silhouette to match the menu bar (white on dark, black on light) instead
+  of showing the full-colour gear. The embedded `rusteyes-tray.rgba` asset is
+  reused unchanged (templates ignore RGB), and the Linux system tray keeps the
+  full-colour icon.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.

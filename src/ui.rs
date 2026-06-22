@@ -470,11 +470,19 @@ mod app {
         actions.insert(quit_id, UiMenuAction::Quit);
 
         let icon = rusteyes_icon()?;
-        let tray_icon = TrayIconBuilder::new()
+        let builder = TrayIconBuilder::new()
             .with_tooltip(TOOLTIP)
             .with_icon(icon)
             .with_menu(Box::new(menu))
-            .with_menu_on_left_click(true)
+            .with_menu_on_left_click(true);
+
+        // macOS menu-bar icons are monochrome template images: the system tints
+        // the alpha silhouette to match the menu bar (white on dark, black on
+        // light). RGB is ignored, so the existing icon's shape is reused.
+        #[cfg(target_os = "macos")]
+        let builder = builder.with_icon_as_template(true);
+
+        let tray_icon = builder
             .build()
             .map_err(|error| UiError::tray_icon(error.to_string()))?;
 
