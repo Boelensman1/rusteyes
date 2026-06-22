@@ -8,7 +8,12 @@
   };
 
   outputs =
-    { nixpkgs, rust-overlay, ... }:
+    {
+      self,
+      nixpkgs,
+      rust-overlay,
+      ...
+    }:
     let
       systems = [
         "x86_64-linux"
@@ -26,7 +31,7 @@
         function:
         nixpkgs.lib.genAttrs systems (
           system:
-          function (
+          function system (
             import nixpkgs {
               inherit system overlays;
             }
@@ -35,7 +40,7 @@
     in
     {
       packages = forAllSystems (
-        pkgs:
+        system: pkgs:
         let
           rustToolchain = pkgs.rust-bin.stable.${rustVersion}.default;
           rustPlatform = pkgs.makeRustPlatform {
@@ -47,21 +52,45 @@
           default = rustPlatform.buildRustPackage {
             pname = "rusteyes";
             version = "0.1.0";
-            src = ./.;
+            src = pkgs.lib.cleanSource ./.;
             cargoLock.lockFile = ./Cargo.lock;
             nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [
               pkgs.pkg-config
+              pkgs.wrapGAppsHook3
             ];
             buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [
               pkgs.gtk3
               pkgs.libappindicator-gtk3
             ];
+            meta = {
+              description = "Minimal cross-platform Safe Eyes replacement";
+              mainProgram = "rusteyes";
+              platforms = [
+                "x86_64-linux"
+                "aarch64-linux"
+                "x86_64-darwin"
+                "aarch64-darwin"
+              ];
+            };
           };
         }
       );
 
+      apps = forAllSystems (
+        system: pkgs:
+        {
+          default = {
+            type = "app";
+            program = pkgs.lib.getExe self.packages.${system}.default;
+          };
+        }
+      );
+
+      nixosModules.default = import ./nix/nixos-module.nix { inherit self; };
+      homeManagerModules.default = import ./nix/home-manager-module.nix { inherit self; };
+
       devShells = forAllSystems (
-        pkgs:
+        system: pkgs:
         let
           rustToolchain = pkgs.rust-bin.stable.${rustVersion}.default;
         in
@@ -80,6 +109,6 @@
         }
       );
 
-      formatter = forAllSystems (pkgs: pkgs.nixfmt-rfc-style);
+      formatter = forAllSystems (system: pkgs: pkgs.nixfmt-rfc-style);
     };
 }

@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 const VALID_SHARED_SECRET: &str = "0123456789abcdef0123456789abcdef";
+const OTHER_VALID_SHARED_SECRET: &str = "fedcba9876543210fedcba9876543210";
 
 #[test]
 fn default_config_is_valid() {
@@ -363,7 +364,7 @@ fn load_writes_defaults_when_implicit_config_is_missing() -> Result<(), Box<dyn 
     let xdg_home = test_dir.path().join("xdg");
     let config_path = xdg_home.join("rusteyes").join("config.yaml");
 
-    let config = Config::load_from_env(None, Some(xdg_home.into_os_string()), None)?;
+    let config = Config::load_from_env(None, Some(xdg_home.into_os_string()), None, None)?;
     let written = fs::read_to_string(config_path)?;
 
     assert_eq!(config, Config::default());
@@ -385,6 +386,7 @@ fn load_writes_defaults_to_home_config_path_without_xdg_home() -> Result<(), Box
         None,
         None,
         Some(test_dir.path().to_path_buf().into_os_string()),
+        None,
     )?;
     let written = fs::read_to_string(config_path)?;
 
@@ -420,9 +422,161 @@ breaks:
         Some(explicit_path.into_os_string()),
         Some(xdg_home.into_os_string()),
         None,
+        None,
     )?;
 
     assert_eq!(config.breaks.after_active, Duration::from_mins(10));
+    Ok(())
+}
+
+#[test]
+fn sync_shared_secret_file_satisfies_enabled_sync_config() -> Result<(), Box<dyn Error>> {
+    let test_dir = TestDir::new("sync-secret-file")?;
+    let config_path = test_dir.path().join("config.yaml");
+    let secret_path = test_dir.path().join("sync-secret");
+
+    write_file(
+        &config_path,
+        r"
+sync:
+  enabled: true
+",
+    )?;
+    write_file(&secret_path, VALID_SHARED_SECRET)?;
+
+    let config = Config::load_from_env(
+        Some(config_path.into_os_string()),
+        None,
+        None,
+        Some(secret_path.into_os_string()),
+    )?;
+
+    assert!(config.sync.enabled);
+    assert_eq!(
+        config.sync.shared_secret.as_ref().map(SharedSecret::as_str),
+        Some(VALID_SHARED_SECRET)
+    );
+    Ok(())
+}
+
+#[test]
+fn sync_shared_secret_file_overrides_yaml_secret() -> Result<(), Box<dyn Error>> {
+    let test_dir = TestDir::new("sync-secret-file-precedence")?;
+    let config_path = test_dir.path().join("config.yaml");
+    let secret_path = test_dir.path().join("sync-secret");
+
+    write_file(
+        &config_path,
+        &format!(
+            r"
+sync:
+  enabled: true
+  shared_secret: '{OTHER_VALID_SHARED_SECRET}'
+"
+        ),
+    )?;
+    write_file(&secret_path, VALID_SHARED_SECRET)?;
+
+    let config = Config::load_from_env(
+        Some(config_path.into_os_string()),
+        None,
+        None,
+        Some(secret_path.into_os_string()),
+    )?;
+
+    assert_eq!(
+        config.sync.shared_secret.as_ref().map(SharedSecret::as_str),
+        Some(VALID_SHARED_SECRET)
+    );
+    Ok(())
+}
+
+#[test]
+fn sync_shared_secret_file_strips_one_trailing_line_ending() -> Result<(), Box<dyn Error>> {
+    let test_dir = TestDir::new("sync-secret-file-newline")?;
+    let config_path = test_dir.path().join("config.yaml");
+    let secret_path = test_dir.path().join("sync-secret");
+
+    write_file(
+        &config_path,
+        r"
+sync:
+  enabled: true
+",
+    )?;
+    write_file(&secret_path, &format!("{VALID_SHARED_SECRET}\r\n"))?;
+
+    let config = Config::load_from_env(
+        Some(config_path.into_os_string()),
+        None,
+        None,
+        Some(secret_path.into_os_string()),
+    )?;
+
+    assert_eq!(
+        config.sync.shared_secret.as_ref().map(SharedSecret::as_str),
+        Some(VALID_SHARED_SECRET)
+    );
+    Ok(())
+}
+
+#[test]
+fn missing_sync_shared_secret_file_is_reported() -> Result<(), Box<dyn Error>> {
+    let test_dir = TestDir::new("missing-sync-secret-file")?;
+    let config_path = test_dir.path().join("config.yaml");
+    let secret_path = test_dir.path().join("missing-secret");
+
+    write_file(
+        &config_path,
+        r"
+sync:
+  enabled: true
+",
+    )?;
+
+    let error = expected_config_error(Config::load_from_env(
+        Some(config_path.into_os_string()),
+        None,
+        None,
+        Some(secret_path.clone().into_os_string()),
+    ));
+
+    assert!(matches!(
+        error,
+        ConfigLoadError::ReadSecret { path, .. } if path == secret_path
+    ));
+    Ok(())
+}
+
+#[test]
+fn invalid_sync_shared_secret_file_is_reported() -> Result<(), Box<dyn Error>> {
+    let test_dir = TestDir::new("invalid-sync-secret-file")?;
+    let config_path = test_dir.path().join("config.yaml");
+    let secret_path = test_dir.path().join("sync-secret");
+
+    write_file(
+        &config_path,
+        r"
+sync:
+  enabled: true
+",
+    )?;
+    write_file(&secret_path, &format!("{VALID_SHARED_SECRET}\n\n"))?;
+
+    let error = expected_config_error(Config::load_from_env(
+        Some(config_path.into_os_string()),
+        None,
+        None,
+        Some(secret_path.clone().into_os_string()),
+    ));
+
+    assert!(matches!(
+        error,
+        ConfigLoadError::InvalidSecret {
+            path,
+            error: ConfigError::WhitespacePaddedSyncSharedSecret,
+        } if path == secret_path
+    ));
     Ok(())
 }
 
@@ -1150,6 +1304,7 @@ fn explicit_config_path_must_exist() -> Result<(), Box<dyn Error>> {
 
     let error = expected_config_error(Config::load_from_env(
         Some(missing_path.clone().into_os_string()),
+        None,
         None,
         None,
     ));

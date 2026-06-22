@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const ENV_CONFIG: &str = "RUSTEYES_CONFIG";
+const ENV_SYNC_SHARED_SECRET_FILE: &str = "RUSTEYES_SYNC_SHARED_SECRET_FILE";
 const XDG_CONFIG_HOME: &str = "XDG_CONFIG_HOME";
 const HOME: &str = "HOME";
 const CONFIG_DIR: &str = "rusteyes";
@@ -52,12 +53,13 @@ impl Config {
             std::env::var_os(ENV_CONFIG),
             std::env::var_os(XDG_CONFIG_HOME),
             std::env::var_os(HOME),
+            std::env::var_os(ENV_SYNC_SHARED_SECRET_FILE),
         )
     }
 
     #[cfg(test)]
     fn from_yaml_str(input: &str) -> Result<Self, ConfigLoadError> {
-        Self::from_yaml_str_with_path(input, None)
+        Self::from_yaml_str_with_path_and_secret_file(input, None, None)
     }
 
     /// Validates config values after defaults and file overrides are applied.
@@ -76,32 +78,55 @@ impl Config {
         rusteyes_config: Option<OsString>,
         xdg_config_home: Option<OsString>,
         home: Option<OsString>,
+        sync_shared_secret_file: Option<OsString>,
     ) -> Result<Self, ConfigLoadError> {
+        let sync_shared_secret_file = non_empty_os(sync_shared_secret_file).map(PathBuf::from);
+
         if let Some(path) = non_empty_os(rusteyes_config).map(PathBuf::from) {
-            return Self::load_from_path(path, ConfigPathMode::Required);
+            return Self::load_from_path(
+                path,
+                ConfigPathMode::Required,
+                sync_shared_secret_file.as_deref(),
+            );
         }
 
         if let Some(base) = non_empty_os(xdg_config_home).map(PathBuf::from) {
             let path = config_path_from_base(&base);
-            return Self::load_from_path(path, ConfigPathMode::Optional);
+            return Self::load_from_path(
+                path,
+                ConfigPathMode::Optional,
+                sync_shared_secret_file.as_deref(),
+            );
         }
 
         if let Some(home) = non_empty_os(home).map(PathBuf::from) {
             let path = config_path_from_base(&home.join(".config"));
-            return Self::load_from_path(path, ConfigPathMode::Optional);
+            return Self::load_from_path(
+                path,
+                ConfigPathMode::Optional,
+                sync_shared_secret_file.as_deref(),
+            );
         }
 
-        Ok(Self::default())
+        Self::default_with_secret_file(sync_shared_secret_file.as_deref(), None)
     }
 
-    fn load_from_path(path: PathBuf, mode: ConfigPathMode) -> Result<Self, ConfigLoadError> {
+    fn load_from_path(
+        path: PathBuf,
+        mode: ConfigPathMode,
+        sync_shared_secret_file: Option<&Path>,
+    ) -> Result<Self, ConfigLoadError> {
         match fs::read_to_string(&path) {
-            Ok(input) => Self::from_yaml_str_with_path(&input, Some(path)),
+            Ok(input) => Self::from_yaml_str_with_path_and_secret_file(
+                &input,
+                Some(path),
+                sync_shared_secret_file,
+            ),
             Err(error)
                 if mode == ConfigPathMode::Optional && error.kind() == io::ErrorKind::NotFound =>
             {
                 write_default_config(&path)?;
-                Ok(Self::default())
+                Self::default_with_secret_file(sync_shared_secret_file, Some(path))
             }
             Err(error) => Err(ConfigLoadError::Read {
                 path,
@@ -110,9 +135,10 @@ impl Config {
         }
     }
 
-    fn from_yaml_str_with_path(
+    fn from_yaml_str_with_path_and_secret_file(
         input: &str,
         path: Option<PathBuf>,
+        sync_shared_secret_file: Option<&Path>,
     ) -> Result<Self, ConfigLoadError> {
         let partial = serde_saphyr::from_str::<Option<PartialConfig>>(input).map_err(|error| {
             ConfigLoadError::Parse {
@@ -124,11 +150,24 @@ impl Config {
         let partial = partial.unwrap_or_default();
 
         partial.apply_to(&mut config);
+        apply_sync_shared_secret_file(&mut config, sync_shared_secret_file)?;
 
         config
             .validate()
             .map_err(|error| ConfigLoadError::Invalid { path, error })?;
 
+        Ok(config)
+    }
+
+    fn default_with_secret_file(
+        sync_shared_secret_file: Option<&Path>,
+        path: Option<PathBuf>,
+    ) -> Result<Self, ConfigLoadError> {
+        let mut config = Self::default();
+        apply_sync_shared_secret_file(&mut config, sync_shared_secret_file)?;
+        config
+            .validate()
+            .map_err(|error| ConfigLoadError::Invalid { path, error })?;
         Ok(config)
     }
 }
@@ -158,6 +197,14 @@ pub(crate) enum ConfigLoadError {
     Parse {
         path: Option<PathBuf>,
         message: String,
+    },
+    ReadSecret {
+        path: PathBuf,
+        message: String,
+    },
+    InvalidSecret {
+        path: PathBuf,
+        error: ConfigError,
     },
     Invalid {
         path: Option<PathBuf>,
@@ -189,6 +236,20 @@ impl fmt::Display for ConfigLoadError {
                     config_location(path.as_deref())
                 )
             }
+            Self::ReadSecret { path, message } => {
+                write!(
+                    formatter,
+                    "failed to read sync shared secret file {}: {message}",
+                    path.display()
+                )
+            }
+            Self::InvalidSecret { path, error } => {
+                write!(
+                    formatter,
+                    "invalid sync shared secret file {}: {error}",
+                    path.display()
+                )
+            }
             Self::Invalid { path, error } => {
                 write!(
                     formatter,
@@ -203,8 +264,11 @@ impl fmt::Display for ConfigLoadError {
 impl std::error::Error for ConfigLoadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Invalid { error, .. } => Some(error),
-            Self::Read { .. } | Self::Write { .. } | Self::Parse { .. } => None,
+            Self::Invalid { error, .. } | Self::InvalidSecret { error, .. } => Some(error),
+            Self::Read { .. }
+            | Self::Write { .. }
+            | Self::Parse { .. }
+            | Self::ReadSecret { .. } => None,
         }
     }
 }
@@ -817,6 +881,44 @@ fn write_default_config(path: &Path) -> Result<(), ConfigLoadError> {
             path: path.to_path_buf(),
             message: error.to_string(),
         })
+}
+
+fn apply_sync_shared_secret_file(
+    config: &mut Config,
+    path: Option<&Path>,
+) -> Result<(), ConfigLoadError> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+
+    config.sync.shared_secret = Some(read_sync_shared_secret_file(path)?);
+    Ok(())
+}
+
+fn read_sync_shared_secret_file(path: &Path) -> Result<SharedSecret, ConfigLoadError> {
+    let mut value = fs::read_to_string(path).map_err(|error| ConfigLoadError::ReadSecret {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    strip_one_trailing_line_ending(&mut value);
+
+    let shared_secret = SharedSecret::new(value);
+    validate_sync_shared_secret(&shared_secret).map_err(|error| {
+        ConfigLoadError::InvalidSecret {
+            path: path.to_path_buf(),
+            error,
+        }
+    })?;
+
+    Ok(shared_secret)
+}
+
+fn strip_one_trailing_line_ending(value: &mut String) {
+    if value.ends_with("\r\n") {
+        value.truncate(value.len() - 2);
+    } else if value.ends_with('\n') || value.ends_with('\r') {
+        value.pop();
+    }
 }
 
 fn default_config_yaml() -> Result<String, serde_saphyr::ser_error::Error> {

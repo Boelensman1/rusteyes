@@ -256,6 +256,11 @@
   10 second idle threshold so slow ongoing input still counts as active, while
   local and synced active-time signals share one wall-clock budget so synced
   peers do not multiply active-time accumulation.
+- Completed `linux-packaging`: the flake now exposes `nix run` app output,
+  NixOS and Home Manager modules, a GTK-wrapped Linux package, generated
+  service YAML through `RUSTEYES_CONFIG`, secret-safe sync configuration through
+  `RUSTEYES_SYNC_SHARED_SECRET_FILE`, and a graphical-session systemd user
+  service.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -404,6 +409,19 @@
   adding macOS Login Item integration.
 - `codesign -dv target/macos/RustEyes.app` reports ad-hoc signature identity
   `dev.rusteyes.RustEyes` after adding macOS Login Item integration.
+- `make test` passes after adding Linux packaging config-secret support.
+- `nix flake show --json` exposes app, package, NixOS module, and Home Manager
+  module outputs after adding Linux packaging.
+- NixOS module eval confirms the generated user service has
+  `graphical-session.target` ordering, generated `RUSTEYES_CONFIG`,
+  `RUSTEYES_SYNC_SHARED_SECRET_FILE`, and configured `RUST_LOG`.
+- Home Manager module eval confirms package installation and the generated
+  graphical-session systemd user service environment.
+- `make check` passes after adding Linux packaging.
+- `nix build` passes after adding Linux packaging.
+- Attempted `nix build .#packages.x86_64-linux.default --no-link` from this
+  `aarch64-darwin` host; it failed with a platform mismatch because no
+  `x86_64-linux` builder was available.
 - On unsupported targets, `make run` prints
   `rusteyes: no backend is available for <platform> yet` and exits non-zero.
 - Manual X11 overlay, input-blocking, overlay UI, and trace-output verification
