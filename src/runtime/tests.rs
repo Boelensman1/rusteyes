@@ -217,23 +217,18 @@ fn finite_disable_suppresses_active_time_and_reenables_after_elapsed() {
 }
 
 #[test]
-fn disable_until_restart_stays_disabled_until_explicit_enable() {
+fn disable_until_restart_ignores_wall_clock_elapsed() {
     let (backend, commands) = ScriptedBackend::new([
         RuntimeEvent::Disable(DisableRequest::UntilRestart),
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(100)),
         RuntimeEvent::WallClockElapsed(Duration::from_hours(1)),
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(100)),
-        RuntimeEvent::Enable,
-        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
         RuntimeEvent::Shutdown,
     ])
     .into_parts();
 
     assert_eq!(run_config_with_backend(test_config(), backend), Ok(()));
-    assert_eq!(
-        received_commands(&commands),
-        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
-    );
+    assert!(received_commands(&commands).is_empty());
 }
 
 #[test]
@@ -460,13 +455,11 @@ fn local_manual_break_start_is_broadcast_to_sync_peers() {
 }
 
 #[test]
-fn local_disable_and_enable_events_are_broadcast_to_sync_peers() {
+fn local_disable_events_are_broadcast_to_sync_peers() {
     let sync_broadcaster = RecordingSyncBroadcaster::default();
     let (backend, commands) = ScriptedBackend::new([
         RuntimeEvent::Disable(DisableRequest::For(Duration::from_secs(30))),
-        RuntimeEvent::Enable,
         RuntimeEvent::Disable(DisableRequest::UntilRestart),
-        RuntimeEvent::Enable,
         RuntimeEvent::Shutdown,
     ])
     .into_parts();
@@ -482,9 +475,7 @@ fn local_disable_and_enable_events_are_broadcast_to_sync_peers() {
             SyncEvent::DisableFor {
                 duration: Duration::from_secs(30),
             },
-            SyncEvent::Enable,
             SyncEvent::DisableUntilRestart,
-            SyncEvent::Enable,
         ]
     );
 }
@@ -1260,7 +1251,7 @@ fn disabled_and_pending_states_suppress_pre_break_notifications()
         [
             backend_input(RuntimeEvent::Disable(DisableRequest::UntilRestart)),
             backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(100))),
-            backend_input(RuntimeEvent::Enable),
+            sync_input(remote_sync_event(SyncEvent::Enable)?),
             backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
             backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
         ],

@@ -26,11 +26,17 @@
   state.
 - Overlay break polling remains unchanged and does not emit idle reset events.
 
+## Cleanup
+
+- Removed the platform-specific dead-code allowance from the shared break timer
+  remaining-time accessor after macOS overlay code started using it.
+
 ## Commands
 
 - `cargo check --all-targets --all-features` failed locally because `cargo` is
   not on `PATH`; use the Make/Nix fallback.
 - `make check`
+- `make check` after removing stale dead-code allowances
 
 ## Follow-up
 

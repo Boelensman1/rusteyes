@@ -110,7 +110,6 @@ impl BreakTimer {
         }
     }
 
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) const fn remaining(self) -> Duration {
         self.remaining
     }

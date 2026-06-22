@@ -189,7 +189,6 @@ pub(crate) fn wait_for_command_or_timeout(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum RuntimeEvent {
     ActiveTimeElapsed(Duration),
     IdleTimeElapsed(Duration),
@@ -198,12 +197,10 @@ pub(crate) enum RuntimeEvent {
     LockAfterCurrentBreak,
     StartManualBreak(String),
     Disable(DisableRequest),
-    Enable,
     Shutdown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum DisableRequest {
     For(Duration),
     UntilRestart,

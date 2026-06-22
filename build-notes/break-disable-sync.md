@@ -21,8 +21,10 @@
 
 - Local active-time due breaks and local manual break starts broadcast
   `BreakStarted`.
-- Local disable-for, disable-until-restart, and enable actions broadcast their
-  matching sync events.
+- Local disable-for and disable-until-restart actions broadcast their matching
+  sync events.
+- Local timed disables re-enable from wall-clock elapsed time without sending a
+  separate enable event; authenticated inbound enable events are still accepted.
 - Authenticated inbound break-start and disable/enable events apply locally and
   are not rebroadcast.
 - Inbound disable events clear a pending local break through the same backend
@@ -39,6 +41,8 @@
   now uses the event receiver API.
 - Reworked runtime sync tests to drive ordered runtime inputs directly instead
   of using sleep-delayed backend and sync event sources.
+- Removed the stale test-only local runtime enable event so the shared runtime
+  event enum no longer needs a broad dead-code allowance.
 
 ## Commands
 

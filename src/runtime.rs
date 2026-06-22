@@ -255,7 +255,6 @@ impl<'a> DaemonRuntime<'a> {
             RuntimeEvent::Disable(DisableRequest::UntilRestart) => {
                 return self.disable_until_restart(SyncPropagation::Broadcast);
             }
-            RuntimeEvent::Enable => self.enable(SyncPropagation::Broadcast),
             RuntimeEvent::Shutdown => {
                 self.clear_pre_break_notice();
                 return false;

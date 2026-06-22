@@ -185,12 +185,16 @@
   existing scheduler disabled/pending states suppress remote active-time
   increments.
 - Completed `break-disable-sync`: local scheduled/manual break starts and local
-  disable/enable controls now broadcast authenticated sync events, inbound
+  disable controls now broadcast authenticated sync events, inbound
   authenticated break-start and disable/enable events apply locally without
-  rebroadcasting, and synced lock-after-current-break remains deferred.
+  rebroadcasting, timed local disables re-enable from wall-clock elapsed time
+  without a separate enable event, and synced lock-after-current-break remains
+  deferred.
   Follow-up cleanup collapsed duplicated local/synced runtime helper paths,
   removed thin backend actor channel wrappers, and made sync runtime tests drive
-  ordered inputs without sleep-delayed event sources.
+  ordered inputs without sleep-delayed event sources. Later cleanup removed the
+  stale test-only local runtime enable event and the resulting broad dead-code
+  allowances on shared backend events.
 - Completed `notification-tray-ui`: Linux and macOS production runs now start a
   main-thread tray/menu-bar UI with controls to start configured break types,
   disable for configured presets, disable until restart, and quit. Runtime now
@@ -219,7 +223,9 @@
   accumulated scheduler active time after enough combined idle time, clears
   pre-break notification state, updates the active-time tray row, and treats
   authenticated remote active-time events as combined activity without changing
-  the sync protocol.
+  the sync protocol. Follow-up cleanup removed the now-unneeded
+  platform-specific dead-code allowance from the shared break timer remaining
+  accessor.
 - Completed `peer-config-compatibility`: sync protocol version 2 peer hellos
   now carry a keyed compatibility fingerprint derived from synced break
   behavior settings, excluding lock command and raw sync secrets; transport
@@ -378,6 +384,7 @@
 - `make check` passes after adding pre-break notification countdown updates.
 - `make check` passes after adding idle activity grace and capped synced
   active-time accumulation.
+- `make check` passes after removing stale dead-code allowances.
 - `make check` passes after the project rename to RustEyes.
 - `make -B macos-app-build` passes after adding pre-break notification
   countdown updates.
