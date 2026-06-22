@@ -97,6 +97,13 @@ in
       '';
       description = "Additional environment variables for the RustEyes service.";
     };
+
+    launchAgent.enable = mkEnableOption ''
+      a macOS LaunchAgent that runs RustEyes at login and injects the service
+      environment (RUSTEYES_CONFIG, RUST_LOG, RUSTEYES_SYNC_SHARED_SECRET_FILE,
+      and extraEnvironment). macOS Home Manager only; ignored on Linux. When
+      enabled it is the startup mechanism, so do not also set
+      settings.startup.open_at_login'';
   };
 
   assertions = [

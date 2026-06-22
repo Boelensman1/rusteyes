@@ -123,9 +123,19 @@ the bundle in `~/Applications/Home Manager Apps`:
 }
 ```
 
-The Darwin module does not create a LaunchAgent, so service-only options such
-as `configFile`, `syncSharedSecretFile`, `logLevel`, and `extraEnvironment` are
-not supported there.
+By default the Darwin module is install/config only: it installs the app and
+writes `~/.config/rusteyes/config.yaml`, and startup is left to the app's own
+Login Item (`settings.startup.open_at_login`). In that mode the service-only
+options `configFile`, `syncSharedSecretFile`, `logLevel`, and `extraEnvironment`
+are not supported, because there is no service to inject their environment into.
+
+Set `services.rusteyes.launchAgent.enable = true` to manage a macOS LaunchAgent
+that runs RustEyes at login and injects the service environment (the same way
+the Linux systemd user service does). Enabling it unlocks `configFile`,
+`syncSharedSecretFile`, `logLevel`, and `extraEnvironment` on Darwin — this is
+how the sync shared secret reaches the app on macOS. The LaunchAgent runs the
+app at login itself, so `settings.startup.open_at_login` must not also be true
+(the build fails otherwise to avoid launching the app twice).
 
 ## Common Commands
 

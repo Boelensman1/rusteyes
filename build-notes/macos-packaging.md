@@ -19,13 +19,17 @@
 - Nix signs the app's Mach-O executable and helper with ad-hoc signatures using
   `darwin.sigtool`; the bundle directory itself is not signed because Nix's
   sigtool signs binaries, not `.app` directories.
-- Darwin Home Manager is install/config only. It installs the selected package
-  and writes generated settings to `~/.config/rusteyes/config.yaml`.
-- macOS startup remains controlled by RustEyes' `startup.open_at_login` config
-  and the app's Login Item registration path, not by a Home Manager LaunchAgent.
-- Darwin Home Manager rejects service-environment-only options such as
-  `configFile`, `syncSharedSecretFile`, `logLevel`, and `extraEnvironment`
-  instead of ignoring them.
+- Darwin Home Manager is install/config only by default. It installs the
+  selected package and writes generated settings to
+  `~/.config/rusteyes/config.yaml`.
+- macOS startup defaults to RustEyes' `startup.open_at_login` config and the
+  app's Login Item registration path. An opt-in `launchAgent.enable` LaunchAgent
+  was added later (see `macos-launchagent.md`) as the alternative startup path.
+- With the LaunchAgent disabled, Darwin Home Manager rejects
+  service-environment-only options such as `configFile`, `syncSharedSecretFile`,
+  `logLevel`, and `extraEnvironment` instead of ignoring them. Enabling the
+  LaunchAgent unlocks them, and asserts that `startup.open_at_login` is not also
+  set so the app is not launched twice.
 
 ## Behavior
 

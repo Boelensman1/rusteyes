@@ -269,6 +269,14 @@
   `packages.<system>.rusteyes`; Darwin Home Manager installs the app and writes
   generated config to `~/.config/rusteyes/config.yaml` without creating a
   LaunchAgent.
+- Completed `macos-launchagent`: the Darwin Home Manager module gained an opt-in
+  `launchAgent.enable` option that manages a `launchd.agents.rusteyes`
+  LaunchAgent running the app at login with `common.serviceEnvironment`
+  injected, unlocking `configFile`, `syncSharedSecretFile`, `logLevel`, and
+  `extraEnvironment` on Darwin (this is how the sync shared secret reaches the
+  app on macOS). It asserts that `settings.startup.open_at_login` is not also
+  set to avoid launching the app twice, and the default-path config write is now
+  skipped when an external `configFile` is used.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
