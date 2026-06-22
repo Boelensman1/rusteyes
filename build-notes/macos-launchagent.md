@@ -28,7 +28,9 @@
   - when `launchAgent.enable`, a `launchd.agents.rusteyes` agent whose `config`
     sets `ProgramArguments = [ (lib.getExe cfg.package) ]`,
     `EnvironmentVariables = common.serviceEnvironment`, `RunAtLoad = true`,
-    `KeepAlive = { SuccessfulExit = false; }`, and `ProcessType = "Interactive"`.
+    `KeepAlive = { SuccessfulExit = false; }`, `ProcessType = "Interactive"`,
+    and `StandardOutPath`/`StandardErrorPath` under
+    `${config.home.homeDirectory}/Library/Logs/rusteyes.{out,err}.log`.
 - Relaxed the four Darwin assertions to fire only when
   `!cfg.launchAgent.enable` — enabling the agent unlocks `configFile`,
   `syncSharedSecretFile`, `logLevel`, and `extraEnvironment` on Darwin.
@@ -48,6 +50,12 @@
   (exit 0) leaves the agent stopped so the menu-bar Quit action works.
 - `ProcessType = "Interactive"` because RustEyes is a GUI/menu-bar app, avoiding
   launchd background-batch throttling.
+- Set `StandardOutPath`/`StandardErrorPath` because launchd otherwise wires the
+  agent's stdout/stderr to `/dev/null`. The app writes tracing output to
+  `/dev/stderr` (`src/main.rs`), so without these the logs vanish and the
+  `logLevel`/`RUST_LOG` option has no observable effect on macOS. Paths are
+  hardcoded under `~/Library/Logs` (the macOS convention) rather than exposed as
+  options to keep the module surface small; users can still tail those files.
 - `lib.getExe cfg.package` resolves on Darwin to the `bin/rusteyes` wrapper that
   execs the bundled app executable, so the bundled helper is still discovered
   relative to the executable — no `PATH`/`HELPER_PATH_ENV` plumbing is needed.

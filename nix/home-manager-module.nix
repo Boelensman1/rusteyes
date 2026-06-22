@@ -91,6 +91,12 @@ in
                 ProgramArguments = [ (lib.getExe cfg.package) ];
                 EnvironmentVariables = common.serviceEnvironment;
                 RunAtLoad = true;
+                # launchd discards stdout/stderr by default, so the app's
+                # tracing output (written to the inherited stderr) would vanish
+                # and logLevel/RUST_LOG would have no visible effect. Capture
+                # both under ~/Library/Logs so logs are inspectable.
+                StandardOutPath = "${config.home.homeDirectory}/Library/Logs/rusteyes.out.log";
+                StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/rusteyes.err.log";
                 # Restart on crash like systemd Restart=on-failure; a clean Quit
                 # (exit 0) leaves the agent stopped.
                 KeepAlive = {
