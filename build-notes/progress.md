@@ -64,7 +64,9 @@
 - Completed `x11-input-blocking`: X11 break overlays now acquire active core
   pointer and keyboard grabs while visible, keep pointer movement unconstrained,
   prevent grabbed input from reaching other X11 clients, and release grabs when
-  overlays are cleared.
+  overlays are cleared. Follow-up fix treats transient X11 grab contention as
+  a bounded break-start retry and skips the unstarted break without shutting
+  down the daemon if the grab remains unavailable.
 - Completed `x11-lock-after-break`: config now has an optional `lock.command`
   argv override, and Linux/X11 production runs start and supervise
   `loginctl lock-session` by default, or the configured command after a break

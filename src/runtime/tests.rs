@@ -151,6 +151,28 @@ fn lock_after_current_break_request_clears_after_break_finishes() {
 }
 
 #[test]
+fn break_start_failure_skips_pending_break_without_finishing_backend_break() {
+    let (backend, commands) = ScriptedBackend::new([
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
+        RuntimeEvent::LockAfterCurrentBreak,
+        RuntimeEvent::BreakStartFailed,
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
+        RuntimeEvent::Shutdown,
+    ])
+    .into_parts();
+
+    assert_eq!(run_config_with_backend(test_config(), backend), Ok(()));
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::RequestLockAfterCurrentBreak,
+            BackendCommand::StartBreak(scheduled_break("long", 2, 300))
+        ]
+    );
+}
+
+#[test]
 fn disable_clears_pending_backend_break_without_locking() {
     let (backend, commands) = ScriptedBackend::new([
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),

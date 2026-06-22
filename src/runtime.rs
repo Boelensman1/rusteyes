@@ -245,6 +245,7 @@ impl<'a> DaemonRuntime<'a> {
             }
             RuntimeEvent::IdleTimeElapsed(elapsed) => self.advance_idle(elapsed),
             RuntimeEvent::WallClockElapsed(elapsed) => return self.advance_wall_clock(elapsed),
+            RuntimeEvent::BreakStartFailed => return self.break_start_failed(),
             RuntimeEvent::BreakFinished => return self.finish_break(),
             RuntimeEvent::LockAfterCurrentBreak => {
                 return self.request_lock_after_current_break(SyncPropagation::Broadcast);
@@ -394,6 +395,17 @@ impl<'a> DaemonRuntime<'a> {
         } else {
             false
         }
+    }
+
+    fn break_start_failed(&mut self) -> bool {
+        self.clear_pre_break_notice();
+        self.current_break = None;
+
+        if self.scheduler.finish_break() {
+            self.update_active_time_display();
+        }
+
+        true
     }
 
     fn finish_break(&mut self) -> bool {

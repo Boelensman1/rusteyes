@@ -510,11 +510,28 @@ impl MonitorGeometry {
 pub(crate) struct X11OverlayError {
     operation: &'static str,
     message: String,
+    retryable: bool,
 }
 
 impl X11OverlayError {
     fn new(operation: &'static str, message: String) -> Self {
-        Self { operation, message }
+        Self {
+            operation,
+            message,
+            retryable: false,
+        }
+    }
+
+    fn grab_status(operation: &'static str, status: GrabStatus) -> Self {
+        Self {
+            operation,
+            message: format!("{status:?}"),
+            retryable: is_retryable_grab_status(status),
+        }
+    }
+
+    pub(crate) const fn is_retryable_grab_failure(&self) -> bool {
+        self.retryable
     }
 }
 
@@ -538,8 +555,12 @@ fn check_grab_status(operation: &'static str, status: GrabStatus) -> Result<(), 
     if status == GrabStatus::SUCCESS {
         Ok(())
     } else {
-        Err(X11OverlayError::new(operation, format!("{status:?}")))
+        Err(X11OverlayError::grab_status(operation, status))
     }
+}
+
+const fn is_retryable_grab_status(status: GrabStatus) -> bool {
+    matches!(status, GrabStatus::ALREADY_GRABBED | GrabStatus::FROZEN)
 }
 
 fn query_monitors(connection: &RustConnection, screen: X11Screen) -> Vec<MonitorGeometry> {
@@ -877,10 +898,10 @@ fn remember_first_error<T, E>(
 ) where
     E: fmt::Display,
 {
-    if first_error.is_none() {
-        if let Err(error) = result {
-            *first_error = Some(X11OverlayError::new(operation, error.to_string()));
-        }
+    if first_error.is_none()
+        && let Err(error) = result
+    {
+        *first_error = Some(X11OverlayError::new(operation, error.to_string()));
     }
 }
 

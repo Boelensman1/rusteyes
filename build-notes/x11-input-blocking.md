@@ -20,18 +20,26 @@
   windows and graphics contexts.
 - Overlay setup failures after window creation now destroy any already-created
   overlay resources before returning the error.
+- Follow-up fix: `ALREADY_GRABBED` and `FROZEN` pointer/keyboard grab replies
+  are now treated as transient contention. Break startup retries for a bounded
+  window, keeps the daemon alive if contention persists, and never shows an
+  unblocked overlay.
 
 ## Decisions
 
 - Use core X11 grabs for this increment; XInput2 and Wayland support remain out
   of scope.
-- Treat unsuccessful grab replies as overlay startup failures instead of showing
-  an unblocked break.
+- Treat permanent grab failures as overlay startup failures instead of showing
+  an unblocked break; transient grab contention is retried and then skips that
+  break if it does not clear.
 - Keep the runtime/backend command boundary unchanged.
 
 ## Commands
 
 - `make check`
+- `make test` after adding bounded retry handling for transient grab contention.
+- `make check` after adding bounded retry handling for transient grab
+  contention.
 
 ## Follow-up
 

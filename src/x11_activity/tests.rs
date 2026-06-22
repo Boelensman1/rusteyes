@@ -1,6 +1,8 @@
-use super::DEFAULT_LOCK_COMMAND;
+use super::{BREAK_START_RETRY_TIMEOUT, DEFAULT_LOCK_COMMAND, PendingBreakStart};
 use crate::config::LockConfig;
 use crate::lock_command::{LockCommand, lock_process};
+use crate::scheduler::{BreakOrigin, ScheduledBreak};
+use std::time::Duration;
 
 #[test]
 fn default_lock_command_uses_loginctl() {
@@ -45,4 +47,38 @@ fn explicit_lock_command_overrides_default() {
             .collect::<Vec<_>>(),
         vec![Some("--now"), Some("--quiet")]
     );
+}
+
+#[test]
+fn pending_break_start_times_out_after_retry_timeout() {
+    let mut pending_break = PendingBreakStart::new(test_break(false));
+
+    pending_break.advance_wait(
+        BREAK_START_RETRY_TIMEOUT
+            .checked_sub(Duration::from_millis(1))
+            .unwrap_or_default(),
+    );
+    assert!(!pending_break.retry_timed_out());
+
+    pending_break.advance_wait(Duration::from_millis(1));
+    assert!(pending_break.retry_timed_out());
+}
+
+#[test]
+fn pending_break_start_remembers_lock_after_request() {
+    let mut pending_break = PendingBreakStart::new(test_break(false));
+
+    pending_break.request_lock_after_current_break();
+
+    assert!(pending_break.scheduled_break.autolock);
+}
+
+fn test_break(autolock: bool) -> ScheduledBreak {
+    ScheduledBreak {
+        name: String::from("short"),
+        origin: BreakOrigin::Scheduled { slot: 1 },
+        duration: Duration::from_secs(20),
+        messages: vec![String::from("Rest your eyes")],
+        autolock,
+    }
 }

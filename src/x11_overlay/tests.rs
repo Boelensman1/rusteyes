@@ -3,8 +3,9 @@ use super::layout::{
     lock_control_layout, overlay_layout, remaining_time_text, x11_text_bytes,
 };
 use super::{
-    MonitorGeometry, OverlayWindow, check_grab_status, normalize_monitor_geometries,
-    output_has_monitor, overlay_window_event_mask, pointer_grab_event_mask, selected_break_message,
+    MonitorGeometry, OverlayWindow, check_grab_status, is_retryable_grab_status,
+    normalize_monitor_geometries, output_has_monitor, overlay_window_event_mask,
+    pointer_grab_event_mask, selected_break_message,
 };
 use crate::scheduler::{BreakOrigin, ScheduledBreak};
 use std::time::Duration;
@@ -74,7 +75,7 @@ fn overlay_text_replaces_non_ascii_and_is_bounded_for_x11() {
 fn remaining_time_text_formats_minutes_and_hours() {
     assert_eq!(remaining_time_text(Duration::ZERO), "0:00");
     assert_eq!(remaining_time_text(Duration::from_secs(59)), "0:59");
-    assert_eq!(remaining_time_text(Duration::from_secs(60)), "1:00");
+    assert_eq!(remaining_time_text(Duration::from_mins(1)), "1:00");
     assert_eq!(remaining_time_text(Duration::from_secs(3_661)), "1:01:01");
 }
 
@@ -199,6 +200,31 @@ fn failed_grab_status_returns_context() {
         error.to_string(),
         "failed to grab overlay pointer input: ALREADY_GRABBED"
     );
+}
+
+#[test]
+fn grab_contention_statuses_are_retryable() {
+    assert!(is_retryable_grab_status(GrabStatus::ALREADY_GRABBED));
+    assert!(is_retryable_grab_status(GrabStatus::FROZEN));
+    assert!(!is_retryable_grab_status(GrabStatus::INVALID_TIME));
+    assert!(!is_retryable_grab_status(GrabStatus::NOT_VIEWABLE));
+}
+
+#[test]
+fn failed_grab_status_records_retryability() {
+    let retryable =
+        match check_grab_status("grab overlay pointer input", GrabStatus::ALREADY_GRABBED) {
+            Ok(()) => panic!("expected retryable grab failure"),
+            Err(error) => error,
+        };
+    let permanent = match check_grab_status("grab overlay pointer input", GrabStatus::NOT_VIEWABLE)
+    {
+        Ok(()) => panic!("expected permanent grab failure"),
+        Err(error) => error,
+    };
+
+    assert!(retryable.is_retryable_grab_failure());
+    assert!(!permanent.is_retryable_grab_failure());
 }
 
 fn scheduled_break(messages: impl IntoIterator<Item = &'static str>) -> ScheduledBreak {

@@ -193,6 +193,7 @@ pub(crate) enum RuntimeEvent {
     ActiveTimeElapsed(Duration),
     IdleTimeElapsed(Duration),
     WallClockElapsed(Duration),
+    BreakStartFailed,
     BreakFinished,
     LockAfterCurrentBreak,
     StartManualBreak(String),

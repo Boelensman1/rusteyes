@@ -17,6 +17,7 @@ use x11rb::rust_connection::RustConnection;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const OVERLAY_TICK_INTERVAL: Duration = Duration::from_millis(500);
+const BREAK_START_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
 const LOCK_HANDOFF_DELAY: Duration = Duration::from_millis(250);
 const DEFAULT_LOCK_COMMAND: [&str; 2] = ["loginctl", "lock-session"];
 const SCREENSAVER_CLIENT_MAJOR_VERSION: u8 = 1;
@@ -27,6 +28,7 @@ pub(crate) struct X11ActivityBackend {
     activity: X11Activity,
     poller: ActivityPoller,
     active_break: Option<ActiveBreak>,
+    pending_break: Option<PendingBreakStart>,
     lock_command: LockCommand,
 }
 
@@ -46,6 +48,7 @@ impl X11ActivityBackend {
             activity: X11Activity::connect()?,
             poller: ActivityPoller::new(POLL_INTERVAL),
             active_break: None,
+            pending_break: None,
             lock_command: LockCommand::from(lock_config),
         })
     }
@@ -77,7 +80,7 @@ impl X11ActivityBackend {
     }
 
     fn next_sample_delay(&self) -> Duration {
-        if self.active_break.is_some() {
+        if self.active_break.is_some() || self.pending_break.is_some() {
             OVERLAY_TICK_INTERVAL
         } else {
             self.poller.poll_interval()
@@ -87,6 +90,8 @@ impl X11ActivityBackend {
     fn sample_once(&mut self) -> Result<(), X11ActivityError> {
         if self.active_break.is_some() {
             self.sample_overlay_once()
+        } else if self.pending_break.is_some() {
+            self.sample_pending_break_once()
         } else {
             self.sample_activity_once()
         }
@@ -130,25 +135,81 @@ impl X11ActivityBackend {
         Ok(())
     }
 
+    fn sample_pending_break_once(&mut self) -> Result<(), X11ActivityError> {
+        self.poller
+            .queue_event(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL));
+
+        let Some(mut pending_break) = self.pending_break.take() else {
+            return Ok(());
+        };
+        pending_break.advance_wait(OVERLAY_TICK_INTERVAL);
+
+        match self.show_break_overlay(&pending_break.scheduled_break) {
+            Ok(overlay) => {
+                self.active_break = Some(ActiveBreak::new(
+                    overlay,
+                    pending_break.scheduled_break.duration,
+                ));
+            }
+            Err(error) if error.is_retryable_grab_failure() => {
+                if pending_break.retry_timed_out() {
+                    tracing::warn!(
+                        %error,
+                        waited = ?pending_break.waited,
+                        "failed to start input-blocking X11 break overlay before retry timeout"
+                    );
+                    self.poller.queue_event(RuntimeEvent::BreakStartFailed);
+                } else {
+                    trace!(
+                        %error,
+                        waited = ?pending_break.waited,
+                        "X11 break overlay input grab still unavailable; retrying"
+                    );
+                    self.pending_break = Some(pending_break);
+                }
+            }
+            Err(error) => return Err(X11ActivityError::overlay(&error)),
+        }
+
+        Ok(())
+    }
+
     fn start_break(&mut self, scheduled_break: &ScheduledBreak) {
         if let Err(error) = self.clear_break() {
             self.queue_backend_error(&error);
             return;
         }
 
-        match X11Overlay::show(
-            &self.activity.connection,
-            self.activity.screen,
-            scheduled_break,
-        ) {
+        match self.show_break_overlay(scheduled_break) {
             Ok(overlay) => {
                 self.active_break = Some(ActiveBreak::new(overlay, scheduled_break.duration));
+            }
+            Err(error) if error.is_retryable_grab_failure() => {
+                tracing::warn!(
+                    %error,
+                    retry_timeout = ?BREAK_START_RETRY_TIMEOUT,
+                    "X11 break overlay input grab unavailable; retrying"
+                );
+                self.pending_break = Some(PendingBreakStart::new(scheduled_break.clone()));
             }
             Err(error) => self.queue_backend_error(&X11ActivityError::overlay(&error)),
         }
     }
 
+    fn show_break_overlay(
+        &self,
+        scheduled_break: &ScheduledBreak,
+    ) -> Result<X11Overlay, X11OverlayError> {
+        X11Overlay::show(
+            &self.activity.connection,
+            self.activity.screen,
+            scheduled_break,
+        )
+    }
+
     fn clear_break(&mut self) -> Result<(), X11ActivityError> {
+        self.pending_break = None;
+
         match self.active_break.take() {
             Some(active_break) => active_break
                 .destroy(&self.activity.connection)
@@ -158,9 +219,10 @@ impl X11ActivityBackend {
     }
 
     fn finish_break(&mut self, lock_after: bool) {
-        let lock_result = if lock_after {
+        let lock_result = if lock_after && self.active_break.is_some() {
             match self.prepare_lock_handoff().and_then(|()| {
-                start_lock_command(&self.lock_command).map_err(X11ActivityError::lock_command)
+                start_lock_command(&self.lock_command)
+                    .map_err(|error| X11ActivityError::lock_command(&error))
             }) {
                 Ok(()) => {
                     thread::sleep(LOCK_HANDOFF_DELAY);
@@ -197,11 +259,15 @@ impl X11ActivityBackend {
     }
 
     fn request_lock_after_current_break(&mut self) -> Result<(), X11ActivityError> {
-        match &mut self.active_break {
-            Some(active_break) => active_break
+        if let Some(active_break) = &mut self.active_break {
+            active_break
                 .request_lock_after_current_break(&self.activity.connection)
-                .map_err(|error| X11ActivityError::overlay(&error)),
-            None => Ok(()),
+                .map_err(|error| X11ActivityError::overlay(&error))
+        } else {
+            if let Some(pending_break) = &mut self.pending_break {
+                pending_break.request_lock_after_current_break();
+            }
+            Ok(())
         }
     }
 
@@ -242,6 +308,33 @@ impl From<LockConfig> for LockCommand {
             .command
             .unwrap_or_else(|| DEFAULT_LOCK_COMMAND.into_iter().map(String::from).collect());
         Self::new(argv)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingBreakStart {
+    scheduled_break: ScheduledBreak,
+    waited: Duration,
+}
+
+impl PendingBreakStart {
+    const fn new(scheduled_break: ScheduledBreak) -> Self {
+        Self {
+            scheduled_break,
+            waited: Duration::ZERO,
+        }
+    }
+
+    fn advance_wait(&mut self, elapsed: Duration) {
+        self.waited = self.waited.saturating_add(elapsed);
+    }
+
+    fn retry_timed_out(&self) -> bool {
+        self.waited >= BREAK_START_RETRY_TIMEOUT
+    }
+
+    fn request_lock_after_current_break(&mut self) {
+        self.scheduled_break.autolock = true;
     }
 }
 
@@ -386,7 +479,7 @@ impl X11ActivityError {
         }
     }
 
-    fn lock_command(error: LockCommandError) -> Self {
+    fn lock_command(error: &LockCommandError) -> Self {
         Self::lock(error.to_string())
     }
 }
