@@ -262,7 +262,9 @@
   NixOS and Home Manager modules, a GTK-wrapped Linux package, generated
   service YAML through `RUSTEYES_CONFIG`, secret-safe sync configuration through
   `RUSTEYES_SYNC_SHARED_SECRET_FILE`, and a graphical-session systemd user
-  service.
+  service. A follow-up fix wraps the Linux binary's `LD_LIBRARY_PATH` with
+  `libappindicator-gtk3` so the runtime `dlopen` of the appindicator tray
+  library succeeds instead of panicking at startup.
 - Completed `macos-packaging`: Darwin flake defaults now build a
   `RustEyes.app` bundle containing the Rust binary, Swift helper, icon, plist,
   and a `bin/rusteyes` wrapper; the raw Rust package remains available as
@@ -438,6 +440,11 @@
 - Attempted `nix build .#packages.x86_64-linux.default --no-link` from this
   `aarch64-darwin` host; it failed with a platform mismatch because no
   `x86_64-linux` builder was available.
+- `nix build .#rusteyes` on an x86_64-linux host builds the package, and the
+  wrapped `bin/rusteyes` embeds
+  `--prefix LD_LIBRARY_PATH : .../libappindicator-gtk3-.../lib`, confirming the
+  appindicator tray library is reachable at runtime after the `LD_LIBRARY_PATH`
+  wrapper fix.
 - Darwin package eval confirms `default`, `macos-app`, `macos-helper`, and
   `rusteyes` package outputs after adding macOS packaging.
 - `nix build .#packages.aarch64-darwin.default --no-link --print-out-paths`

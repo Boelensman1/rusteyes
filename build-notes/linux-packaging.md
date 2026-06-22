@@ -26,6 +26,14 @@
   validation.
 - Include `systemd` in the service `PATH` so the default Linux lock command
   can find `loginctl`.
+- Inject `libappindicator-gtk3` into the wrapped binary's `LD_LIBRARY_PATH`
+  via `preFixup`/`gappsWrapperArgs`. `tray-icon` (through `libappindicator-sys`)
+  `dlopen`s the appindicator library at runtime, so a build-time `buildInputs`
+  entry is not enough and `wrapGAppsHook3` does not add it on its own; without
+  the wrapper prefix the binary panicked at startup with
+  `Failed to load ayatana-appindicator3 or appindicator3 dynamic library`.
+  `libappindicator-gtk3` provides `libappindicator3.so.1`, one of the names the
+  loader probes.
 
 ## Behavior
 
@@ -50,6 +58,10 @@
   machine is `aarch64-darwin` and failed with a platform mismatch once it
   needed to build an `x86_64-linux` Rust dependency, so a Linux builder is still
   needed for full Linux package build verification from this host.
+- `nix build .#rusteyes` on x86_64-linux builds the package and the wrapped
+  `bin/rusteyes` embeds
+  `--prefix LD_LIBRARY_PATH : .../libappindicator-gtk3-.../lib`, confirming the
+  appindicator library is on the runtime search path.
 
 ## Follow-up
 

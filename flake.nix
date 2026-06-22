@@ -64,6 +64,14 @@
               pkgs.gtk3
               pkgs.libappindicator-gtk3
             ];
+            # tray-icon (via libappindicator-sys) dlopens the appindicator
+            # library at runtime, so it must be on the wrapped binary's
+            # LD_LIBRARY_PATH rather than only present at build time.
+            preFixup = lib.optionalString pkgs.stdenv.isLinux ''
+              gappsWrapperArgs+=(
+                --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath [ pkgs.libappindicator-gtk3 ]}"
+              )
+            '';
             meta = {
               description = "Minimal cross-platform Safe Eyes replacement";
               mainProgram = "rusteyes";
