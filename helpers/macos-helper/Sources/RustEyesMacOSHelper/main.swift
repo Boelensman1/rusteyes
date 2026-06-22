@@ -778,6 +778,9 @@ private func handleUpdateBreak(_ command: UpdateBreakCommand, overlay: BreakOver
 
 private func handleFinishBreak(_ command: FinishBreakCommand, overlay: BreakOverlayController) throws {
     clearBreakOverlay(overlay)
+    runOnMain {
+        NSSound.beep()
+    }
 
     if command.lockAfter {
         try lockScreenImmediately()

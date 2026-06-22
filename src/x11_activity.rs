@@ -18,6 +18,7 @@ use x11rb::rust_connection::RustConnection;
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const OVERLAY_TICK_INTERVAL: Duration = Duration::from_millis(500);
 const BREAK_START_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
+const BREAK_FINISHED_BELL_PERCENT: i8 = 0;
 const LOCK_HANDOFF_DELAY: Duration = Duration::from_millis(250);
 const DEFAULT_LOCK_COMMAND: [&str; 2] = ["loginctl", "lock-session"];
 const SCREENSAVER_CLIENT_MAJOR_VERSION: u8 = 1;
@@ -219,6 +220,10 @@ impl X11ActivityBackend {
     }
 
     fn finish_break(&mut self, lock_after: bool) {
+        if self.active_break.is_some() {
+            self.ring_break_finished_bell();
+        }
+
         let lock_result = if lock_after && self.active_break.is_some() {
             match self.prepare_lock_handoff().and_then(|()| {
                 start_lock_command(&self.lock_command)
@@ -246,6 +251,21 @@ impl X11ActivityBackend {
 
         if let Some(error) = first_error {
             self.queue_backend_error(&error);
+        }
+    }
+
+    fn ring_break_finished_bell(&self) {
+        use x11rb::protocol::xproto::ConnectionExt as _;
+
+        match self.activity.connection.bell(BREAK_FINISHED_BELL_PERCENT) {
+            Ok(cookie) => {
+                if let Err(error) = cookie.check() {
+                    trace!(%error, "X11 bell request after break finished failed");
+                }
+            }
+            Err(error) => {
+                trace!(%error, "failed to send X11 bell request after break finished");
+            }
         }
     }
 

@@ -295,6 +295,12 @@
   of showing the full-colour gear. The embedded `rusteyes-tray.rgba` asset is
   reused unchanged (templates ignore RGB), and the Linux system tray keeps the
   full-colour icon.
+- Completed `break-finished-beep`: finishing a break now plays a short beep to
+  signal that work can resume. The X11 backend rings the X server bell via
+  `xproto::ConnectionExt::bell` (best-effort, default volume, only when a break
+  was active, before any lock handoff), and the macOS helper calls
+  `NSSound.beep()` on the main thread in `handleFinishBreak`. No config toggle
+  was added. Audible verification on a real X session and on macOS is pending.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
