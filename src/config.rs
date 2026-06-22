@@ -1,9 +1,9 @@
-use serde::{Deserialize, de};
+use serde::{Deserialize, Serialize, de};
 use std::collections::{BTreeMap, btree_map::Entry};
 use std::ffi::OsString;
 use std::fmt;
-use std::fs;
-use std::io;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -99,6 +99,7 @@ impl Config {
             Err(error)
                 if mode == ConfigPathMode::Optional && error.kind() == io::ErrorKind::NotFound =>
             {
+                write_default_config(&path)?;
                 Ok(Self::default())
             }
             Err(error) => Err(ConfigLoadError::Read {
@@ -148,6 +149,10 @@ pub(crate) enum ConfigLoadError {
         path: PathBuf,
         message: String,
     },
+    Write {
+        path: PathBuf,
+        message: String,
+    },
     Parse {
         path: Option<PathBuf>,
         message: String,
@@ -165,6 +170,13 @@ impl fmt::Display for ConfigLoadError {
                 write!(
                     formatter,
                     "failed to read config {}: {message}",
+                    path.display()
+                )
+            }
+            Self::Write { path, message } => {
+                write!(
+                    formatter,
+                    "failed to write default config {}: {message}",
                     path.display()
                 )
             }
@@ -190,7 +202,7 @@ impl std::error::Error for ConfigLoadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Invalid { error, .. } => Some(error),
-            Self::Read { .. } | Self::Parse { .. } => None,
+            Self::Read { .. } | Self::Write { .. } | Self::Parse { .. } => None,
         }
     }
 }
@@ -752,11 +764,160 @@ fn config_path_from_base(base: &Path) -> PathBuf {
     base.join(CONFIG_DIR).join(CONFIG_FILE)
 }
 
+fn write_default_config(path: &Path) -> Result<(), ConfigLoadError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| ConfigLoadError::Write {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        })?;
+    }
+
+    let mut file = match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
+        Err(error) => {
+            return Err(ConfigLoadError::Write {
+                path: path.to_path_buf(),
+                message: error.to_string(),
+            });
+        }
+    };
+
+    let contents = default_config_yaml().map_err(|error| ConfigLoadError::Write {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    })?;
+
+    file.write_all(contents.as_bytes())
+        .map_err(|error| ConfigLoadError::Write {
+            path: path.to_path_buf(),
+            message: error.to_string(),
+        })
+}
+
+fn default_config_yaml() -> Result<String, serde_saphyr::ser_error::Error> {
+    let config = Config::default();
+    let mut output = String::from("# RustEyes config\n");
+    output.push_str(&serde_saphyr::to_string(&SerializableConfig::from_config(
+        &config,
+    ))?);
+    Ok(output)
+}
+
 fn config_location(path: Option<&Path>) -> String {
     path.map_or_else(
         || String::from("config YAML"),
         |path| path.display().to_string(),
     )
+}
+
+#[derive(Serialize)]
+struct SerializableConfig<'a> {
+    breaks: SerializableBreaks<'a>,
+    disable_presets: Vec<SerializableDuration>,
+    lock: SerializableLockConfig<'a>,
+    sync: SerializableSyncConfig<'a>,
+}
+
+impl<'a> SerializableConfig<'a> {
+    fn from_config(config: &'a Config) -> Self {
+        Self {
+            breaks: SerializableBreaks::from_config(&config.breaks),
+            disable_presets: config
+                .disable_presets
+                .iter()
+                .copied()
+                .map(SerializableDuration)
+                .collect(),
+            lock: SerializableLockConfig::from_config(&config.lock),
+            sync: SerializableSyncConfig::from_config(&config.sync),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct SerializableBreaks<'a> {
+    after_active: SerializableDuration,
+    reset_after_idle: Option<SerializableDuration>,
+    types: BTreeMap<&'a str, SerializableBreakType<'a>>,
+}
+
+impl<'a> SerializableBreaks<'a> {
+    fn from_config(breaks: &'a Breaks) -> Self {
+        Self {
+            after_active: SerializableDuration(breaks.after_active),
+            reset_after_idle: breaks.reset_after_idle.map(SerializableDuration),
+            types: breaks
+                .types
+                .iter()
+                .map(|(name, break_type)| {
+                    (
+                        name.as_str(),
+                        SerializableBreakType::from_config(break_type),
+                    )
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct SerializableBreakType<'a> {
+    interval: usize,
+    duration: SerializableDuration,
+    messages: &'a [String],
+    autolock: bool,
+}
+
+impl<'a> SerializableBreakType<'a> {
+    fn from_config(break_type: &'a BreakTypeConfig) -> Self {
+        Self {
+            interval: break_type.interval,
+            duration: SerializableDuration(break_type.duration),
+            messages: &break_type.messages,
+            autolock: break_type.autolock,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct SerializableLockConfig<'a> {
+    command: Option<&'a [String]>,
+}
+
+impl<'a> SerializableLockConfig<'a> {
+    fn from_config(lock: &'a LockConfig) -> Self {
+        Self {
+            command: lock.command.as_deref(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct SerializableSyncConfig<'a> {
+    enabled: bool,
+    shared_secret: Option<&'a str>,
+}
+
+impl<'a> SerializableSyncConfig<'a> {
+    fn from_config(sync: &'a SyncConfig) -> Self {
+        Self {
+            enabled: sync.enabled,
+            shared_secret: sync.shared_secret.as_ref().map(SharedSecret::as_str),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SerializableDuration(Duration);
+
+impl Serialize for SerializableDuration {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&humantime::format_duration(self.0).to_string())
+    }
 }
 
 #[cfg(test)]

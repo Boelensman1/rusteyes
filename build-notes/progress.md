@@ -14,6 +14,9 @@
   `RUSTEYES_CONFIG` or the XDG config path, partially overlaid onto defaults,
   parsed with string-only human-readable durations, and validated. Follow-up
   cleanup made path resolution more explicit and simplified empty YAML handling.
+- Completed `default-config-file`: missing implicit XDG or home config files
+  are created on startup from the typed default config, while explicit
+  `RUSTEYES_CONFIG` paths remain strict and missing explicit files still fail.
 - Completed `scheduler-break-slots`: an internal deterministic scheduler now
   consumes active-time durations, advances break slots, picks the due break type
   with the largest interval, and holds a pending break until it is finished.
@@ -388,6 +391,9 @@
 - `make check` passes after the project rename to RustEyes.
 - `make -B macos-app-build` passes after adding pre-break notification
   countdown updates.
+- `nix develop --command cargo test --lib config::tests` passes after adding
+  default config file creation.
+- `make check` passes after adding default config file creation.
 - On unsupported targets, `make run` prints
   `rusteyes: no backend is available for <platform> yet` and exits non-zero.
 - Manual X11 overlay, input-blocking, overlay UI, and trace-output verification

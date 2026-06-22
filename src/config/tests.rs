@@ -2,7 +2,8 @@ use super::{
     BreakTypeConfig, Config, ConfigError, ConfigLoadError, DEFAULT_BREAK_AFTER_ACTIVE,
     DEFAULT_BREAK_RESET_AFTER_IDLE, DEFAULT_DISABLE_PRESETS, DEFAULT_LONG_BREAK_DURATION,
     DEFAULT_LONG_BREAK_INTERVAL, DEFAULT_SHORT_BREAK_DURATION, DEFAULT_SHORT_BREAK_INTERVAL,
-    LockConfig, MIN_SYNC_SHARED_SECRET_LENGTH, SharedSecret, SyncConfig,
+    LockConfig, MIN_SYNC_SHARED_SECRET_LENGTH, SharedSecret, SyncConfig, default_config_yaml,
+    write_default_config,
 };
 use std::error::Error;
 use std::fs;
@@ -64,6 +65,15 @@ fn default_config_uses_expected_sync_settings() {
 
     assert!(!config.sync.enabled);
     assert!(config.sync.shared_secret.is_none());
+}
+
+#[test]
+fn default_config_yaml_matches_typed_defaults() -> Result<(), Box<dyn Error>> {
+    let yaml = default_config_yaml()?;
+    let config = Config::from_yaml_str(&yaml)?;
+
+    assert_eq!(config, Config::default());
+    Ok(())
 }
 
 #[test]
@@ -340,13 +350,39 @@ fn rejects_short_sync_shared_secret() {
 }
 
 #[test]
-fn load_uses_defaults_when_implicit_config_is_missing() -> Result<(), Box<dyn Error>> {
+fn load_writes_defaults_when_implicit_config_is_missing() -> Result<(), Box<dyn Error>> {
     let test_dir = TestDir::new("missing-implicit")?;
     let xdg_home = test_dir.path().join("xdg");
+    let config_path = xdg_home.join("rusteyes").join("config.yaml");
 
     let config = Config::load_from_env(None, Some(xdg_home.into_os_string()), None)?;
+    let written = fs::read_to_string(config_path)?;
 
     assert_eq!(config, Config::default());
+    assert_eq!(written, default_config_yaml()?);
+    assert_eq!(Config::from_yaml_str(&written)?, Config::default());
+    Ok(())
+}
+
+#[test]
+fn load_writes_defaults_to_home_config_path_without_xdg_home() -> Result<(), Box<dyn Error>> {
+    let test_dir = TestDir::new("missing-home-implicit")?;
+    let config_path = test_dir
+        .path()
+        .join(".config")
+        .join("rusteyes")
+        .join("config.yaml");
+
+    let config = Config::load_from_env(
+        None,
+        None,
+        Some(test_dir.path().to_path_buf().into_os_string()),
+    )?;
+    let written = fs::read_to_string(config_path)?;
+
+    assert_eq!(config, Config::default());
+    assert_eq!(written, default_config_yaml()?);
+    assert_eq!(Config::from_yaml_str(&written)?, Config::default());
     Ok(())
 }
 
@@ -1065,6 +1101,27 @@ fn explicit_config_path_must_exist() -> Result<(), Box<dyn Error>> {
     assert!(matches!(
         error,
         ConfigLoadError::Read { path, .. } if path == missing_path
+    ));
+    assert!(!missing_path.exists());
+    Ok(())
+}
+
+#[test]
+fn implicit_config_write_failures_are_reported() -> Result<(), Box<dyn Error>> {
+    let test_dir = TestDir::new("write-failure")?;
+    let xdg_home = test_dir.path().join("xdg");
+    let config_parent = xdg_home.join("rusteyes");
+    write_file(&config_parent, "not a directory")?;
+    let config_path = config_parent.join("config.yaml");
+
+    let error = match write_default_config(&config_path) {
+        Ok(()) => panic!("expected config write error"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        ConfigLoadError::Write { path, .. } if path == config_path
     ));
     Ok(())
 }
