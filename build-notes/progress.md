@@ -218,6 +218,8 @@
   configures `notify-rust` with that bundle id before runtime startup, and
   launches the app bundle from `make run` on macOS so notifications no longer
   trigger the `use_default` application lookup.
+  Later follow-up refinement adds a logo-derived Linux/macOS tray icon and a
+  macOS app bundle icon copied into `RustEyes.app`.
 - Completed `synced-lock-after-break`: local lock-after-current-break requests
   now broadcast authenticated sync events, inbound authenticated lock-after
   requests mark the active local break for locking without rebroadcasting, and

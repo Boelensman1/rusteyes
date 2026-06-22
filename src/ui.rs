@@ -181,7 +181,10 @@ mod app {
     use tray_icon::menu::{MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
     use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
-    const ICON_SIZE: u32 = 16;
+    const ICON_SIZE: u32 = 64;
+    const ICON_BYTE_LEN: usize = 64 * 64 * 4;
+    const TRAY_ICON_RGBA: &[u8; ICON_BYTE_LEN] =
+        include_bytes!("../package/icons/rusteyes-tray.rgba");
     const APP_NAME: &str = "RustEyes";
     const TOOLTIP: &str = "RustEyes";
     const ACTIVE_TIME_MENU_ID: &str = "active-time";
@@ -488,22 +491,7 @@ mod app {
     }
 
     fn rusteyes_icon() -> Result<Icon, UiError> {
-        let mut rgba = Vec::with_capacity((ICON_SIZE * ICON_SIZE * 4) as usize);
-
-        for y in 0..ICON_SIZE {
-            for x in 0..ICON_SIZE {
-                let edge = x == 0 || y == 0 || x == ICON_SIZE - 1 || y == ICON_SIZE - 1;
-                let pupil = (6..=9).contains(&x) && (6..=9).contains(&y);
-                let color = if edge || pupil {
-                    [36, 38, 44, 255]
-                } else {
-                    [236, 241, 245, 255]
-                };
-                rgba.extend_from_slice(&color);
-            }
-        }
-
-        Icon::from_rgba(rgba, ICON_SIZE, ICON_SIZE)
+        Icon::from_rgba(TRAY_ICON_RGBA.to_vec(), ICON_SIZE, ICON_SIZE)
             .map_err(|error| UiError::tray_icon(error.to_string()))
     }
 
@@ -670,6 +658,11 @@ mod app {
                 active_time_menu_text(Duration::from_secs(65)),
                 "Active time: 1m 5s"
             );
+        }
+
+        #[test]
+        fn tray_icon_asset_matches_declared_size() {
+            assert_eq!(TRAY_ICON_RGBA.len(), ICON_BYTE_LEN);
         }
     }
 }

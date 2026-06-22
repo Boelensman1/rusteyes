@@ -30,6 +30,12 @@
 - The macOS helper path keeps `RUSTEYES_MACOS_HELPER` as the highest-precedence
   override, then prefers the helper copied into the app bundle, then falls back
   to the existing SwiftPM debug helper.
+- Follow-up refinement: derive tray/menu-bar and app bundle icons from the
+  supplied RustEyes logo without adding a runtime image decoding dependency.
+- The tray/menu-bar icon is checked in as a 64x64 RGBA asset loaded with
+  `include_bytes!`; the source PNG is kept under `package/icons`.
+- The macOS app icon is checked in as `package/macos/RustEyes.icns` and copied
+  into the local app bundle by `make macos-app-build`.
 
 ## Behavior
 
@@ -49,6 +55,10 @@
 - On macOS, pre-break notifications use the RustEyes app bundle identity rather
   than the `use_default` placeholder lookup from the default
   `mac-notification-sys` path.
+- Linux/X11 and macOS tray/menu-bar surfaces now use the logo-derived icon
+  instead of the temporary generated placeholder.
+- The macOS app bundle declares `CFBundleIconFile` so Launch Services can use
+  the RustEyes app icon.
 
 ## Commands
 

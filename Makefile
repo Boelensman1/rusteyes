@@ -17,6 +17,7 @@ MACOS_APP_DIR := target/macos/RustEyes.app
 MACOS_APP_CONTENTS := $(MACOS_APP_DIR)/Contents
 MACOS_APP_BIN := $(MACOS_APP_CONTENTS)/MacOS/rusteyes
 MACOS_APP_HELPER := $(MACOS_APP_CONTENTS)/Resources/rusteyes-macos-helper
+MACOS_APP_ICON := package/macos/RustEyes.icns
 MACOS_APP_PLIST := package/macos/Info.plist
 LSREGISTER := /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 ifeq ($(UNAME_S),Darwin)
@@ -80,13 +81,14 @@ macos-app-build: $(MACOS_APP_BIN)
 target/debug/rusteyes: $(CARGO_SOURCES)
 	$(CARGO_RUN) build
 
-$(MACOS_APP_BIN): target/debug/rusteyes $(MACOS_HELPER_BIN) $(MACOS_APP_PLIST) Makefile
+$(MACOS_APP_BIN): target/debug/rusteyes $(MACOS_HELPER_BIN) $(MACOS_APP_ICON) $(MACOS_APP_PLIST) Makefile
 ifeq ($(UNAME_S),Darwin)
 	rm -rf $(MACOS_APP_DIR)
 	mkdir -p $(MACOS_APP_CONTENTS)/MacOS $(MACOS_APP_CONTENTS)/Resources
 	cp $(MACOS_APP_PLIST) $(MACOS_APP_CONTENTS)/Info.plist
 	cp target/debug/rusteyes $(MACOS_APP_BIN)
 	cp $(MACOS_HELPER_BIN) $(MACOS_APP_HELPER)
+	cp $(MACOS_APP_ICON) $(MACOS_APP_CONTENTS)/Resources/RustEyes.icns
 	chmod +x $(MACOS_APP_BIN) $(MACOS_APP_HELPER)
 	codesign --force --deep --sign - $(MACOS_APP_DIR)
 	$(LSREGISTER) -f $(MACOS_APP_DIR)

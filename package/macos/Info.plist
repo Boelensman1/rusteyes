@@ -10,6 +10,8 @@
 	<string>rusteyes</string>
 	<key>CFBundleIdentifier</key>
 	<string>dev.rusteyes.RustEyes</string>
+	<key>CFBundleIconFile</key>
+	<string>RustEyes.icns</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
