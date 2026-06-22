@@ -27,6 +27,7 @@ pub(crate) fn run() -> Result<(), crate::Error> {
         breaks,
         disable_presets,
         lock,
+        startup: _startup,
         sync,
     } = config;
     let ui_config = UiConfig::from_config(&breaks, &disable_presets);
@@ -41,11 +42,13 @@ pub(crate) fn run() -> Result<(), crate::Error> {
 #[cfg(target_os = "macos")]
 pub(crate) fn run() -> Result<(), crate::Error> {
     let config = Config::load()?;
+    crate::macos_login_item::apply_config(config.startup);
     let sync_compatibility = sync_compatibility_fingerprint(&config)?;
     let Config {
         breaks,
         disable_presets,
         lock,
+        startup: _startup,
         sync,
     } = config;
     let ui_config = UiConfig::from_config(&breaks, &disable_presets);

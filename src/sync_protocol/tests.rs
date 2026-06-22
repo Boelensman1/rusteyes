@@ -3,7 +3,7 @@ use super::{
     SyncMessage, SyncProtocolError, TransportControlFrame, authenticate_message,
     decode_authenticated, encode_authenticated, encode_hex,
 };
-use crate::config::{BreakTypeConfig, Config, LockConfig, SharedSecret};
+use crate::config::{BreakTypeConfig, Config, LockConfig, SharedSecret, StartupConfig};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -168,6 +168,17 @@ fn compatibility_fingerprint_ignores_sync_config_fields() -> Result<(), Box<dyn 
     right.sync.shared_secret = Some(SharedSecret::new(String::from(
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     )));
+
+    assert_eq!(fingerprint_for(&left)?, fingerprint_for(&right)?);
+    Ok(())
+}
+
+#[test]
+fn compatibility_fingerprint_ignores_startup_config() -> Result<(), Box<dyn Error>> {
+    let mut left = compatibility_config();
+    let mut right = compatibility_config();
+    left.startup.open_at_login = Some(true);
+    right.startup.open_at_login = Some(false);
 
     assert_eq!(fingerprint_for(&left)?, fingerprint_for(&right)?);
     Ok(())
@@ -485,6 +496,7 @@ fn compatibility_config() -> Config {
         },
         disable_presets: vec![Duration::from_secs(30)],
         lock: LockConfig::default(),
+        startup: StartupConfig::default(),
         sync: crate::config::SyncConfig::default(),
     }
 }

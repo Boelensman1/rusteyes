@@ -2,7 +2,9 @@ use super::{
     DaemonRuntime, RuntimeInput, RuntimeSync, SyncEventBroadcaster, run_with_event_sources,
 };
 use crate::backend::{BackendActor, BackendCommand, DisableRequest, RuntimeEvent};
-use crate::config::{BreakTypeConfig, Breaks, Config, ConfigError, LockConfig, SyncConfig};
+use crate::config::{
+    BreakTypeConfig, Breaks, Config, ConfigError, LockConfig, StartupConfig, SyncConfig,
+};
 use crate::scheduler::{BreakOrigin, BreakSchedule, ScheduledBreak};
 use crate::sync_protocol::{PeerId, SyncEvent};
 use crate::sync_transport::{PeerRejectionReason, SyncTransportError, SyncTransportEvent};
@@ -1579,6 +1581,7 @@ fn test_config() -> Config {
         },
         disable_presets: vec![Duration::from_secs(30)],
         lock: LockConfig::default(),
+        startup: StartupConfig::default(),
         sync: SyncConfig::default(),
     }
 }

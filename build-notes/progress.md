@@ -17,6 +17,10 @@
 - Completed `default-config-file`: missing implicit XDG or home config files
   are created on startup from the typed default config, while explicit
   `RUSTEYES_CONFIG` paths remain strict and missing explicit files still fail.
+- Completed `macos-login-item`: macOS builds can optionally register or
+  unregister RustEyes as the main-app Login Item through
+  `startup.open_at_login`, using `smappservice-rs` and leaving startup state
+  unmanaged when the config key is omitted or null.
 - Completed `scheduler-break-slots`: an internal deterministic scheduler now
   consumes active-time durations, advances break slots, picks the due break type
   with the largest interval, and holds a pending break until it is finished.
@@ -394,6 +398,12 @@
 - `nix develop --command cargo test --lib config::tests` passes after adding
   default config file creation.
 - `make check` passes after adding default config file creation.
+- `make check` passes after adding macOS Login Item integration.
+- `make -B macos-app-build` passes after adding macOS Login Item integration.
+- `plutil -lint target/macos/RustEyes.app/Contents/Info.plist` passes after
+  adding macOS Login Item integration.
+- `codesign -dv target/macos/RustEyes.app` reports ad-hoc signature identity
+  `dev.rusteyes.RustEyes` after adding macOS Login Item integration.
 - On unsupported targets, `make run` prints
   `rusteyes: no backend is available for <platform> yet` and exits non-zero.
 - Manual X11 overlay, input-blocking, overlay UI, and trace-output verification

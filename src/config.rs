@@ -33,6 +33,7 @@ pub(crate) struct Config {
     pub(crate) breaks: Breaks,
     pub(crate) disable_presets: Vec<Duration>,
     pub(crate) lock: LockConfig,
+    pub(crate) startup: StartupConfig,
     pub(crate) sync: SyncConfig,
 }
 
@@ -138,6 +139,7 @@ impl Default for Config {
             breaks: Breaks::default(),
             disable_presets: DEFAULT_DISABLE_PRESETS.to_vec(),
             lock: LockConfig::default(),
+            startup: StartupConfig::default(),
             sync: SyncConfig::default(),
         }
     }
@@ -364,6 +366,11 @@ impl SyncConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct StartupConfig {
+    pub(crate) open_at_login: Option<bool>,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct SharedSecret(String);
 
@@ -526,6 +533,7 @@ struct PartialConfig {
     breaks: Option<PartialBreaks>,
     disable_presets: Option<Vec<ConfigDuration>>,
     lock: Option<PartialLockConfig>,
+    startup: Option<PartialStartupConfig>,
     sync: Option<PartialSyncConfig>,
 }
 
@@ -544,6 +552,10 @@ impl PartialConfig {
 
         if let Some(lock) = self.lock {
             lock.apply_to(&mut config.lock);
+        }
+
+        if let Some(startup) = self.startup {
+            startup.apply_to(&mut config.startup);
         }
 
         if let Some(sync) = self.sync {
@@ -662,6 +674,18 @@ struct PartialLockConfig {
 impl PartialLockConfig {
     fn apply_to(self, lock: &mut LockConfig) {
         lock.command = self.command;
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PartialStartupConfig {
+    open_at_login: Option<bool>,
+}
+
+impl PartialStartupConfig {
+    fn apply_to(self, startup: &mut StartupConfig) {
+        startup.open_at_login = self.open_at_login;
     }
 }
 
@@ -816,6 +840,7 @@ struct SerializableConfig<'a> {
     breaks: SerializableBreaks<'a>,
     disable_presets: Vec<SerializableDuration>,
     lock: SerializableLockConfig<'a>,
+    startup: SerializableStartupConfig,
     sync: SerializableSyncConfig<'a>,
 }
 
@@ -830,6 +855,7 @@ impl<'a> SerializableConfig<'a> {
                 .map(SerializableDuration)
                 .collect(),
             lock: SerializableLockConfig::from_config(&config.lock),
+            startup: SerializableStartupConfig::from_config(config.startup),
             sync: SerializableSyncConfig::from_config(&config.sync),
         }
     }
@@ -889,6 +915,19 @@ impl<'a> SerializableLockConfig<'a> {
     fn from_config(lock: &'a LockConfig) -> Self {
         Self {
             command: lock.command.as_deref(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct SerializableStartupConfig {
+    open_at_login: Option<bool>,
+}
+
+impl SerializableStartupConfig {
+    const fn from_config(startup: StartupConfig) -> Self {
+        Self {
+            open_at_login: startup.open_at_login,
         }
     }
 }

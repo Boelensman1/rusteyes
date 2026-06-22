@@ -58,7 +58,8 @@ RustEyes is an as-simple-as-possible SafeEyes replacement focused on reliable br
 - X11 backend is the first backend because it gives the core blanking, input capture, and activity behavior quickly.
 - macOS uses a small Swift/AppKit/CoreGraphics helper for macOS-specific APIs, controlled by the Rust daemon over local IPC.
 - Tray and notification UI should try a cross-platform Rust crate first, with platform-specific fallback if needed.
-- Run as a per-user service: systemd user service on Linux and launchd agent on macOS.
+- Run at user login: systemd user service on Linux, and a main-app Login Item
+  on macOS unless RustEyes later needs LaunchAgent restart policy.
 
 ## Configuration and UI
 
@@ -76,6 +77,8 @@ RustEyes is an as-simple-as-possible SafeEyes replacement focused on reliable br
   - disable breaks for 3 hours
   - disable breaks until restart
 - Disable actions apply across authenticated synced peers.
+- macOS startup can be controlled with `startup.open_at_login`; omit it or set
+  it to `null` to leave the current Login Item state unchanged.
 
 ## Build order
 
@@ -140,7 +143,8 @@ step note when implementation begins.
 
 Deferred later work:
 
-1. macOS launchd integration.
+1. macOS LaunchAgent investigation if the app later needs restart policy beyond
+   the main-app Login Item.
 2. Wayland investigation.
 3. Idle reset behavior: in a future increment, add idle-duration tracking that
    resets accumulated active time after enough idle time, plus a config key such

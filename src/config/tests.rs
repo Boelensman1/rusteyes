@@ -2,8 +2,8 @@ use super::{
     BreakTypeConfig, Config, ConfigError, ConfigLoadError, DEFAULT_BREAK_AFTER_ACTIVE,
     DEFAULT_BREAK_RESET_AFTER_IDLE, DEFAULT_DISABLE_PRESETS, DEFAULT_LONG_BREAK_DURATION,
     DEFAULT_LONG_BREAK_INTERVAL, DEFAULT_SHORT_BREAK_DURATION, DEFAULT_SHORT_BREAK_INTERVAL,
-    LockConfig, MIN_SYNC_SHARED_SECRET_LENGTH, SharedSecret, SyncConfig, default_config_yaml,
-    write_default_config,
+    LockConfig, MIN_SYNC_SHARED_SECRET_LENGTH, SharedSecret, StartupConfig, SyncConfig,
+    default_config_yaml, write_default_config,
 };
 use std::error::Error;
 use std::fs;
@@ -65,6 +65,14 @@ fn default_config_uses_expected_sync_settings() {
 
     assert!(!config.sync.enabled);
     assert!(config.sync.shared_secret.is_none());
+}
+
+#[test]
+fn default_config_leaves_startup_state_unmanaged() {
+    let config = Config::default();
+
+    assert_eq!(config.startup, StartupConfig::default());
+    assert_eq!(config.startup.open_at_login, None);
 }
 
 #[test]
@@ -435,6 +443,7 @@ breaks:
     assert_eq!(config.breaks.types, Config::default().breaks.types);
     assert_eq!(config.disable_presets, DEFAULT_DISABLE_PRESETS);
     assert_eq!(config.lock, LockConfig::default());
+    assert_eq!(config.startup, StartupConfig::default());
     assert_eq!(config.sync, SyncConfig::default());
     Ok(())
 }
@@ -640,6 +649,41 @@ lock:
     )?;
 
     assert_eq!(config.lock.command, None);
+    Ok(())
+}
+
+#[test]
+fn yaml_accepts_startup_login_item_config() -> Result<(), Box<dyn Error>> {
+    let config = Config::from_yaml_str(
+        r"
+startup:
+  open_at_login: true
+",
+    )?;
+
+    assert_eq!(config.startup.open_at_login, Some(true));
+
+    let config = Config::from_yaml_str(
+        r"
+startup:
+  open_at_login: false
+",
+    )?;
+
+    assert_eq!(config.startup.open_at_login, Some(false));
+    Ok(())
+}
+
+#[test]
+fn yaml_accepts_null_startup_login_item_config_as_unmanaged() -> Result<(), Box<dyn Error>> {
+    let config = Config::from_yaml_str(
+        r"
+startup:
+  open_at_login: null
+",
+    )?;
+
+    assert_eq!(config.startup.open_at_login, None);
     Ok(())
 }
 
@@ -995,6 +1039,18 @@ fn yaml_rejects_unknown_sync_fields() {
         r"
 sync:
   peer_id: workstation
+",
+    ));
+
+    assert!(matches!(error, ConfigLoadError::Parse { .. }));
+}
+
+#[test]
+fn yaml_rejects_unknown_startup_fields() {
+    let error = expected_config_error(Config::from_yaml_str(
+        r"
+startup:
+  launch_agent: true
 ",
     ));
 

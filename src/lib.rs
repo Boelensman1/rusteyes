@@ -7,6 +7,8 @@ mod lock_command;
 
 #[cfg(target_os = "macos")]
 mod macos_helper;
+#[cfg(target_os = "macos")]
+mod macos_login_item;
 mod runtime;
 pub(crate) mod scheduler;
 mod sync_discovery;
