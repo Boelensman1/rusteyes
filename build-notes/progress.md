@@ -86,6 +86,13 @@
   macOS activity traces are not blocked before reaching the terminal. Later
   follow-up cleanup added an info-level startup event after logging
   initialization so explicit `RUST_LOG` runs show when the daemon starts.
+- Completed `service-log-delivery`: the binary logger now writes tracing events
+  through a dup of the inherited stderr (fd 2) instead of reopening
+  `/dev/stderr`, so logs reach whatever a service manager attaches — the
+  journald socket under systemd (previously dropped with `ENXIO`) and the
+  launchd `StandardErrorPath` file (previously overwritten at offset 0) — while
+  still bypassing the global Rust stderr lock. `logLevel`/`RUST_LOG` now has a
+  visible effect under both service managers.
 - Added `test-break-config`: `test-configs/ten-second-break.yaml` starts a 10
   second test break after 10 seconds of active time for manual testing.
 - Completed `manual-break-control`: runtime events can now start configured
