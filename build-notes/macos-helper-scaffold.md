@@ -5,9 +5,9 @@
 - Added a standalone SwiftPM executable package for the macOS helper at
   `helpers/macos-helper`.
 - The scaffold initially compiled as a stub binary named
-  `resteyes-macos-helper`; later IPC work replaced the placeholder output with
+  `rusteyes-macos-helper`; later IPC work replaced the placeholder output with
   the helper protocol loop.
-- Added `helpers/macos-helper/.build/debug/resteyes-macos-helper` as the real
+- Added `helpers/macos-helper/.build/debug/rusteyes-macos-helper` as the real
   Make target, with `make macos-helper-build` as its convenience alias. It
   builds the helper on Darwin and skips successfully on other operating
   systems.
@@ -19,8 +19,8 @@
 ## Decisions
 
 - SwiftPM is the build source of truth for the helper scaffold.
-- The package product is named `resteyes-macos-helper`; the Swift target uses
-  the identifier-friendly module name `ResteyesMacOSHelper`.
+- The package product is named `rusteyes-macos-helper`; the Swift target uses
+  the identifier-friendly module name `RustEyesMacOSHelper`.
 - The helper build is not part of `make check` yet because the project should
   keep Rust checks working on non-macOS systems.
 - `make macos-helper-build` intentionally uses the system Swift/Xcode toolchain
@@ -34,7 +34,7 @@
 - `make macos-helper-build` initially failed in the sandbox because SwiftPM
   could not write user Swift/Clang caches.
 - `make macos-helper-build` passed with approved cache access on macOS.
-- `make -B helpers/macos-helper/.build/debug/resteyes-macos-helper` passed with
+- `make -B helpers/macos-helper/.build/debug/rusteyes-macos-helper` passed with
   approved cache access on macOS.
 - `make macos-helper-build` reported the helper alias up to date after the
   artifact target existed.

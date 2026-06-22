@@ -2,13 +2,13 @@
 
 ## Goal
 
-- Discover authenticated Resteyes peers on the local network before adding
+- Discover authenticated RustEyes peers on the local network before adding
   peer transport or runtime sync behavior.
 
 ## Changes
 
 - Added crate-internal mDNS/DNS-SD discovery using the `mdns-sd` crate.
-- Added a Resteyes sync service type, `_resteyes-sync._tcp.local.`, with
+- Added a RustEyes sync service type, `_rusteyes-sync._tcp.local.`, with
   peer-specific instance and host names derived from the transient `PeerId`.
 - Added authenticated TXT metadata for discovery protocol version, transient
   peer ID, advertised transport port, and HMAC-SHA256 over that metadata using
@@ -16,7 +16,7 @@
 - Added conversion from resolved mDNS services into crate-internal discovered
   peer records with peer ID, socket address, and observation time.
 - Initially added a temporary discovery smoke mode for manual verification:
-  `RESTEYES_DISCOVERY_SMOKE=1 RUST_LOG=info RESTEYES_CONFIG=test-configs/sync-discovery.yaml make run`.
+  `RUSTEYES_DISCOVERY_SMOKE=1 RUST_LOG=info RUSTEYES_CONFIG=test-configs/sync-discovery.yaml make run`.
   It starts discovery without the platform backend, logs that it is searching,
   and logs each authenticated peer it finds.
 - Added trace logging inside discovery startup and peer discovery so the same
@@ -39,8 +39,8 @@
 ## Verification
 
 - `make check`
-- A bounded local two-process smoke run printed `started Resteyes LAN discovery
-  smoke test` from both instances and `found authenticated Resteyes peer` for
+- A bounded local two-process smoke run printed `started RustEyes LAN discovery
+  smoke test` from both instances and `found authenticated RustEyes peer` for
   both advertised peers.
 
 ## Follow-up

@@ -1,5 +1,5 @@
 {
-  description = "Resteyes Rust development environment";
+  description = "RustEyes Rust development environment";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -45,7 +45,7 @@
         in
         {
           default = rustPlatform.buildRustPackage {
-            pname = "resteyes";
+            pname = "rusteyes";
             version = "0.1.0";
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;

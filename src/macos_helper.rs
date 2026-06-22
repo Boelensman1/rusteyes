@@ -18,9 +18,9 @@ use std::time::{Duration, Instant};
 use tracing::{trace, warn};
 
 const PROTOCOL_VERSION: u16 = 6;
-const HELPER_PATH_ENV: &str = "RESTEYES_MACOS_HELPER";
-const DEVELOPMENT_HELPER_PATH: &str = "helpers/macos-helper/.build/debug/resteyes-macos-helper";
-const BUNDLED_HELPER_PATH_FROM_EXE: &str = "../Resources/resteyes-macos-helper";
+const HELPER_PATH_ENV: &str = "RUSTEYES_MACOS_HELPER";
+const DEVELOPMENT_HELPER_PATH: &str = "helpers/macos-helper/.build/debug/rusteyes-macos-helper";
+const BUNDLED_HELPER_PATH_FROM_EXE: &str = "../Resources/rusteyes-macos-helper";
 const HELPER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const HELPER_SHUTDOWN_POLL: Duration = Duration::from_millis(20);
 const ACTIVITY_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -39,7 +39,7 @@ pub(crate) struct MacOSHelperBackend {
 impl MacOSHelperBackend {
     pub(crate) fn spawn(lock_config: LockConfig) -> Result<BackendActor, MacOSHelperError> {
         BackendActor::spawn(
-            "resteyes-macos-backend",
+            "rusteyes-macos-backend",
             move || Self::connect(lock_config),
             |mut backend, command_receiver, event_sender| {
                 backend.run_actor(&command_receiver, &event_sender);
@@ -758,7 +758,7 @@ impl PermissionPreflight {
         let plural = if missing.len() == 1 { "" } else { "s" };
         let missing_permissions = permission_list(&missing);
         Err(MacOSHelperError::new(format!(
-            "missing macOS privacy permission{plural}: {missing_permissions}. Open System Settings > Privacy & Security and grant the listed permission{plural} to Resteyes, then restart Resteyes. Development builds may appear as resteyes-macos-helper."
+            "missing macOS privacy permission{plural}: {missing_permissions}. Open System Settings > Privacy & Security and grant the listed permission{plural} to RustEyes, then restart RustEyes. Development builds may appear as rusteyes-macos-helper."
         )))
     }
 }
@@ -886,7 +886,7 @@ fn wait_for_helper_exit_or_kill(child: &mut Child) -> Result<(), MacOSHelperErro
 fn spawn_stderr_mirror(path: &Path, stderr: ChildStderr) {
     let description = path.display().to_string();
     if let Err(error) = thread::Builder::new()
-        .name(String::from("resteyes-macos-helper-stderr"))
+        .name(String::from("rusteyes-macos-helper-stderr"))
         .spawn(move || mirror_helper_stderr(&description, stderr))
     {
         warn!(%error, helper = %path.display(), "failed to start helper stderr mirror");
@@ -904,14 +904,14 @@ where
             Ok(line) => {
                 let _ = writeln!(
                     stderr,
-                    "resteyes: macOS helper stderr ({description}): {line}"
+                    "rusteyes: macOS helper stderr ({description}): {line}"
                 );
                 trace!(helper = %description, %line, "macOS helper stderr");
             }
             Err(error) => {
                 let _ = writeln!(
                     stderr,
-                    "resteyes: failed to read macOS helper stderr ({description}): {error}"
+                    "rusteyes: failed to read macOS helper stderr ({description}): {error}"
                 );
                 trace!(helper = %description, %error, "failed to read macOS helper stderr");
                 break;
@@ -1017,7 +1017,7 @@ mod tests {
         assert!(!message.contains("Input Monitoring."));
         assert!(message.contains("System Settings > Privacy & Security"));
         assert!(message.contains("listed permission"));
-        assert!(message.contains("resteyes-macos-helper"));
+        assert!(message.contains("rusteyes-macos-helper"));
     }
 
     #[test]
@@ -1036,7 +1036,7 @@ mod tests {
         assert!(!message.contains("Accessibility."));
         assert!(message.contains("System Settings > Privacy & Security"));
         assert!(message.contains("listed permission"));
-        assert!(message.contains("resteyes-macos-helper"));
+        assert!(message.contains("rusteyes-macos-helper"));
     }
 
     #[test]
@@ -1054,7 +1054,7 @@ mod tests {
         assert!(message.contains("Accessibility and Input Monitoring"));
         assert!(message.contains("missing macOS privacy permissions"));
         assert!(message.contains("listed permissions"));
-        assert!(message.contains("restart Resteyes"));
+        assert!(message.contains("restart RustEyes"));
     }
 
     #[test]

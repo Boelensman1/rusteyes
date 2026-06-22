@@ -10,7 +10,7 @@ use std::time::Duration;
 const PROTOCOL_VERSION: u8 = 2;
 const PEER_ID_BYTES: usize = 16;
 const MAC_BYTES: usize = 32;
-const COMPATIBILITY_FINGERPRINT_DOMAIN: &[u8] = b"resteyes-sync-config-compatibility-v1";
+const COMPATIBILITY_FINGERPRINT_DOMAIN: &[u8] = b"rusteyes-sync-config-compatibility-v1";
 
 type HmacSha256 = Hmac<Sha256>;
 

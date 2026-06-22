@@ -10,7 +10,7 @@
 - Added `src/backend.rs` with the internal `Backend` trait, `RuntimeEvent`
   input enum, backend command enum, and initial `NoopBackend` implementation.
 - Moved runtime input events out of `runtime.rs` and into the backend module.
-- Kept `resteyes::run()` wired to `NoopBackend`, which still shuts down
+- Kept `rusteyes::run()` wired to `NoopBackend`, which still shuts down
   immediately.
 - Added backend commands to start a break, clear a break, and request local
   lock through one command handler.

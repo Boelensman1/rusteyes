@@ -19,7 +19,7 @@ const WRONG_SHARED_SECRET: &str = "fedcba9876543210fedcba9876543210";
 
 #[test]
 fn service_type_advertises_tcp_transport() {
-    assert_eq!(SERVICE_TYPE, "_resteyes-sync._tcp.local.");
+    assert_eq!(SERVICE_TYPE, "_rusteyes-sync._tcp.local.");
 }
 
 #[test]

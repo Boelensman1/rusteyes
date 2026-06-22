@@ -7,7 +7,7 @@ import Foundation
 private let protocolVersion = 6
 private let directInvocationExitCode: Int32 = 2
 private let directInvocationMessage =
-    "resteyes-macos-helper is an internal Resteyes helper. Start Resteyes with the main resteyes binary; do not run this helper directly."
+    "rusteyes-macos-helper is an internal RustEyes helper. Start RustEyes with the main rusteyes binary; do not run this helper directly."
 private let anyInputEventType = CGEventType(rawValue: UInt32.max)!
 private let defaultBreakMessage = "Take a break"
 private let lockControlLabel = "Lock after break"
@@ -35,7 +35,7 @@ private enum ProtocolError: Error, CustomStringConvertible {
         case .invalidActivitySample:
             return "invalid activity sample"
         case .inputBlockingUnavailable:
-            return "failed to create macOS input event tap; grant Accessibility and Input Monitoring permissions to Resteyes"
+            return "failed to create macOS input event tap; grant Accessibility and Input Monitoring permissions to RustEyes"
         case .lockScreenUnavailable(let reason):
             return "failed to lock macOS session: \(reason)"
         }
@@ -969,7 +969,7 @@ private func runHelper() {
             exit(EXIT_SUCCESS)
         }
     }
-    protocolThread.name = "resteyes-macos-helper-protocol"
+    protocolThread.name = "rusteyes-macos-helper-protocol"
     protocolThread.start()
 
     RunLoop.main.run()

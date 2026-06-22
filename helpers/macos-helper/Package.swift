@@ -2,20 +2,20 @@
 import PackageDescription
 
 let package = Package(
-    name: "resteyes-macos-helper",
+    name: "rusteyes-macos-helper",
     platforms: [
         .macOS(.v13)
     ],
     products: [
         .executable(
-            name: "resteyes-macos-helper",
-            targets: ["ResteyesMacOSHelper"]
+            name: "rusteyes-macos-helper",
+            targets: ["RustEyesMacOSHelper"]
         )
     ],
     targets: [
         .executableTarget(
-            name: "ResteyesMacOSHelper",
-            path: "Sources/ResteyesMacOSHelper"
+            name: "RustEyesMacOSHelper",
+            path: "Sources/RustEyesMacOSHelper"
         )
     ]
 )

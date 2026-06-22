@@ -71,7 +71,7 @@ fn run_with_ui(
 ) -> Result<(), crate::Error> {
     crate::ui::run(ui_config, move |ui_proxy, ui_handle| {
         thread::Builder::new()
-            .name(String::from("resteyes-runtime"))
+            .name(String::from("rusteyes-runtime"))
             .spawn(move || {
                 let ui_runtime = crate::ui::runtime_ui_from_handle(ui_handle);
                 let sync_runtime =
@@ -594,7 +594,7 @@ impl<'a> DaemonRuntime<'a> {
             ),
         };
         let command = UiCommand::ShowNotification(UiNotification {
-            summary: String::from("Resteyes sync peer rejected"),
+            summary: String::from("RustEyes sync peer rejected"),
             body,
         });
 

@@ -19,7 +19,7 @@ mod x11_activity;
 #[cfg(target_os = "linux")]
 mod x11_overlay;
 
-/// Application-level errors returned by Resteyes.
+/// Application-level errors returned by `RustEyes`.
 #[derive(Debug)]
 pub struct Error {
     kind: ErrorKind,
@@ -169,7 +169,7 @@ impl From<macos_helper::MacOSHelperError> for Error {
     }
 }
 
-/// Runs the Resteyes application.
+/// Runs the `RustEyes` application.
 ///
 /// # Errors
 ///

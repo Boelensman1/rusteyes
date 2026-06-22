@@ -37,7 +37,7 @@ pub(super) fn spawn_worker_thread(
             worker.handle.remove(endpoint);
         }
 
-        trace!(peer_id = %worker.self_id(), "stopped Resteyes sync transport worker");
+        trace!(peer_id = %worker.self_id(), "stopped RustEyes sync transport worker");
     })
 }
 
@@ -206,7 +206,7 @@ impl WorkerState {
                 info!(
                     peer_id = %peer_id,
                     endpoint = %endpoint,
-                    "authenticated Resteyes sync peer"
+                    "authenticated RustEyes sync peer"
                 );
                 self.emit(SyncTransportEvent::PeerAuthenticated(peer_id));
             }

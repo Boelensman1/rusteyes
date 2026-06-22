@@ -2,7 +2,7 @@
 
 ## Project Context
 
-- Resteyes is a Rust application intended to become a minimal, cross-platform
+- RustEyes is a Rust application intended to become a minimal, cross-platform
   Safe Eyes replacement.
 - Keep Cargo as the source of truth for Rust builds. Use `make` only as a thin
   task runner around Cargo and Nix.
@@ -28,7 +28,7 @@
 
 ## Build Approach
 
-- Build Resteyes one step at a time.
+- Build RustEyes one step at a time.
 - Treat each meaningful step as a small, reviewable increment with its own
   working program or verified behavior.
 - Read our current progress from ./build-notes/progress.md

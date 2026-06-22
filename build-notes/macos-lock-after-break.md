@@ -36,6 +36,6 @@
 
 ## Follow-up
 
-- Manual end-to-end autolock verification through a full Resteyes break cycle
+- Manual end-to-end autolock verification through a full RustEyes break cycle
   is still pending.
 - Continue with `macos-ui-improvements`.

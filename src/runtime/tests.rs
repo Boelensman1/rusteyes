@@ -373,7 +373,7 @@ fn rejected_sync_peer_shows_notification_once_per_peer() -> Result<(), Box<dyn s
     assert_eq!(
         received_ui_commands(&ui_commands),
         vec![UiCommand::ShowNotification(UiNotification {
-            summary: String::from("Resteyes sync peer rejected"),
+            summary: String::from("RustEyes sync peer rejected"),
             body: String::from(
                 "Peer 01020304... was rejected because its break settings do not match."
             ),

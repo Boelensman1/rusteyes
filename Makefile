@@ -11,12 +11,12 @@ endif
 SWIFT_BUILD_ENV := env -u DEVELOPER_DIR -u SDKROOT -u MACOSX_DEPLOYMENT_TARGET
 CARGO_SOURCES := Cargo.toml Cargo.lock $(shell find src -type f -name '*.rs' 2>/dev/null)
 MACOS_HELPER_DIR := helpers/macos-helper
-MACOS_HELPER_BIN := $(MACOS_HELPER_DIR)/.build/debug/resteyes-macos-helper
+MACOS_HELPER_BIN := $(MACOS_HELPER_DIR)/.build/debug/rusteyes-macos-helper
 MACOS_HELPER_SOURCES := $(MACOS_HELPER_DIR)/Package.swift $(shell find $(MACOS_HELPER_DIR)/Sources -type f -name '*.swift' 2>/dev/null)
-MACOS_APP_DIR := target/macos/Resteyes.app
+MACOS_APP_DIR := target/macos/RustEyes.app
 MACOS_APP_CONTENTS := $(MACOS_APP_DIR)/Contents
-MACOS_APP_BIN := $(MACOS_APP_CONTENTS)/MacOS/resteyes
-MACOS_APP_HELPER := $(MACOS_APP_CONTENTS)/Resources/resteyes-macos-helper
+MACOS_APP_BIN := $(MACOS_APP_CONTENTS)/MacOS/rusteyes
+MACOS_APP_HELPER := $(MACOS_APP_CONTENTS)/Resources/rusteyes-macos-helper
 MACOS_APP_PLIST := package/macos/Info.plist
 LSREGISTER := /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 ifeq ($(UNAME_S),Darwin)
@@ -77,15 +77,15 @@ endif
 
 macos-app-build: $(MACOS_APP_BIN)
 
-target/debug/resteyes: $(CARGO_SOURCES)
+target/debug/rusteyes: $(CARGO_SOURCES)
 	$(CARGO_RUN) build
 
-$(MACOS_APP_BIN): target/debug/resteyes $(MACOS_HELPER_BIN) $(MACOS_APP_PLIST) Makefile
+$(MACOS_APP_BIN): target/debug/rusteyes $(MACOS_HELPER_BIN) $(MACOS_APP_PLIST) Makefile
 ifeq ($(UNAME_S),Darwin)
 	rm -rf $(MACOS_APP_DIR)
 	mkdir -p $(MACOS_APP_CONTENTS)/MacOS $(MACOS_APP_CONTENTS)/Resources
 	cp $(MACOS_APP_PLIST) $(MACOS_APP_CONTENTS)/Info.plist
-	cp target/debug/resteyes $(MACOS_APP_BIN)
+	cp target/debug/rusteyes $(MACOS_APP_BIN)
 	cp $(MACOS_HELPER_BIN) $(MACOS_APP_HELPER)
 	chmod +x $(MACOS_APP_BIN) $(MACOS_APP_HELPER)
 	codesign --force --deep --sign - $(MACOS_APP_DIR)

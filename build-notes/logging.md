@@ -9,12 +9,12 @@
 - Add `tracing` as the logging facade and `tracing-subscriber` as the binary
   logger setup.
 - Initialize logging once from the binary entry point before calling
-  `resteyes::run()`.
+  `rusteyes::run()`.
 - Emit an info-level startup event from the binary after logging is initialized
   and before entering the runtime.
 - Use `warn` as the default filter so normal runs stay quiet.
 - Support the standard `RUST_LOG` override, such as
-  `RUST_LOG=resteyes=trace make run`.
+  `RUST_LOG=rusteyes=trace make run`.
 - Keep fatal startup errors visible on stderr even after logging is initialized.
 - Replace internal backend diagnostic `eprintln!` calls with tracing events.
 - Add trace-level activity diagnostics for high-frequency polling:

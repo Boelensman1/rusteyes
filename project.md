@@ -1,4 +1,4 @@
-RestEyes is an as-simple-as-possible SafeEyes replacement focused on reliable break enforcement across the computers someone is actively using.
+RustEyes is an as-simple-as-possible SafeEyes replacement focused on reliable break enforcement across the computers someone is actively using.
 
 ## Goal and MVP
 
@@ -88,7 +88,7 @@ step note when implementation begins.
 2. `config-schema`: add typed config defaults and validation for shared break
    cadence, named break types, durations, messages, disable presets, and
    autolock settings.
-3. `yaml-config-loading`: load YAML from `RESTEYES_CONFIG` or the XDG config
+3. `yaml-config-loading`: load YAML from `RUSTEYES_CONFIG` or the XDG config
    path, with clear parse and validation errors.
 4. `scheduler-break-slots`: implement deterministic generic break slot
    scheduling with injected active-time durations.

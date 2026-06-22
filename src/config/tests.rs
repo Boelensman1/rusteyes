@@ -351,11 +351,11 @@ fn load_uses_defaults_when_implicit_config_is_missing() -> Result<(), Box<dyn Er
 }
 
 #[test]
-fn resteyes_config_takes_precedence_over_xdg_path() -> Result<(), Box<dyn Error>> {
+fn rusteyes_config_takes_precedence_over_xdg_path() -> Result<(), Box<dyn Error>> {
     let test_dir = TestDir::new("env-precedence")?;
     let explicit_path = test_dir.path().join("explicit.yaml");
     let xdg_home = test_dir.path().join("xdg");
-    let xdg_path = xdg_home.join("resteyes").join("config.yaml");
+    let xdg_path = xdg_home.join("rusteyes").join("config.yaml");
 
     write_file(
         &explicit_path,
@@ -1094,7 +1094,7 @@ impl TestDir {
 
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let path =
-            std::env::temp_dir().join(format!("resteyes-{name}-{}-{id}", std::process::id()));
+            std::env::temp_dir().join(format!("rusteyes-{name}-{}-{id}", std::process::id()));
         fs::create_dir_all(&path)?;
 
         Ok(Self { path })

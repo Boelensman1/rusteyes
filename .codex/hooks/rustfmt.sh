@@ -18,7 +18,7 @@ find_root() {
 
 root=$(find_root "$PWD" || true)
 if [ -z "${root:-}" ]; then
-    echo "resteyes rustfmt hook skipped: could not find Cargo.toml" >&2
+    echo "rusteyes rustfmt hook skipped: could not find Cargo.toml" >&2
     exit 0
 fi
 
@@ -31,5 +31,5 @@ elif command -v cargo >/dev/null 2>&1; then
 elif command -v nix >/dev/null 2>&1; then
     nix develop --command cargo fmt --all
 else
-    echo "resteyes rustfmt hook skipped: make, cargo, and nix are unavailable" >&2
+    echo "rusteyes rustfmt hook skipped: make, cargo, and nix are unavailable" >&2
 fi

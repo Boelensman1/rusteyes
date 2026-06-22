@@ -18,5 +18,5 @@
 ## Commands
 
 - `make check`
-- `RESTEYES_CONFIG=test-configs/ten-second-break.yaml make run` manually
+- `RUSTEYES_CONFIG=test-configs/ten-second-break.yaml make run` manually
   exercises the short break cycle in a real X11 session.

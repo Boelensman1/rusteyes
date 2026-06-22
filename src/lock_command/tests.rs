@@ -58,7 +58,7 @@ fn empty_lock_command_returns_context() {
 #[test]
 fn missing_lock_command_binary_returns_start_error() {
     let lock_command = LockCommand::new(vec![String::from(
-        "/definitely/missing/resteyes-lock-command-test-binary",
+        "/definitely/missing/rusteyes-lock-command-test-binary",
     )]);
     let Err(error) = spawn_lock_command(&lock_command) else {
         panic!("expected missing binary error");
@@ -66,7 +66,7 @@ fn missing_lock_command_binary_returns_start_error() {
 
     let message = error.to_string();
     assert!(message.contains("failed to start"));
-    assert!(message.contains("/definitely/missing/resteyes-lock-command-test-binary"));
+    assert!(message.contains("/definitely/missing/rusteyes-lock-command-test-binary"));
 }
 
 #[test]

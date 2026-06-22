@@ -182,8 +182,8 @@ mod app {
     use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
     const ICON_SIZE: u32 = 16;
-    const APP_NAME: &str = "Resteyes";
-    const TOOLTIP: &str = "Resteyes";
+    const APP_NAME: &str = "RustEyes";
+    const TOOLTIP: &str = "RustEyes";
     const ACTIVE_TIME_MENU_ID: &str = "active-time";
     pub(crate) fn run<F>(config: UiConfig, start_runtime: F) -> Result<(), UiError>
     where
@@ -208,7 +208,7 @@ mod app {
             match event {
                 Event::NewEvents(StartCause::Init) => {
                     if let Err(error) = app.initialize(&proxy) {
-                        eprintln!("resteyes: {error}");
+                        eprintln!("rusteyes: {error}");
                         app.request_shutdown();
                         app.join_runtime();
                         *control_flow = ControlFlow::ExitWithCode(1);
@@ -233,7 +233,7 @@ mod app {
         proxy: UiLoopProxy,
     ) -> Result<JoinHandle<()>, UiError> {
         thread::Builder::new()
-            .name(String::from("resteyes-ui-command-forwarder"))
+            .name(String::from("rusteyes-ui-command-forwarder"))
             .spawn(move || {
                 while let Ok(command) = command_receiver.recv() {
                     proxy.send(UiLoopEvent::Command(command));
@@ -466,7 +466,7 @@ mod app {
             .map_err(|error| UiError::menu(error.to_string()))?;
         actions.insert(quit_id, UiMenuAction::Quit);
 
-        let icon = resteyes_icon()?;
+        let icon = rusteyes_icon()?;
         let tray_icon = TrayIconBuilder::new()
             .with_tooltip(TOOLTIP)
             .with_icon(icon)
@@ -487,7 +487,7 @@ mod app {
             .map_err(|error| UiError::menu(error.to_string()))
     }
 
-    fn resteyes_icon() -> Result<Icon, UiError> {
+    fn rusteyes_icon() -> Result<Icon, UiError> {
         let mut rgba = Vec::with_capacity((ICON_SIZE * ICON_SIZE * 4) as usize);
 
         for y in 0..ICON_SIZE {
@@ -539,7 +539,7 @@ mod app {
 
     fn pre_break_ui_notification(notification: &PreBreakNotification) -> UiNotification {
         UiNotification {
-            summary: String::from("Resteyes break soon"),
+            summary: String::from("RustEyes break soon"),
             body: format!(
                 "{} break starts in {}.",
                 notification.break_name,

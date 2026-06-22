@@ -1,6 +1,6 @@
-# Resteyes
+# RustEyes
 
-Resteyes is a small Rust project exploring a minimal cross-platform Safe Eyes
+RustEyes is a small Rust project exploring a minimal cross-platform Safe Eyes
 replacement.
 
 ## Getting Started
@@ -23,14 +23,14 @@ breaks, disable actions, and quit.
 For a short manual X11 break cycle:
 
 ```sh
-RESTEYES_CONFIG=test-configs/ten-second-break.yaml make run
+RUSTEYES_CONFIG=test-configs/ten-second-break.yaml make run
 ```
 
 For temporary LAN discovery smoke testing, run this on two machines using the
 same config:
 
 ```sh
-RESTEYES_DISCOVERY_SMOKE=1 RUST_LOG=info RESTEYES_CONFIG=test-configs/sync-discovery.yaml make run
+RUSTEYES_DISCOVERY_SMOKE=1 RUST_LOG=info RUSTEYES_CONFIG=test-configs/sync-discovery.yaml make run
 ```
 
 This bypasses the platform backend, starts only mDNS/DNS-SD discovery, and logs

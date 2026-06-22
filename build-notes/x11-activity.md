@@ -10,7 +10,7 @@
 - Added a private X11 activity backend that connects to X11, verifies the
   XScreenSaver extension, polls `ms_since_user_input`, and converts samples into
   runtime events.
-- Linux production `resteyes::run()` now uses the X11 activity backend.
+- Linux production `rusteyes::run()` now uses the X11 activity backend.
 - The backend emits `WallClockElapsed` every one-second poll and
   `ActiveTimeElapsed` when the observed X11 idle time is less than or equal to
   that poll interval.

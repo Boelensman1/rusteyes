@@ -3,12 +3,15 @@
 ## Current State
 
 - Initialized the repository and created the initial Rust binary scaffold.
+- Completed `project-rename`: the project now uses RustEyes for human-facing
+  text, `rusteyes` for lowercase package/binary/config/service identifiers, and
+  `RUSTEYES_*` for environment variables.
 - Completed `core-layout`: the binary entry point now calls into the internal
   library/runtime layout.
 - Completed `config-schema`: typed configuration defaults and validation now
   exist without changing runtime behavior.
 - Completed `yaml-config-loading`: YAML config files are loaded from
-  `RESTEYES_CONFIG` or the XDG config path, partially overlaid onto defaults,
+  `RUSTEYES_CONFIG` or the XDG config path, partially overlaid onto defaults,
   parsed with string-only human-readable durations, and validated. Follow-up
   cleanup made path resolution more explicit and simplified empty YAML handling.
 - Completed `scheduler-break-slots`: an internal deterministic scheduler now
@@ -87,7 +90,7 @@
   settings with a validated 32-character minimum shared secret for enabled
   sync, redacted shared-secret debug output, and no configured peer ID.
 - Completed `macos-helper-scaffold`: a standalone SwiftPM macOS helper package
-  builds `resteyes-macos-helper`, with an explicit Make artifact target and
+  builds `rusteyes-macos-helper`, with an explicit Make artifact target and
   `macos-helper-build` alias that build on Darwin and skip successfully
   elsewhere.
 - Completed `macos-helper-ipc`: macOS production runs now start the Swift
@@ -135,10 +138,10 @@
   break starts, disable/enable controls, and lock-after-current-break requests,
   authenticated with HMAC-SHA256 over canonical JSON payloads.
 - Completed `lan-discovery`: crate-internal mDNS/DNS-SD discovery now
-  advertises a peer-specific Resteyes sync service, authenticates TXT metadata
+  advertises a peer-specific RustEyes sync service, authenticates TXT metadata
   with the configured shared secret, and converts resolved authenticated
   services into discovered peer records. Follow-up verification support added a
-  temporary `RESTEYES_DISCOVERY_SMOKE=1` path to run discovery without the
+  temporary `RUSTEYES_DISCOVERY_SMOKE=1` path to run discovery without the
   platform backend and log authenticated peers found on the LAN; this temporary
   path was removed when authenticated peer transport started discovery from
   normal runtime code.
@@ -195,12 +198,12 @@
   `min(30s, breaks.after_active / 2)` notice window for the next scheduled
   break, and UI-originated controls reuse the existing local runtime paths so
   manual breaks and disable actions can sync to authenticated peers. Follow-up
-  fix configures macOS as an accessory app and hides Dock visibility so Resteyes
+  fix configures macOS as an accessory app and hides Dock visibility so RustEyes
   is menu-bar only. Later follow-up refinement shows accumulated scheduler
   active time in the tray/menu-bar dropdown and resets it with scheduler state.
   Later follow-up refinement orders manual break controls by scheduled cadence
   from shortest to longest. Later follow-up fix adds a local
-  `target/macos/Resteyes.app` bundle with bundle id `dev.resteyes.Resteyes`,
+  `target/macos/RustEyes.app` bundle with bundle id `dev.rusteyes.RustEyes`,
   configures `notify-rust` with that bundle id before runtime startup, and
   launches the app bundle from `make run` on macOS so notifications no longer
   trigger the `use_default` application lookup.
@@ -327,7 +330,7 @@
 - `make check` passes after adding the tray/menu-bar active-time status row.
 - `make -B macos-app-build` passes with approved SwiftPM cache and
   LaunchServices registration access after adding the macOS app bundle.
-- `plutil -lint target/macos/Resteyes.app/Contents/Info.plist` passes.
+- `plutil -lint target/macos/RustEyes.app/Contents/Info.plist` passes.
 - A bounded `timeout 3s make run` on macOS reaches the bundled app path and
   exits at the existing missing Accessibility/Input Monitoring preflight in
   this environment.
@@ -362,11 +365,11 @@
   `UNUserNotificationCenter` backend.
 - `make -B macos-app-build` passes after adding explicit ad-hoc signing for the
   generated local macOS app bundle.
-- `plutil -lint target/macos/Resteyes.app/Contents/Info.plist` passes after
+- `plutil -lint target/macos/RustEyes.app/Contents/Info.plist` passes after
   moving macOS notifications to the `UNUserNotificationCenter` backend.
-- `codesign -dv target/macos/Resteyes.app` reports ad-hoc signature identity
-  `dev.resteyes.Resteyes` after the signing step.
-- `codesign -d --entitlements - target/macos/Resteyes.app` emits no entitlement
+- `codesign -dv target/macos/RustEyes.app` reports ad-hoc signature identity
+  `dev.rusteyes.RustEyes` after the signing step.
+- `codesign -d --entitlements - target/macos/RustEyes.app` emits no entitlement
   dictionary after keeping macOS notifications at normal priority.
 - `timeout 3s make run` launches the macOS app bundle until the timeout sends
   SIGTERM, avoiding the earlier AMFI `Killed: 9` restricted-entitlement failure.
@@ -375,18 +378,19 @@
 - `make check` passes after adding pre-break notification countdown updates.
 - `make check` passes after adding idle activity grace and capped synced
   active-time accumulation.
+- `make check` passes after the project rename to RustEyes.
 - `make -B macos-app-build` passes after adding pre-break notification
   countdown updates.
 - On unsupported targets, `make run` prints
-  `resteyes: no backend is available for <platform> yet` and exits non-zero.
+  `rusteyes: no backend is available for <platform> yet` and exits non-zero.
 - Manual X11 overlay, input-blocking, overlay UI, and trace-output verification
   is still pending because this environment does not provide usable X server
   access.
 - Manual Linux tray and notification verification is pending.
 - Manual macOS notification verification is pending after granting
-  Accessibility/Input Monitoring to Resteyes.
+  Accessibility/Input Monitoring to RustEyes.
 - Manual macOS Focus/Do Not Disturb notification verification is pending after
-  granting notification permission to Resteyes.
+  granting notification permission to RustEyes.
 - Manual macOS input-blocking verification with Accessibility/Input Monitoring
   permissions granted is still pending.
 

@@ -12,10 +12,10 @@
   UI uses `UNUserNotificationCenter` there while Linux keeps the existing
   notification path.
 - Request macOS notification authorization during UI startup and log denied or
-  failed permission requests without failing Resteyes startup.
+  failed permission requests without failing RustEyes startup.
 - Keep time-sensitive delivery out of scope for now. The required entitlement is
   restricted, and macOS kills ad-hoc signed binaries that embed it.
-- Explicitly ad-hoc sign the generated local `Resteyes.app` bundle after copying
+- Explicitly ad-hoc sign the generated local `RustEyes.app` bundle after copying
   the Rust binary and helper so the `UNUserNotificationCenter` path has a
   bundled, signed app identity.
 
@@ -32,12 +32,12 @@
 
 - `make check`
 - `make -B macos-app-build`
-- `plutil -lint target/macos/Resteyes.app/Contents/Info.plist`
-- `codesign -dv target/macos/Resteyes.app`
-- `codesign -d --entitlements - target/macos/Resteyes.app`
+- `plutil -lint target/macos/RustEyes.app/Contents/Info.plist`
+- `codesign -dv target/macos/RustEyes.app`
+- `codesign -d --entitlements - target/macos/RustEyes.app`
 - `timeout 3s make run`
 
 ## Follow-up
 
-- Users who need notifications during Focus/Do Not Disturb should add Resteyes
+- Users who need notifications during Focus/Do Not Disturb should add RustEyes
   to the relevant macOS Focus allowed-apps list.

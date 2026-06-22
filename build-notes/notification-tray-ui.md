@@ -17,17 +17,17 @@
   for this increment instead of adding new config.
 - Use `notify-rust` for passive desktop notifications.
 - On macOS, configure the `tao` event loop as an accessory app and hide Dock
-  visibility before the loop runs so Resteyes is menu-bar/tray only.
+  visibility before the loop runs so RustEyes is menu-bar/tray only.
 - Follow-up refinement: show the scheduler's accumulated active time as a
   disabled status row in the tray/menu-bar dropdown.
 - Follow-up fix: local macOS runs now build and register
-  `target/macos/Resteyes.app` with bundle id `dev.resteyes.Resteyes`, and
+  `target/macos/RustEyes.app` with bundle id `dev.rusteyes.RustEyes`, and
   `make run` launches the bundled binary so notification permissions and
-  attribution use Resteyes instead of `notify-rust`'s default app lookup.
-- The Rust UI configures `notify-rust` with the Resteyes bundle id before the
+  attribution use RustEyes instead of `notify-rust`'s default app lookup.
+- The Rust UI configures `notify-rust` with the RustEyes bundle id before the
   runtime thread starts, so no pre-break notification can race ahead of macOS
   notification app setup.
-- The macOS helper path keeps `RESTEYES_MACOS_HELPER` as the highest-precedence
+- The macOS helper path keeps `RUSTEYES_MACOS_HELPER` as the highest-precedence
   override, then prefers the helper copied into the app bundle, then falls back
   to the existing SwiftPM debug helper.
 
@@ -46,7 +46,7 @@
   controls reset scheduler active time.
 - Manual break controls are ordered by scheduled cadence from shortest to
   longest, using each break type's slot interval.
-- On macOS, pre-break notifications use the Resteyes app bundle identity rather
+- On macOS, pre-break notifications use the RustEyes app bundle identity rather
   than the `use_default` placeholder lookup from the default
   `mac-notification-sys` path.
 
@@ -54,7 +54,7 @@
 
 - `make check`
 - `make -B macos-app-build`
-- `plutil -lint target/macos/Resteyes.app/Contents/Info.plist`
+- `plutil -lint target/macos/RustEyes.app/Contents/Info.plist`
 - `timeout 3s make run` reached the bundled app path and stopped at the
   existing macOS privacy preflight because Accessibility/Input Monitoring are
   not granted in this environment.
@@ -63,4 +63,4 @@
 
 - Manual Linux tray verification is pending.
 - Manual macOS notification verification is pending after granting
-  Accessibility/Input Monitoring to Resteyes.
+  Accessibility/Input Monitoring to RustEyes.

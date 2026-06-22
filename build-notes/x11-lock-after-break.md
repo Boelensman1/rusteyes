@@ -20,7 +20,7 @@
 - Started lock commands are supervised on a background thread so foreground
   lockers can keep running without blocking X11 activity polling.
 - Lock command stdout is logged at trace level, stderr is mirrored to
-  Resteyes' stderr and trace logging, and the final exit status is logged at
+  RustEyes' stderr and trace logging, and the final exit status is logged at
   trace level.
 - Lock command startup failures are treated as backend errors because the lock
   request definitely did not start.

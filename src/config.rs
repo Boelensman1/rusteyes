@@ -7,10 +7,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-const ENV_CONFIG: &str = "RESTEYES_CONFIG";
+const ENV_CONFIG: &str = "RUSTEYES_CONFIG";
 const XDG_CONFIG_HOME: &str = "XDG_CONFIG_HOME";
 const HOME: &str = "HOME";
-const CONFIG_DIR: &str = "resteyes";
+const CONFIG_DIR: &str = "rusteyes";
 const CONFIG_FILE: &str = "config.yaml";
 
 pub(crate) const DEFAULT_BREAK_AFTER_ACTIVE: Duration = Duration::from_mins(20);
@@ -39,8 +39,8 @@ pub(crate) struct Config {
 impl Config {
     /// Loads config defaults and overlays a YAML config file when one is present.
     ///
-    /// The config file is resolved from `RESTEYES_CONFIG`, then the XDG config
-    /// path, then the default `$HOME/.config/resteyes/config.yaml` path.
+    /// The config file is resolved from `RUSTEYES_CONFIG`, then the XDG config
+    /// path, then the default `$HOME/.config/rusteyes/config.yaml` path.
     ///
     /// # Errors
     ///
@@ -72,11 +72,11 @@ impl Config {
     }
 
     fn load_from_env(
-        resteyes_config: Option<OsString>,
+        rusteyes_config: Option<OsString>,
         xdg_config_home: Option<OsString>,
         home: Option<OsString>,
     ) -> Result<Self, ConfigLoadError> {
-        if let Some(path) = non_empty_os(resteyes_config).map(PathBuf::from) {
+        if let Some(path) = non_empty_os(rusteyes_config).map(PathBuf::from) {
             return Self::load_from_path(path, ConfigPathMode::Required);
         }
 

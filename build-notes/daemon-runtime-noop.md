@@ -17,7 +17,7 @@
   immediately so startup wiring could be checked without platform behavior.
 - Added scripted runtime tests covering scheduled breaks, break completion,
   timed disable, disable-until-restart, shutdown, and scheduler setup errors.
-- The public API remains `resteyes::run()` with an application error wrapper.
+- The public API remains `rusteyes::run()` with an application error wrapper.
 
 ## Decisions
 

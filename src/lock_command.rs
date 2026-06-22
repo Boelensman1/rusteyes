@@ -51,7 +51,7 @@ pub(crate) fn start_lock_command(lock_command: &LockCommand) -> Result<(), LockC
     let (startup_tx, startup_rx) = mpsc::channel();
 
     thread::Builder::new()
-        .name(String::from("resteyes-lock-command"))
+        .name(String::from("rusteyes-lock-command"))
         .spawn(move || match spawn_lock_command(&lock_command) {
             Ok(spawned) => {
                 let _ = startup_tx.send(Ok(()));
@@ -170,14 +170,14 @@ where
             Ok(line) => {
                 let _ = writeln!(
                     stderr,
-                    "resteyes: lock command stderr ({description}): {line}"
+                    "rusteyes: lock command stderr ({description}): {line}"
                 );
                 trace!(command = %description, %line, "lock command stderr");
             }
             Err(error) => {
                 let _ = writeln!(
                     stderr,
-                    "resteyes: failed to read lock command stderr ({description}): {error}"
+                    "rusteyes: failed to read lock command stderr ({description}): {error}"
                 );
                 trace!(command = %description, %error, "failed to read lock command stderr");
                 break;

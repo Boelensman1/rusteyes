@@ -4,10 +4,10 @@ use tracing_subscriber::fmt::MakeWriter;
 
 fn main() {
     init_logging();
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting Resteyes");
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting RustEyes");
 
-    if let Err(error) = resteyes::run() {
-        eprintln!("resteyes: {error}");
+    if let Err(error) = rusteyes::run() {
+        eprintln!("rusteyes: {error}");
         std::process::exit(1);
     }
 }

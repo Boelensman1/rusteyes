@@ -2,7 +2,7 @@
 
 ## Goal
 
-- Load YAML configuration from `RESTEYES_CONFIG` or the XDG config path.
+- Load YAML configuration from `RUSTEYES_CONFIG` or the XDG config path.
 
 ## Changes
 
@@ -30,7 +30,7 @@
 ## Decisions
 
 - Missing implicit XDG config files fall back to defaults.
-- A non-empty `RESTEYES_CONFIG` is explicit and must point to a readable, valid
+- A non-empty `RUSTEYES_CONFIG` is explicit and must point to a readable, valid
   config file.
 - Unknown YAML fields are rejected.
 - Duration values are string-only to keep the YAML shape simple and explicit.

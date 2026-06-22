@@ -11,7 +11,7 @@ use std::str::FromStr;
 use std::time::Instant;
 use tracing::trace;
 
-pub(crate) const SERVICE_TYPE: &str = "_resteyes-sync._tcp.local.";
+pub(crate) const SERVICE_TYPE: &str = "_rusteyes-sync._tcp.local.";
 
 const DISCOVERY_VERSION: u8 = 1;
 const KEY_VERSION: &str = "version";
@@ -42,7 +42,7 @@ impl LanDiscovery {
             peer_id = %self_id,
             service_type = SERVICE_TYPE,
             advertised_port = transport_port,
-            "starting Resteyes LAN discovery"
+            "starting RustEyes LAN discovery"
         );
 
         let daemon = ServiceDaemon::new().map_err(|error| mdns_error(&error))?;
@@ -59,7 +59,7 @@ impl LanDiscovery {
         trace!(
             peer_id = %self_id,
             service_fullname,
-            "registered Resteyes LAN discovery service"
+            "registered RustEyes LAN discovery service"
         );
 
         Ok(Self {
@@ -109,13 +109,13 @@ fn receive_discovery_event(
                 trace!(
                     peer_id = %peer.peer_id,
                     address = %peer.address,
-                    "discovered authenticated Resteyes peer"
+                    "discovered authenticated RustEyes peer"
                 );
                 return DiscoveryEvent::Peer(peer);
             }
             Ok(None) => {}
             Err(error) => {
-                trace!(%error, "ignored Resteyes LAN discovery service");
+                trace!(%error, "ignored RustEyes LAN discovery service");
             }
         }
     }
@@ -421,11 +421,11 @@ fn constant_time_eq(left: &[u8; MAC_BYTES], right: &[u8; MAC_BYTES]) -> bool {
 }
 
 fn instance_name(peer_id: PeerId) -> String {
-    format!("resteyes-{peer_id}")
+    format!("rusteyes-{peer_id}")
 }
 
 fn host_name(peer_id: PeerId) -> String {
-    format!("resteyes-{peer_id}.local.")
+    format!("rusteyes-{peer_id}.local.")
 }
 
 fn mdns_error(error: &mdns_sd::Error) -> SyncDiscoveryError {

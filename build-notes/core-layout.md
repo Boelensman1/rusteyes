@@ -8,8 +8,8 @@
 
 - Added `src/lib.rs` as the crate-level application entry.
 - Added `src/runtime.rs` to own current startup behavior.
-- Kept `src/main.rs` minimal by calling `resteyes::run()`.
-- Later cleanup narrowed the public Rust API to `resteyes::run()` plus an
+- Kept `src/main.rs` minimal by calling `rusteyes::run()`.
+- Later cleanup narrowed the public Rust API to `rusteyes::run()` plus an
   application-level error wrapper; config and runtime internals remain
   crate-internal.
 

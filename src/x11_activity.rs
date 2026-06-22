@@ -33,7 +33,7 @@ pub(crate) struct X11ActivityBackend {
 impl X11ActivityBackend {
     pub(crate) fn spawn(lock_config: LockConfig) -> Result<BackendActor, X11ActivityError> {
         BackendActor::spawn(
-            "resteyes-x11-backend",
+            "rusteyes-x11-backend",
             move || Self::connect(lock_config),
             |mut backend, command_receiver, event_sender| {
                 backend.run_actor(&command_receiver, &event_sender);

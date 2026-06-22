@@ -132,7 +132,7 @@ impl SyncTransport {
             peer_id = %self_id,
             listen_addr = %binding.local_addr,
             discovery = discovery_mode.as_str(),
-            "started Resteyes sync transport"
+            "started RustEyes sync transport"
         );
 
         Ok(Self {
@@ -381,7 +381,7 @@ fn spawn_discovery_thread(
             connect_discovered_peer(&handle, &peer);
         }
 
-        trace!(peer_id = %self_id, "stopped Resteyes sync discovery thread");
+        trace!(peer_id = %self_id, "stopped RustEyes sync discovery thread");
     })
 }
 
@@ -392,7 +392,7 @@ fn connect_discovered_peer(handle: &TransportIoHandle, peer: &DiscoveredPeer) {
                 peer_id = %peer.peer_id,
                 address = %peer.address,
                 endpoint = %endpoint,
-                "connecting to authenticated Resteyes peer"
+                "connecting to authenticated RustEyes peer"
             );
         }
         Err(error) => {
@@ -400,7 +400,7 @@ fn connect_discovered_peer(handle: &TransportIoHandle, peer: &DiscoveredPeer) {
                 peer_id = %peer.peer_id,
                 address = %peer.address,
                 %error,
-                "failed to connect to discovered Resteyes peer"
+                "failed to connect to discovered RustEyes peer"
             );
         }
     }

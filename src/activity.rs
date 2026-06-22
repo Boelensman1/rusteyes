@@ -26,7 +26,7 @@ impl ActivityPoller {
     pub(crate) fn queue_sample(&mut self, sample: ActivitySample) -> ActivityState {
         let state = sample.state_for(NORMAL_ACTIVITY_IDLE_THRESHOLD);
         trace!(
-            target: "resteyes::activity",
+            target: "rusteyes::activity",
             idle_for = ?sample.idle_for(),
             ?state,
             poll_interval = ?self.poll_interval,
@@ -46,7 +46,7 @@ impl ActivityPoller {
     }
 
     pub(crate) fn queue_event(&mut self, event: RuntimeEvent) {
-        trace!(target: "resteyes::activity", ?event, "queued runtime event");
+        trace!(target: "rusteyes::activity", ?event, "queued runtime event");
         self.events.push_back(event);
     }
 

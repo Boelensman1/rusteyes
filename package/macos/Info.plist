@@ -5,15 +5,15 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>Resteyes</string>
+	<string>RustEyes</string>
 	<key>CFBundleExecutable</key>
-	<string>resteyes</string>
+	<string>rusteyes</string>
 	<key>CFBundleIdentifier</key>
-	<string>dev.resteyes.Resteyes</string>
+	<string>dev.rusteyes.RustEyes</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>Resteyes</string>
+	<string>RustEyes</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

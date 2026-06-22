@@ -15,7 +15,7 @@
   JSON-protocol-only.
 - Missing permissions fail startup with an error naming the missing permission,
   the System Settings Privacy & Security area, the development helper
-  executable name, and the need to restart Resteyes after granting access.
+  executable name, and the need to restart RustEyes after granting access.
 - The existing break-time event tap failure path remains in place for
   permissions revoked after startup.
 

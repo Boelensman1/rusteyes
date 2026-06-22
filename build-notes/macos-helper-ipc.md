@@ -3,7 +3,7 @@
 ## Summary
 
 - Added a crate-internal macOS helper backend that starts
-  `resteyes-macos-helper`, performs a versioned JSON Lines handshake over
+  `rusteyes-macos-helper`, performs a versioned JSON Lines handshake over
   stdio, and shuts the helper down when the backend is dropped.
 - The Rust daemon now uses the helper backend on macOS instead of reporting an
   unsupported platform; Linux/X11 behavior is unchanged.
@@ -40,14 +40,14 @@
 - Keep helper stdout protocol-only; human diagnostics belong on stderr.
 - Treat terminal launches, empty stdin, invalid first input, and non-`hello`
   first messages as direct helper invocation. These cases print
-  `resteyes-macos-helper is an internal Resteyes helper. Start Resteyes with
-  the main resteyes binary; do not run this helper directly.` to stderr and
+  `rusteyes-macos-helper is an internal RustEyes helper. Start RustEyes with
+  the main rusteyes binary; do not run this helper directly.` to stderr and
   exit with status 2.
 - Keep incompatible `hello` versions on the JSON protocol path so the daemon
   can report version mismatches as structured helper errors.
 - Default helper lookup uses
-  `helpers/macos-helper/.build/debug/resteyes-macos-helper`, with
-  `RESTEYES_MACOS_HELPER` available as an override for tests and future
+  `helpers/macos-helper/.build/debug/rusteyes-macos-helper`, with
+  `RUSTEYES_MACOS_HELPER` available as an override for tests and future
   packaging.
 
 ## Verification

@@ -47,7 +47,7 @@
   helper, renamed nonblocking inbound polling to `try_recv_event`, added a
   facade event drain helper, made connection authentication/removal outcomes
   explicit, and centralized failed endpoint closure in the worker.
-- Removed the temporary `RESTEYES_DISCOVERY_SMOKE` path now that discovery is
+- Removed the temporary `RUSTEYES_DISCOVERY_SMOKE` path now that discovery is
   started by normal sync-enabled runtime startup.
 - Follow-up cleanup removed transport polling: the worker now blocks on
   `message-io` events and uses node signals to wake for facade commands or
