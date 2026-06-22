@@ -190,6 +190,13 @@
               gtk3
               libappindicator-gtk3
             ];
+            # tray-icon (via libappindicator-sys) dlopens the appindicator
+            # library at runtime, so the dev binary built by `make run` needs
+            # it on LD_LIBRARY_PATH too. The packaged binary gets this via the
+            # wrapGAppsHook3 preFixup above; the devShell needs its own.
+            shellHook = pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.libappindicator-gtk3 ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            '';
           };
         }
       );

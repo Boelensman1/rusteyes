@@ -34,6 +34,11 @@
   `Failed to load ayatana-appindicator3 or appindicator3 dynamic library`.
   `libappindicator-gtk3` provides `libappindicator3.so.1`, one of the names the
   loader probes.
+- Set the same `LD_LIBRARY_PATH` in the devShell via `shellHook`. The
+  `preFixup` wrapper only covers the packaged binary; `make run` builds and runs
+  the raw cargo binary inside `nix develop`, which had `libappindicator-gtk3` as
+  a package but not on the runtime search path, so the same startup panic
+  reappeared under `make run`.
 
 ## Behavior
 
@@ -62,6 +67,9 @@
   `bin/rusteyes` embeds
   `--prefix LD_LIBRARY_PATH : .../libappindicator-gtk3-.../lib`, confirming the
   appindicator library is on the runtime search path.
+- `RUSTEYES_CONFIG=test-configs/sync-discovery.yaml make run` on x86_64-linux
+  now starts without the appindicator panic; the devShell `LD_LIBRARY_PATH`
+  points at the `libappindicator-gtk3` store path.
 
 ## Follow-up
 
