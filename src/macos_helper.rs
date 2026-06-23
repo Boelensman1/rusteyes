@@ -12,7 +12,7 @@ use std::fmt;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{trace, warn};
@@ -25,11 +25,17 @@ const HELPER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const HELPER_SHUTDOWN_POLL: Duration = Duration::from_millis(20);
 const ACTIVITY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const OVERLAY_TICK_INTERVAL: Duration = Duration::from_millis(500);
+// Every helper response is preceded by a request the helper answers almost
+// instantly, so this is a generous upper bound. Exceeding it means the helper is
+// wedged; reads are bounded so the backend actor never blocks forever (which
+// would keep `MacOSHelperBackend::drop` from tearing the helper down and leave
+// the input-blocking event tap installed).
+const HELPER_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[allow(clippy::module_name_repetitions)]
 pub(crate) struct MacOSHelperBackend {
     child: Child,
-    session: HelperSession<ChildStdout, ChildStdin>,
+    session: HelperSession<ChildStdin>,
     poller: ActivityPoller,
     active_break: Option<ActiveBreak>,
     lock: MacOSLock,
@@ -375,19 +381,40 @@ impl fmt::Display for MacOSHelperError {
 
 impl std::error::Error for MacOSHelperError {}
 
-struct HelperSession<R, W> {
-    reader: BufReader<R>,
+/// One line read from the helper, or a description of the read failure. The
+/// reader thread drops its sender on EOF, which surfaces as a disconnect.
+type HelperLine = Result<String, String>;
+
+struct HelperSession<W> {
+    lines: flume::Receiver<HelperLine>,
+    read_timeout: Duration,
     writer: W,
 }
 
-impl<R, W> HelperSession<R, W>
+impl<W> HelperSession<W>
 where
-    R: Read,
     W: Write,
 {
-    fn new(reader: R, writer: W) -> Self {
+    fn new<R>(reader: R, writer: W) -> Self
+    where
+        R: Read + Send + 'static,
+    {
+        Self::with_read_timeout(reader, writer, HELPER_READ_TIMEOUT)
+    }
+
+    fn with_read_timeout<R>(reader: R, writer: W, read_timeout: Duration) -> Self
+    where
+        R: Read + Send + 'static,
+    {
+        let (sender, lines) = flume::unbounded();
+        // Plain `thread::spawn` returns the handle directly (no fallible
+        // `Builder`); the reader thread is detached and ends when the pipe
+        // closes, so there is nothing to join or recover from.
+        thread::spawn(move || read_helper_lines(reader, &sender));
+
         Self {
-            reader: BufReader::new(reader),
+            lines,
+            read_timeout,
             writer,
         }
     }
@@ -533,16 +560,25 @@ where
     }
 
     fn receive(&mut self) -> Result<HelperMessage, MacOSHelperError> {
-        let mut line = String::new();
-        let bytes = self.reader.read_line(&mut line).map_err(|error| {
-            MacOSHelperError::new(format!("failed to read helper message: {error}"))
-        })?;
-
-        if bytes == 0 {
-            return Err(MacOSHelperError::new(
-                "helper closed protocol output before sending a message",
-            ));
-        }
+        let line = match self.lines.recv_timeout(self.read_timeout) {
+            Ok(Ok(line)) => line,
+            Ok(Err(error)) => {
+                return Err(MacOSHelperError::new(format!(
+                    "failed to read helper message: {error}"
+                )));
+            }
+            Err(flume::RecvTimeoutError::Timeout) => {
+                return Err(MacOSHelperError::new(format!(
+                    "helper did not respond within {} ms; treating it as unresponsive",
+                    duration_millis(self.read_timeout)
+                )));
+            }
+            Err(flume::RecvTimeoutError::Disconnected) => {
+                return Err(MacOSHelperError::new(
+                    "helper closed protocol output before sending a message",
+                ));
+            }
+        };
 
         serde_json::from_str(line.trim_end()).map_err(|error| {
             MacOSHelperError::new(format!("failed to decode helper message: {error}"))
@@ -772,6 +808,32 @@ fn permission_list(permissions: &[&str]) -> String {
     }
 }
 
+/// Reads newline-delimited helper output on a dedicated thread so the backend
+/// actor can bound its waits with [`flume::Receiver::recv_timeout`] instead of
+/// blocking forever on a wedged helper. EOF drops the sender, which the actor
+/// observes as a disconnect.
+fn read_helper_lines<R>(reader: R, sender: &flume::Sender<HelperLine>)
+where
+    R: Read,
+{
+    let mut reader = BufReader::new(reader);
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                if sender.send(Ok(line)).is_err() {
+                    break;
+                }
+            }
+            Err(error) => {
+                let _ = sender.send(Err(error.to_string()));
+                break;
+            }
+        }
+    }
+}
+
 fn spawn_helper(path: &Path) -> Result<Child, MacOSHelperError> {
     let metadata = fs::metadata(path).map_err(|error| {
         MacOSHelperError::new(format!(
@@ -800,10 +862,7 @@ fn spawn_helper(path: &Path) -> Result<Child, MacOSHelperError> {
     })
 }
 
-fn shutdown_helper_after_startup_error(
-    child: &mut Child,
-    session: &mut HelperSession<ChildStdout, ChildStdin>,
-) {
+fn shutdown_helper_after_startup_error(child: &mut Child, session: &mut HelperSession<ChildStdin>) {
     let mut shutdown_sent = false;
     if let Err(error) = shutdown_helper_process(child, Some(session), &mut shutdown_sent) {
         warn!(%error, "failed to shut down macOS helper after startup error");
@@ -812,7 +871,7 @@ fn shutdown_helper_after_startup_error(
 
 fn shutdown_helper_process(
     child: &mut Child,
-    session: Option<&mut HelperSession<ChildStdout, ChildStdin>>,
+    session: Option<&mut HelperSession<ChildStdin>>,
     shutdown_sent: &mut bool,
 ) -> Result<(), MacOSHelperError> {
     let mut first_error = None;
@@ -1381,5 +1440,41 @@ mod tests {
             .lines()
             .map(|line| Ok(serde_json::from_str(line)?))
             .collect()
+    }
+
+    /// A reader that blocks until its paired sender is dropped, then reports EOF.
+    /// Models a wedged helper whose pipe stays open but never produces output.
+    struct BlockingReader {
+        signal: flume::Receiver<()>,
+    }
+
+    impl Read for BlockingReader {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            // Block until the sender is dropped; then return EOF.
+            let _ = self.signal.recv();
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn receive_reports_timeout_when_helper_is_silent() {
+        let (keep_open, signal) = flume::unbounded::<()>();
+        let mut session = HelperSession::with_read_timeout(
+            BlockingReader { signal },
+            Vec::new(),
+            Duration::from_millis(50),
+        );
+
+        let Err(error) = session.receive() else {
+            panic!("a silent helper must time out");
+        };
+        assert!(
+            error.to_string().contains("did not respond"),
+            "unexpected error: {error}"
+        );
+
+        // Hold the sender open until after the read attempt so the reader thread
+        // genuinely blocks rather than hitting EOF.
+        drop(keep_open);
     }
 }

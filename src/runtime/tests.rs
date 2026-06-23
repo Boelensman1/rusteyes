@@ -60,6 +60,30 @@ fn break_finished_allows_next_scheduled_break_to_advance() {
 }
 
 #[test]
+fn duplicate_break_finished_finishes_overlay_exactly_once() {
+    // The macOS backend queues `BreakFinished` exactly once, but a second one
+    // must never produce a second `FinishBreak` (which would spuriously lock or
+    // beep again). `finish_break` guards on `current_break`, so the duplicate is
+    // a no-op once the overlay has been finished.
+    let (backend, commands) = ScriptedBackend::new([
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
+        RuntimeEvent::BreakFinished,
+        RuntimeEvent::BreakFinished,
+        RuntimeEvent::Shutdown,
+    ])
+    .into_parts();
+
+    assert_eq!(run_config_with_backend(test_config(), backend), Ok(()));
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::FinishBreak { lock_after: false },
+        ]
+    );
+}
+
+#[test]
 fn autolock_break_completion_requests_local_lock() {
     let (backend, commands) = ScriptedBackend::new([
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),

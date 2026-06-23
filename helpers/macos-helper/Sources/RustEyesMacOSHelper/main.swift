@@ -135,6 +135,15 @@ private final class BreakOverlayController {
     private var applicationPrepared = false
     private var state: BreakOverlayState?
     private var lockAfterBreakRequested = false
+    // Watchdog A: fires if the countdown reaches 0:00 but no finish/clear arrives.
+    // Watchdog B: fires if RustEyes stops talking to the helper entirely while an
+    // overlay is up. Both live on the main queue so they fire even when the
+    // protocol thread is blocked on a read, and their handlers run on the main
+    // thread so they can call `clear()` directly. See main.swift watchdog notes.
+    private let zeroWatchdogTimeout = watchdogTimeout(defaultSeconds: 5)
+    private let heartbeatWatchdogTimeout = watchdogTimeout(defaultSeconds: 10)
+    private var zeroWatchdog: DispatchSourceTimer?
+    private var heartbeatWatchdog: DispatchSourceTimer?
 
     func show(state: BreakOverlayState) throws {
         prepareApplication()
@@ -152,6 +161,9 @@ private final class BreakOverlayController {
             window.orderFrontRegardless()
         }
         NSCursor.arrow.set()
+        // The overlay is now blocking input; start the liveness watchdog so the
+        // tap is released even if RustEyes never asks us to clear it.
+        resetHeartbeatWatchdog()
     }
 
     func update(remainingMs: UInt64, lockAfterBreak: Bool) {
@@ -163,6 +175,21 @@ private final class BreakOverlayController {
         state.lockAfterBreak = lockAfterBreak
         self.state = state
         updateWindows(with: state)
+
+        // An update is a sign of life from RustEyes.
+        resetHeartbeatWatchdog()
+        if remainingMs == 0 {
+            armZeroWatchdog()
+        } else {
+            disarmZeroWatchdog()
+        }
+    }
+
+    /// Records that a message was received from RustEyes while an overlay is up,
+    /// keeping the heartbeat watchdog from firing. Called from the activity poll
+    /// path, which otherwise sends no `update`.
+    func noteHeartbeat() {
+        resetHeartbeatWatchdog()
     }
 
     func takeLockAfterBreakRequest() -> Bool {
@@ -172,6 +199,8 @@ private final class BreakOverlayController {
     }
 
     func clear() {
+        disarmZeroWatchdog()
+        disarmHeartbeatWatchdog()
         for window in windows {
             window.orderOut(nil)
             window.close()
@@ -181,6 +210,56 @@ private final class BreakOverlayController {
         inputBlocker.mouseDownHandler = nil
         state = nil
         lockAfterBreakRequested = false
+    }
+
+    private func armZeroWatchdog() {
+        // Arm once on the first 0:00 update. The stuck state streams
+        // `updateBreak {0}` every ~500ms, so re-arming would prevent it ever
+        // firing; let the original deadline stand.
+        guard zeroWatchdog == nil else {
+            return
+        }
+        zeroWatchdog = scheduleWatchdog(
+            after: zeroWatchdogTimeout,
+            reason: "countdown reached 0:00 but no finish arrived"
+        )
+    }
+
+    private func disarmZeroWatchdog() {
+        zeroWatchdog?.cancel()
+        zeroWatchdog = nil
+    }
+
+    private func resetHeartbeatWatchdog() {
+        guard state != nil else {
+            return
+        }
+        disarmHeartbeatWatchdog()
+        heartbeatWatchdog = scheduleWatchdog(
+            after: heartbeatWatchdogTimeout,
+            reason: "no messages from RustEyes while a break overlay was active"
+        )
+    }
+
+    private func disarmHeartbeatWatchdog() {
+        heartbeatWatchdog?.cancel()
+        heartbeatWatchdog = nil
+    }
+
+    private func scheduleWatchdog(
+        after timeout: DispatchTimeInterval,
+        reason: String
+    ) -> DispatchSourceTimer {
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + timeout)
+        timer.setEventHandler { [weak self] in
+            writeStandardErrorLine(
+                "watchdog fired (\(reason)); force-clearing break overlay to release input"
+            )
+            self?.clear()
+        }
+        timer.resume()
+        return timer
     }
 
     private func overlayWindow(for screen: NSScreen, state: BreakOverlayState) -> NSWindow {
@@ -733,6 +812,18 @@ private func writeStandardErrorLine(_ line: String) {
     FileHandle.standardError.write(Data((line + "\n").utf8))
 }
 
+/// Resolves a watchdog timeout, allowing `RUSTEYES_HELPER_WATCHDOG_MS` to shorten
+/// both watchdogs for manual testing.
+private func watchdogTimeout(defaultSeconds: Double) -> DispatchTimeInterval {
+    if let raw = ProcessInfo.processInfo.environment["RUSTEYES_HELPER_WATCHDOG_MS"],
+        let milliseconds = Int(raw), milliseconds > 0
+    {
+        return .milliseconds(milliseconds)
+    }
+
+    return .milliseconds(Int(defaultSeconds * 1000))
+}
+
 private func exitAfterDirectInvocationMessage() -> Never {
     writeStandardErrorLine(directInvocationMessage)
     exit(directInvocationExitCode)
@@ -797,8 +888,9 @@ private func handlePollActivity(overlay: BreakOverlayController) throws {
     }
 
     let idleMilliseconds = min(idleSeconds * 1000, Double(UInt64.max))
-    let lockAfterBreakRequested = runReturningOnMain {
-        overlay.takeLockAfterBreakRequest()
+    let lockAfterBreakRequested = runReturningOnMain { () -> Bool in
+        overlay.noteHeartbeat()
+        return overlay.takeLockAfterBreakRequest()
     }
     try writeMessage(ActivitySampleMessage(
         idleMs: UInt64(idleMilliseconds),

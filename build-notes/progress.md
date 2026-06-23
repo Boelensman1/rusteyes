@@ -308,6 +308,16 @@
   protocol carries a single chosen `message` to the Swift helper, and the
   Linux-only `RuntimeEvent::BreakStartFailed` variant gained a
   non-Linux `allow(dead_code)` so `-D warnings` builds cleanly on all hosts.
+- Completed `overlay-stuck-recovery`: defensive checks so the macOS break
+  overlay (and its input-blocking event tap) can never outlive a break and
+  force a reboot. `runtime::finish_break` now clears the overlay whenever a break
+  was active (decoupled from the scheduler's return value, with a duplicate-event
+  guard); the Swift helper gained two main-queue watchdogs (zero-timer 5s and
+  heartbeat 10s, overridable via `RUSTEYES_HELPER_WATCHDOG_MS`) that self-clear
+  the overlay if dismissal never arrives; and `HelperSession` reads are now
+  bounded by a 5s `recv_timeout` via a reader thread so a wedged helper is killed
+  (the OS then removes the tap) instead of blocking the backend forever. Manual
+  macOS verification of the watchdogs and the wedge path is pending.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.

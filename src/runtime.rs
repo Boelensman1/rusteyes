@@ -410,19 +410,26 @@ impl<'a> DaemonRuntime<'a> {
 
     fn finish_break(&mut self) -> bool {
         self.clear_pre_break_notice();
-        let should_lock = self
-            .current_break
-            .take()
-            .is_some_and(CurrentBreakState::lock_after);
+
+        // Only emit `FinishBreak` when the runtime believed a break overlay was
+        // showing. The early return also makes a duplicate `BreakFinished` a
+        // no-op so we never send a second finish (which would spuriously lock or
+        // beep again). Crucially, the overlay teardown is gated on
+        // `current_break`, NOT on `scheduler.finish_break()`: the scheduler can
+        // have left `Pending` while the overlay is still up, and we must clear it
+        // regardless so the input-blocking event tap is always released.
+        let Some(current_break) = self.current_break.take() else {
+            return true;
+        };
+        let should_lock = current_break.lock_after();
 
         if self.scheduler.finish_break() {
             self.update_active_time_display();
-            self.handle_command(BackendCommand::FinishBreak {
-                lock_after: should_lock,
-            })
-        } else {
-            true
         }
+
+        self.handle_command(BackendCommand::FinishBreak {
+            lock_after: should_lock,
+        })
     }
 
     fn request_lock_after_current_break(&mut self, propagation: SyncPropagation) -> bool {
