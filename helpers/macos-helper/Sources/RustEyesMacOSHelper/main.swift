@@ -4,7 +4,7 @@ import CoreGraphics
 import Darwin
 import Foundation
 
-private let protocolVersion = 6
+private let protocolVersion = 7
 private let directInvocationExitCode: Int32 = 2
 private let directInvocationMessage =
     "rusteyes-macos-helper is an internal RustEyes helper. Start RustEyes with the main rusteyes binary; do not run this helper directly."
@@ -166,11 +166,14 @@ private final class BreakOverlayController {
         resetHeartbeatWatchdog()
     }
 
-    func update(remainingMs: UInt64, lockAfterBreak: Bool) {
+    func update(remainingMs: UInt64, lockAfterBreak: Bool, message: String?) {
         guard var state else {
             return
         }
 
+        if let message {
+            state.message = message
+        }
         state.remainingMs = remainingMs
         state.lockAfterBreak = lockAfterBreak
         self.state = state
@@ -715,6 +718,7 @@ private struct BreakInfo: Decodable {
 private struct UpdateBreakCommand: Decodable {
     let remainingMs: UInt64
     let lockAfter: Bool
+    let message: String?
 }
 
 private struct FinishBreakCommand: Decodable {
@@ -863,7 +867,11 @@ private func handleStartBreak(_ command: StartBreakCommand, overlay: BreakOverla
 
 private func handleUpdateBreak(_ command: UpdateBreakCommand, overlay: BreakOverlayController) {
     runOnMain {
-        overlay.update(remainingMs: command.remainingMs, lockAfterBreak: command.lockAfter)
+        overlay.update(
+            remainingMs: command.remainingMs,
+            lockAfterBreak: command.lockAfter,
+            message: command.message
+        )
     }
 }
 

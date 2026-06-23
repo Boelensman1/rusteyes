@@ -33,6 +33,8 @@ fn authenticates_all_sync_event_variants() -> Result<(), Box<dyn Error>> {
         },
         SyncEvent::BreakStarted {
             name: String::from("short"),
+            message: String::from("Rest your eyes"),
+            started_at_ms: 1_700_000_000_000,
         },
         SyncEvent::DisableFor {
             duration: Duration::from_secs(30),
@@ -99,7 +101,7 @@ fn wire_json_uses_expected_version_sender_sequence_event_and_mac() -> Result<(),
     let encoded = encode_authenticated(&message, &shared_secret())?;
     let value = serde_json::from_str::<Value>(&encoded)?;
 
-    assert_eq!(value["version"], json!(2));
+    assert_eq!(value["version"], json!(3));
     assert_eq!(value["sender"], json!(PEER_ID));
     assert_eq!(value["sequence"], json!(42));
     assert_eq!(value["event"]["type"], json!("activeTimeElapsed"));
@@ -114,12 +116,36 @@ fn wire_json_uses_expected_version_sender_sequence_event_and_mac() -> Result<(),
 }
 
 #[test]
+fn wire_json_carries_break_message_and_started_at() -> Result<(), Box<dyn Error>> {
+    let message = SyncMessage::event(
+        peer_id()?,
+        7,
+        SyncEvent::BreakStarted {
+            name: String::from("short"),
+            message: String::from("Rest your eyes"),
+            started_at_ms: 1_700_000_000_000,
+        },
+    );
+    let encoded = encode_authenticated(&message, &shared_secret())?;
+    let value = serde_json::from_str::<Value>(&encoded)?;
+
+    assert_eq!(value["event"]["type"], json!("breakStarted"));
+    assert_eq!(value["event"]["name"], json!("short"));
+    assert_eq!(value["event"]["message"], json!("Rest your eyes"));
+    assert_eq!(value["event"]["startedAtMs"], json!(1_700_000_000_000_u64));
+
+    assert_eq!(decode_authenticated(&encoded, &shared_secret())?, message);
+
+    Ok(())
+}
+
+#[test]
 fn wire_json_uses_control_field_for_peer_hello() -> Result<(), Box<dyn Error>> {
     let message = SyncMessage::control(peer_id()?, 0, peer_hello_control());
     let encoded = encode_authenticated(&message, &shared_secret())?;
     let value = serde_json::from_str::<Value>(&encoded)?;
 
-    assert_eq!(value["version"], json!(2));
+    assert_eq!(value["version"], json!(3));
     assert_eq!(value["sender"], json!(PEER_ID));
     assert_eq!(value["sequence"], json!(0));
     assert_eq!(value["control"]["type"], json!("peerHello"));
@@ -281,6 +307,8 @@ fn rejects_tampered_payload() -> Result<(), Box<dyn Error>> {
         7,
         SyncEvent::BreakStarted {
             name: String::from("short"),
+            message: String::from("Rest your eyes"),
+            started_at_ms: 1_700_000_000_000,
         },
     );
     let encoded = encode_authenticated(&message, &shared_secret())?;
@@ -348,12 +376,12 @@ fn rejects_invalid_mac_hex() -> Result<(), Box<dyn Error>> {
 #[test]
 fn rejects_unsupported_version_after_authentication() -> Result<(), Box<dyn Error>> {
     let mut message = SyncMessage::event(peer_id()?, 11, SyncEvent::Enable);
-    message.version = 3;
+    message.version = 4;
     let encoded = authenticated_json(&message)?;
 
     assert_eq!(
         decode_authenticated(&encoded, &shared_secret()),
-        Err(SyncProtocolError::UnsupportedVersion { version: 3 })
+        Err(SyncProtocolError::UnsupportedVersion { version: 4 })
     );
 
     Ok(())
@@ -423,6 +451,8 @@ fn rejects_invalid_break_names() -> Result<(), Box<dyn Error>> {
             15,
             SyncEvent::BreakStarted {
                 name: String::from(name),
+                message: String::from("Rest your eyes"),
+                started_at_ms: 1_700_000_000_000,
             },
         );
 

@@ -214,7 +214,16 @@ pub(crate) enum DisableRequest {
 #[allow(clippy::enum_variant_names)]
 pub(crate) enum BackendCommand {
     StartBreak(ScheduledBreak),
-    FinishBreak { lock_after: bool },
+    /// Replaces the message and remaining time of the break that is already
+    /// visible, used when a peer's earlier-started break wins a near-simultaneous
+    /// start and the local break must adopt it.
+    ReplaceActiveBreak {
+        message: String,
+        remaining: Duration,
+    },
+    FinishBreak {
+        lock_after: bool,
+    },
     RequestLockAfterCurrentBreak,
     ClearBreak,
 }
@@ -287,7 +296,7 @@ mod tests {
             name: String::from("short"),
             origin: BreakOrigin::Manual,
             duration: Duration::from_secs(1),
-            messages: vec![String::from("Rest your eyes")],
+            message: String::from("Rest your eyes"),
             autolock: false,
         }
     }

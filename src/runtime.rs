@@ -10,10 +10,11 @@ use crate::sync_transport::{
 use crate::ui::{PreBreakNotification, RuntimeUi, UiCommand, UiConfig, UiNotification};
 #[cfg(target_os = "linux")]
 use crate::x11_activity::X11ActivityBackend;
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{trace, warn};
 
 const DEFAULT_PRE_BREAK_NOTICE_LEAD: Duration = Duration::from_secs(30);
@@ -77,9 +78,12 @@ fn run_with_ui(
             .name(String::from("rusteyes-runtime"))
             .spawn(move || {
                 let ui_runtime = crate::ui::runtime_ui_from_handle(ui_handle);
-                let sync_runtime =
-                    RuntimeSync::new(sync_transport.event_receiver(), &sync_transport);
-                run_with_event_sources(schedule, backend, sync_runtime, ui_runtime);
+                let sync_runtime = RuntimeSync::new(
+                    sync_transport.event_receiver(),
+                    sync_transport.local_peer_id(),
+                    &sync_transport,
+                );
+                run_with_event_sources(schedule, backend, sync_runtime, ui_runtime, Clock::System);
                 ui_proxy.runtime_stopped();
             })
             .map_err(|error| crate::ui::UiError::runtime_thread(&error))
@@ -109,8 +113,9 @@ fn run_with_event_sources(
     backend: BackendActor,
     sync_runtime: RuntimeSync<'_>,
     ui_runtime: RuntimeUi,
+    clock: Clock,
 ) {
-    let mut daemon = DaemonRuntime::new(schedule, backend, sync_runtime, ui_runtime);
+    let mut daemon = DaemonRuntime::new(schedule, backend, sync_runtime, ui_runtime, clock);
     daemon.run();
 }
 
@@ -133,6 +138,29 @@ impl SyncPropagation {
     }
 }
 
+/// Source of wall-clock time used to stamp and compare break starts across
+/// synced peers. Production reads the system clock; tests inject a fixed value
+/// so broadcast timestamps and replacement remaining times are deterministic.
+enum Clock {
+    System,
+    #[cfg(test)]
+    Fixed(u64),
+}
+
+impl Clock {
+    fn now_unix_millis(&self) -> u64 {
+        match self {
+            Self::System => SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
+                .unwrap_or(0),
+            #[cfg(test)]
+            Self::Fixed(millis) => *millis,
+        }
+    }
+}
+
 struct DaemonRuntime<'a> {
     scheduler: BreakScheduler,
     backend: BackendActor,
@@ -147,6 +175,8 @@ struct DaemonRuntime<'a> {
     pre_break_notice: Option<PreBreakNoticeState>,
     notified_rejected_peers: BTreeSet<PeerId>,
     displayed_active_time: Duration,
+    local_peer_id: Option<PeerId>,
+    clock: Clock,
 }
 
 impl<'a> DaemonRuntime<'a> {
@@ -155,6 +185,7 @@ impl<'a> DaemonRuntime<'a> {
         backend: BackendActor,
         sync_runtime: RuntimeSync<'a>,
         ui: RuntimeUi,
+        clock: Clock,
     ) -> Self {
         let backend_event_receiver = backend.clone_event_receiver();
         let idle_reset = IdleReset::new(schedule.reset_after_idle());
@@ -173,6 +204,8 @@ impl<'a> DaemonRuntime<'a> {
             pre_break_notice: None,
             notified_rejected_peers: BTreeSet::new(),
             displayed_active_time: Duration::ZERO,
+            local_peer_id: sync_runtime.local_peer_id,
+            clock,
         }
     }
 
@@ -288,9 +321,13 @@ impl<'a> DaemonRuntime<'a> {
                 trace!(peer_id = %peer_id, ?elapsed, "applying synced active time");
                 self.observe_active(elapsed, SyncPropagation::Suppress)
             }
-            SyncEvent::BreakStarted { name } => {
+            SyncEvent::BreakStarted {
+                name,
+                message,
+                started_at_ms,
+            } => {
                 trace!(peer_id = %peer_id, break_name = %name, "applying synced break start");
-                self.start_manual_break(&name, SyncPropagation::Suppress)
+                self.apply_synced_break_start(peer_id, &name, message, started_at_ms)
             }
             SyncEvent::DisableFor { duration } => {
                 trace!(peer_id = %peer_id, ?duration, "applying synced timed disable");
@@ -372,12 +409,28 @@ impl<'a> DaemonRuntime<'a> {
     }
 
     fn start_manual_break(&mut self, name: &str, propagation: SyncPropagation) -> bool {
-        if let Some(scheduled_break) = self.scheduler.start_manual_break(name) {
-            self.update_active_time_display();
-            self.start_break(scheduled_break, propagation)
-        } else {
-            true
+        self.start_named_break(name, None, None, propagation)
+    }
+
+    /// Starts a configured break by name, optionally overriding the displayed
+    /// message and the start timestamp. Synced break starts pass the peer's
+    /// values so every machine shows the same message and shares one timeline.
+    fn start_named_break(
+        &mut self,
+        name: &str,
+        message: Option<String>,
+        started_at_ms: Option<u64>,
+        propagation: SyncPropagation,
+    ) -> bool {
+        let Some(mut scheduled_break) = self.scheduler.start_manual_break(name) else {
+            return true;
+        };
+        if let Some(message) = message {
+            scheduled_break.message = message;
         }
+        self.update_active_time_display();
+        let started_at_ms = started_at_ms.unwrap_or_else(|| self.clock.now_unix_millis());
+        self.start_break_at(scheduled_break, started_at_ms, propagation)
     }
 
     fn start_break(
@@ -385,16 +438,95 @@ impl<'a> DaemonRuntime<'a> {
         scheduled_break: ScheduledBreak,
         propagation: SyncPropagation,
     ) -> bool {
+        let started_at_ms = self.clock.now_unix_millis();
+        self.start_break_at(scheduled_break, started_at_ms, propagation)
+    }
+
+    fn start_break_at(
+        &mut self,
+        scheduled_break: ScheduledBreak,
+        started_at_ms: u64,
+        propagation: SyncPropagation,
+    ) -> bool {
         let name = scheduled_break.name.clone();
+        let message = scheduled_break.message.clone();
         self.clear_pre_break_notice();
-        self.current_break = Some(CurrentBreakState::for_break(&scheduled_break));
+        self.current_break = Some(CurrentBreakState::for_break(
+            &scheduled_break,
+            started_at_ms,
+        ));
 
         if self.handle_command(BackendCommand::StartBreak(scheduled_break)) {
-            self.broadcast_if_needed(propagation, &SyncEvent::BreakStarted { name });
+            self.broadcast_if_needed(
+                propagation,
+                &SyncEvent::BreakStarted {
+                    name,
+                    message,
+                    started_at_ms,
+                },
+            );
             true
         } else {
             false
         }
+    }
+
+    /// Applies a break start received from a peer. The break that started
+    /// earlier wins: if no break is showing yet we join the peer's break, and if
+    /// one is already showing we replace it (message and remaining time) only
+    /// when the peer's break is strictly earlier. Ties are broken by peer id so
+    /// both machines converge on the same break without oscillating.
+    fn apply_synced_break_start(
+        &mut self,
+        peer_id: PeerId,
+        name: &str,
+        message: String,
+        started_at_ms: u64,
+    ) -> bool {
+        let Some(current) = self.current_break else {
+            return self.start_named_break(
+                name,
+                Some(message),
+                Some(started_at_ms),
+                SyncPropagation::Suppress,
+            );
+        };
+
+        if self.peer_break_wins(peer_id, started_at_ms, current.started_at_ms()) {
+            self.replace_current_break(current, message, started_at_ms)
+        } else {
+            true
+        }
+    }
+
+    fn peer_break_wins(
+        &self,
+        peer_id: PeerId,
+        peer_started_ms: u64,
+        local_started_ms: u64,
+    ) -> bool {
+        match peer_started_ms.cmp(&local_started_ms) {
+            Ordering::Less => true,
+            Ordering::Greater => false,
+            Ordering::Equal => self.local_peer_id.is_some_and(|local| peer_id < local),
+        }
+    }
+
+    fn replace_current_break(
+        &mut self,
+        current: CurrentBreakState,
+        message: String,
+        started_at_ms: u64,
+    ) -> bool {
+        let now = self.clock.now_unix_millis();
+        let elapsed = Duration::from_millis(now.saturating_sub(started_at_ms));
+        let remaining = current.duration().saturating_sub(elapsed);
+
+        if let Some(state) = &mut self.current_break {
+            state.started_at_ms = started_at_ms;
+        }
+
+        self.handle_command(BackendCommand::ReplaceActiveBreak { message, remaining })
     }
 
     fn break_start_failed(&mut self) -> bool {
@@ -708,16 +840,19 @@ enum SelectedRuntimeInput {
 
 struct RuntimeSync<'a> {
     event_receiver: Option<flume::Receiver<SyncTransportEvent>>,
+    local_peer_id: Option<PeerId>,
     broadcaster: &'a dyn SyncEventBroadcaster,
 }
 
 impl RuntimeSync<'_> {
     fn new(
         event_receiver: Option<flume::Receiver<SyncTransportEvent>>,
+        local_peer_id: Option<PeerId>,
         broadcaster: &dyn SyncEventBroadcaster,
     ) -> RuntimeSync<'_> {
         RuntimeSync {
             event_receiver,
+            local_peer_id,
             broadcaster,
         }
     }
@@ -726,7 +861,7 @@ impl RuntimeSync<'_> {
 #[cfg(test)]
 impl RuntimeSync<'static> {
     fn inactive() -> Self {
-        Self::new(None, &NOOP_SYNC_BROADCASTER)
+        Self::new(None, None, &NOOP_SYNC_BROADCASTER)
     }
 }
 
@@ -756,12 +891,16 @@ static NOOP_SYNC_BROADCASTER: NoopSyncBroadcaster = NoopSyncBroadcaster;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CurrentBreakState {
     lock_after: bool,
+    started_at_ms: u64,
+    duration: Duration,
 }
 
 impl CurrentBreakState {
-    const fn for_break(scheduled_break: &ScheduledBreak) -> Self {
+    const fn for_break(scheduled_break: &ScheduledBreak, started_at_ms: u64) -> Self {
         Self {
             lock_after: scheduled_break.autolock,
+            started_at_ms,
+            duration: scheduled_break.duration,
         }
     }
 
@@ -776,6 +915,14 @@ impl CurrentBreakState {
 
     const fn lock_after(self) -> bool {
         self.lock_after
+    }
+
+    const fn started_at_ms(self) -> u64 {
+        self.started_at_ms
+    }
+
+    const fn duration(self) -> Duration {
+        self.duration
     }
 }
 

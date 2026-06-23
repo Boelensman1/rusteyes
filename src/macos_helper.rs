@@ -17,7 +17,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{trace, warn};
 
-const PROTOCOL_VERSION: u16 = 6;
+const PROTOCOL_VERSION: u16 = 7;
 const HELPER_PATH_ENV: &str = "RUSTEYES_MACOS_HELPER";
 const DEVELOPMENT_HELPER_PATH: &str = "helpers/macos-helper/.build/debug/rusteyes-macos-helper";
 const BUNDLED_HELPER_PATH_FROM_EXE: &str = "../Resources/rusteyes-macos-helper";
@@ -244,9 +244,28 @@ impl MacOSHelperBackend {
     fn handle_command(&mut self, command: BackendCommand) {
         match command {
             BackendCommand::StartBreak(scheduled_break) => self.start_break(scheduled_break),
+            BackendCommand::ReplaceActiveBreak { message, remaining } => {
+                self.replace_active_break(message, remaining);
+            }
             BackendCommand::FinishBreak { lock_after } => self.finish_break(lock_after),
             BackendCommand::RequestLockAfterCurrentBreak => self.request_lock_after_current_break(),
             BackendCommand::ClearBreak => self.clear_break(),
+        }
+    }
+
+    fn replace_active_break(&mut self, message: String, remaining: Duration) {
+        let Some(lock_after_break) = self.active_break.as_mut().map(|active_break| {
+            active_break.replace_remaining(remaining);
+            active_break.lock_after_break()
+        }) else {
+            return;
+        };
+
+        if let Err(error) = self
+            .session
+            .replace_break(message, remaining, lock_after_break)
+        {
+            self.queue_backend_error(&error);
         }
     }
 }
@@ -311,6 +330,10 @@ impl ActiveBreak {
 
     fn request_lock_after_break(&mut self) {
         self.lock_after_break = true;
+    }
+
+    fn replace_remaining(&mut self, remaining: Duration) {
+        self.timer = BreakTimer::new(remaining);
     }
 
     const fn remaining(self) -> Duration {
@@ -456,6 +479,23 @@ where
             &DaemonMessage::UpdateBreak {
                 remaining_ms: duration_millis(remaining),
                 lock_after,
+                message: None,
+            },
+            HelperCommand::Update,
+        )
+    }
+
+    fn replace_break(
+        &mut self,
+        message: String,
+        remaining: Duration,
+        lock_after: bool,
+    ) -> Result<(), MacOSHelperError> {
+        self.send_helper_command(
+            &DaemonMessage::UpdateBreak {
+                remaining_ms: duration_millis(remaining),
+                lock_after,
+                message: Some(message),
             },
             HelperCommand::Update,
         )
@@ -626,6 +666,8 @@ enum DaemonMessage {
         remaining_ms: u64,
         #[serde(rename = "lockAfter")]
         lock_after: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
     },
     ClearBreak,
     PollActivity,
@@ -643,6 +685,9 @@ impl From<BackendCommand> for DaemonMessage {
                 unreachable!(
                     "lock-after-current-break updates are framed with HelperSession::update_break"
                 )
+            }
+            BackendCommand::ReplaceActiveBreak { .. } => {
+                unreachable!("active-break replacement is framed with HelperSession::replace_break")
             }
             BackendCommand::ClearBreak => Self::ClearBreak,
         }
@@ -665,7 +710,7 @@ impl From<ScheduledBreak> for WireBreak {
             name: scheduled_break.name.clone(),
             origin: WireBreakOrigin::from(scheduled_break.origin),
             duration_ms: duration_millis(scheduled_break.duration),
-            message: scheduled_break.random_message().to_owned(),
+            message: scheduled_break.message.clone(),
             autolock: scheduled_break.autolock,
         }
     }
@@ -709,6 +754,9 @@ impl HelperCommand {
                 unreachable!(
                     "lock-after-current-break updates are framed with HelperSession::update_break"
                 )
+            }
+            BackendCommand::ReplaceActiveBreak { .. } => {
+                unreachable!("active-break replacement is framed with HelperSession::replace_break")
             }
             BackendCommand::ClearBreak => Self::Clear,
         }
@@ -1022,7 +1070,7 @@ mod tests {
 
     #[test]
     fn handshake_writes_hello_and_accepts_ready() -> Result<(), Box<dyn std::error::Error>> {
-        let input = Cursor::new(br#"{"type":"ready","version":6}"#.to_vec());
+        let input = Cursor::new(br#"{"type":"ready","version":7}"#.to_vec());
         let mut output = Vec::new();
 
         {
@@ -1118,7 +1166,7 @@ mod tests {
 
     #[test]
     fn handshake_rejects_incompatible_version() {
-        let input = Cursor::new(br#"{"type":"ready","version":7}"#.to_vec());
+        let input = Cursor::new(br#"{"type":"ready","version":8}"#.to_vec());
         let mut output = Vec::new();
         let mut session = HelperSession::new(input, &mut output);
 
@@ -1160,7 +1208,7 @@ mod tests {
             name: String::from("short"),
             origin: BreakOrigin::Scheduled { slot: 3 },
             duration: Duration::from_millis(1_500),
-            messages: vec![String::from("Rest your eyes")],
+            message: String::from("Rest your eyes"),
             autolock: true,
         }))?;
 
@@ -1210,12 +1258,39 @@ mod tests {
             vec![DaemonMessage::UpdateBreak {
                 remaining_ms: 2_500,
                 lock_after: true,
+                message: None,
             }]
         );
         let messages = daemon_json_values(&output)?;
         assert_eq!(messages[0]["remainingMs"], 2_500);
         assert_eq!(messages[0]["lockAfter"], true);
         assert!(messages[0].get("lock_after").is_none());
+        assert!(messages[0].get("message").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn replace_break_command_carries_message() -> Result<(), Box<dyn std::error::Error>> {
+        let input = Cursor::new(br#"{"type":"commandComplete","command":"updateBreak"}"#.to_vec());
+        let mut output = Vec::new();
+        let mut session = HelperSession::new(input, &mut output);
+
+        session.replace_break(
+            String::from("Look away"),
+            Duration::from_millis(2_500),
+            false,
+        )?;
+
+        assert_eq!(
+            daemon_messages(&output)?,
+            vec![DaemonMessage::UpdateBreak {
+                remaining_ms: 2_500,
+                lock_after: false,
+                message: Some(String::from("Look away")),
+            }]
+        );
+        let messages = daemon_json_values(&output)?;
+        assert_eq!(messages[0]["message"], "Look away");
         Ok(())
     }
 
@@ -1267,7 +1342,7 @@ mod tests {
             name: String::from("short"),
             origin: BreakOrigin::Manual,
             duration: Duration::from_millis(1_500),
-            messages: vec![String::from("Rest your eyes")],
+            message: String::from("Rest your eyes"),
             autolock: false,
         })) else {
             panic!("helper command error must fail");

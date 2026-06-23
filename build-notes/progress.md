@@ -308,6 +308,18 @@
   protocol carries a single chosen `message` to the Swift helper, and the
   Linux-only `RuntimeEvent::BreakStartFailed` variant gained a
   non-Linux `allow(dead_code)` so `-D warnings` builds cleanly on all hosts.
+- Completed `sync-break-message`: the chosen break message and a start timestamp
+  now travel with the synced `BreakStarted` event so all peers show the same
+  break. Message selection moved off `ScheduledBreak` (now a single resolved
+  `message`) onto `BreakRule`; `SyncEvent::BreakStarted` gained
+  `message`/`started_at_ms` (sync protocol 2->3). For near-simultaneous starts
+  the earlier break wins (smaller `started_at_ms`, then smaller peer id) and the
+  loser's live overlay is replaced with the winner's message and a remaining time
+  recomputed from the timestamp, via a new `BackendCommand::ReplaceActiveBreak`.
+  X11 gained `X11Overlay::update_message`; the macOS helper `UpdateBreak` carries
+  an optional `message` (helper protocol 6->7). The runtime gained an injectable
+  clock seam and the local peer id from `SyncTransport`. Relies on roughly
+  NTP-synced wall clocks across the user's machines.
 - Completed `overlay-stuck-recovery`: defensive checks so the macOS break
   overlay (and its input-blocking event tap) can never outlive a break and
   force a reboot. `runtime::finish_break` now clears the overlay whenever a break
@@ -455,6 +467,8 @@
   active-time accumulation.
 - `make check` passes after removing stale dead-code allowances.
 - `make check` passes after the project rename to RustEyes.
+- `make check` (275 tests), `make macos-helper-build`, and `make build` pass
+  after adding synced break messages with earliest-start replacement.
 - `make -B macos-app-build` passes after adding pre-break notification
   countdown updates.
 - `nix develop --command cargo test --lib config::tests` passes after adding

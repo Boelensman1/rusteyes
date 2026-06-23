@@ -78,7 +78,7 @@ fn test_break(autolock: bool) -> ScheduledBreak {
         name: String::from("short"),
         origin: BreakOrigin::Scheduled { slot: 1 },
         duration: Duration::from_secs(20),
-        messages: vec![String::from("Rest your eyes")],
+        message: String::from("Rest your eyes"),
         autolock,
     }
 }

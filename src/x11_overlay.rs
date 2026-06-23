@@ -105,7 +105,7 @@ impl X11Overlay {
             background_gc,
             foreground_gc,
             input_grab: InputGrab::none(),
-            message: x11_text_bytes(scheduled_break.random_message()),
+            message: x11_text_bytes(&scheduled_break.message),
             remaining: scheduled_break.duration,
             lock_after_break: scheduled_break.autolock,
         };
@@ -166,6 +166,15 @@ impl X11Overlay {
         remaining: Duration,
     ) -> Result<(), X11OverlayError> {
         self.remaining = remaining;
+        self.draw(connection)
+    }
+
+    pub(crate) fn update_message(
+        &mut self,
+        connection: &RustConnection,
+        message: &str,
+    ) -> Result<(), X11OverlayError> {
+        self.message = x11_text_bytes(message);
         self.draw(connection)
     }
 

@@ -7,7 +7,7 @@ use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;
 
-const PROTOCOL_VERSION: u8 = 2;
+const PROTOCOL_VERSION: u8 = 3;
 const PEER_ID_BYTES: usize = 16;
 const MAC_BYTES: usize = 32;
 const COMPATIBILITY_FINGERPRINT_DOMAIN: &[u8] = b"rusteyes-sync-config-compatibility-v1";
@@ -249,6 +249,9 @@ pub(crate) enum SyncEvent {
     },
     BreakStarted {
         name: String,
+        message: String,
+        #[serde(rename = "startedAtMs")]
+        started_at_ms: u64,
     },
     DisableFor {
         #[serde(rename = "durationMs", with = "duration_millis")]
@@ -270,7 +273,7 @@ impl SyncEvent {
                     field: "durationMs",
                 })
             }
-            Self::BreakStarted { name } if name.trim() != name || name.is_empty() => {
+            Self::BreakStarted { name, .. } if name.trim() != name || name.is_empty() => {
                 Err(SyncProtocolError::InvalidBreakName { name: name.clone() })
             }
             Self::ActiveTimeElapsed { .. }

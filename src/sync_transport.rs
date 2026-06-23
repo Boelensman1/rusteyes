@@ -37,6 +37,7 @@ enum SyncTransportState {
 
 struct ActiveSyncTransport {
     io: TransportIo,
+    self_id: PeerId,
     command_sender: flume::Sender<TransportCommand>,
     event_receiver: flume::Receiver<SyncTransportEvent>,
     #[cfg(test)]
@@ -138,6 +139,7 @@ impl SyncTransport {
         Ok(Self {
             state: SyncTransportState::Active(Box::new(ActiveSyncTransport {
                 io: binding.io,
+                self_id,
                 command_sender,
                 event_receiver,
                 #[cfg(test)]
@@ -192,6 +194,16 @@ impl SyncTransport {
     pub(crate) fn event_receiver(&self) -> Option<flume::Receiver<SyncTransportEvent>> {
         match &self.state {
             SyncTransportState::Active(active) => Some(active.event_receiver.clone()),
+            SyncTransportState::Inactive => None,
+        }
+    }
+
+    /// The transient peer id this transport advertises, or `None` when sync is
+    /// disabled. Used to deterministically break ties between peers that start a
+    /// break at the same timestamp.
+    pub(crate) fn local_peer_id(&self) -> Option<PeerId> {
+        match &self.state {
+            SyncTransportState::Active(active) => Some(active.self_id),
             SyncTransportState::Inactive => None,
         }
     }

@@ -296,9 +296,31 @@ impl X11ActivityBackend {
         self.poller.queue_event(RuntimeEvent::Shutdown);
     }
 
+    fn replace_active_break(
+        &mut self,
+        message: &str,
+        remaining: Duration,
+    ) -> Result<(), X11ActivityError> {
+        if let Some(active_break) = &mut self.active_break {
+            active_break
+                .replace(&self.activity.connection, message, remaining)
+                .map_err(|error| X11ActivityError::overlay(&error))
+        } else {
+            if let Some(pending_break) = &mut self.pending_break {
+                pending_break.replace(message, remaining);
+            }
+            Ok(())
+        }
+    }
+
     fn handle_command(&mut self, command: BackendCommand) {
         match command {
             BackendCommand::StartBreak(scheduled_break) => self.start_break(&scheduled_break),
+            BackendCommand::ReplaceActiveBreak { message, remaining } => {
+                if let Err(error) = self.replace_active_break(&message, remaining) {
+                    self.queue_backend_error(&error);
+                }
+            }
             BackendCommand::FinishBreak { lock_after } => self.finish_break(lock_after),
             BackendCommand::RequestLockAfterCurrentBreak => {
                 if let Err(error) = self.request_lock_after_current_break() {
@@ -356,6 +378,11 @@ impl PendingBreakStart {
     fn request_lock_after_current_break(&mut self) {
         self.scheduled_break.autolock = true;
     }
+
+    fn replace(&mut self, message: &str, remaining: Duration) {
+        self.scheduled_break.message = message.to_owned();
+        self.scheduled_break.duration = remaining;
+    }
 }
 
 struct ActiveBreak {
@@ -369,6 +396,17 @@ impl ActiveBreak {
             overlay,
             timer: BreakTimer::new(duration),
         }
+    }
+
+    fn replace(
+        &mut self,
+        connection: &RustConnection,
+        message: &str,
+        remaining: Duration,
+    ) -> Result<(), X11OverlayError> {
+        self.timer = BreakTimer::new(remaining);
+        self.overlay.update_message(connection, message)?;
+        self.overlay.update_remaining(connection, remaining)
     }
 
     fn advance(

@@ -1,5 +1,5 @@
 use super::{
-    DaemonRuntime, RuntimeInput, RuntimeSync, SyncEventBroadcaster, run_with_event_sources,
+    Clock, DaemonRuntime, RuntimeInput, RuntimeSync, SyncEventBroadcaster, run_with_event_sources,
 };
 use crate::backend::{BackendActor, BackendCommand, DisableRequest, RuntimeEvent};
 use crate::config::{
@@ -14,6 +14,10 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::thread;
 use std::time::Duration;
+
+/// Fixed wall-clock value (Unix millis) used by the deterministic test clock so
+/// broadcast `started_at_ms` stamps and replacement remaining times are stable.
+const TEST_NOW_MS: u64 = 1_700_000_000_000;
 
 #[test]
 fn shutdown_exits_cleanly_after_scheduler_setup() {
@@ -470,9 +474,7 @@ fn local_scheduled_break_start_is_broadcast_to_sync_peers() {
             SyncEvent::ActiveTimeElapsed {
                 elapsed: Duration::from_secs(10),
             },
-            SyncEvent::BreakStarted {
-                name: String::from("short"),
-            },
+            broadcast_break("short"),
         ]
     );
 }
@@ -494,12 +496,7 @@ fn local_manual_break_start_is_broadcast_to_sync_peers() {
         received_commands(&commands),
         vec![BackendCommand::StartBreak(manual_break("long", 300))]
     );
-    assert_eq!(
-        sync_broadcaster.events(),
-        vec![SyncEvent::BreakStarted {
-            name: String::from("long"),
-        }]
-    );
+    assert_eq!(sync_broadcaster.events(), vec![broadcast_break("long")]);
 }
 
 #[test]
@@ -556,9 +553,7 @@ fn local_lock_after_current_break_request_is_broadcast_once_to_sync_peers() {
             SyncEvent::ActiveTimeElapsed {
                 elapsed: Duration::from_secs(10),
             },
-            SyncEvent::BreakStarted {
-                name: String::from("short"),
-            },
+            broadcast_break("short"),
             SyncEvent::LockAfterCurrentBreak,
         ]
     );
@@ -592,9 +587,7 @@ fn stale_local_lock_after_current_break_request_is_not_broadcast() {
             SyncEvent::ActiveTimeElapsed {
                 elapsed: Duration::from_secs(10),
             },
-            SyncEvent::BreakStarted {
-                name: String::from("short"),
-            },
+            broadcast_break("short"),
         ]
     );
 }
@@ -699,9 +692,11 @@ fn remote_break_start_event_starts_configured_break_without_rebroadcast()
         test_config(),
         backend,
         &sync_broadcaster,
-        [sync_input(remote_sync_event(SyncEvent::BreakStarted {
-            name: String::from("short"),
-        })?)],
+        [sync_input(incoming_break(
+            "short",
+            &break_message("short"),
+            TEST_NOW_MS,
+        )?)],
     )?;
 
     assert_eq!(
@@ -722,13 +717,142 @@ fn remote_break_start_event_ignores_unknown_break_name_without_rebroadcast()
         test_config(),
         backend,
         &sync_broadcaster,
-        [sync_input(remote_sync_event(SyncEvent::BreakStarted {
-            name: String::from("missing"),
-        })?)],
+        [sync_input(incoming_break(
+            "missing",
+            &break_message("missing"),
+            TEST_NOW_MS,
+        )?)],
     )?;
 
     assert!(received_commands(&commands).is_empty());
     assert!(sync_broadcaster.events().is_empty());
+    Ok(())
+}
+
+#[test]
+fn synced_earlier_break_replaces_current_break_message_and_remaining()
+-> Result<(), Box<dyn std::error::Error>> {
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = test_backend();
+
+    // The local break starts at TEST_NOW_MS; the peer's break started 5s earlier
+    // so it wins and the local overlay adopts its message with 5s already gone.
+    run_config_with_inputs_sync_broadcaster_ui_and_local_peer(
+        test_config(),
+        backend,
+        &sync_broadcaster,
+        RuntimeUi::inactive(),
+        Some(local_peer_higher()?),
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+            sync_input(incoming_break("short", "Look away", TEST_NOW_MS - 5_000)?),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::ReplaceActiveBreak {
+                message: String::from("Look away"),
+                remaining: Duration::from_secs(15),
+            },
+        ]
+    );
+    // The adopted break is applied locally only; the local start is still the
+    // single broadcast.
+    assert_eq!(
+        sync_broadcaster.events(),
+        vec![
+            SyncEvent::ActiveTimeElapsed {
+                elapsed: Duration::from_secs(10),
+            },
+            broadcast_break("short"),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn synced_later_break_does_not_replace_current_break() -> Result<(), Box<dyn std::error::Error>> {
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = test_backend();
+
+    // The peer's break started later, so the local (earlier) break wins and is
+    // left untouched.
+    run_config_with_inputs_sync_broadcaster_ui_and_local_peer(
+        test_config(),
+        backend,
+        &sync_broadcaster,
+        RuntimeUi::inactive(),
+        Some(local_peer_lower()?),
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+            sync_input(incoming_break("short", "Look away", TEST_NOW_MS + 5_000)?),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+    );
+    Ok(())
+}
+
+#[test]
+fn synced_break_tie_is_broken_toward_the_lower_peer_id() -> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+
+    // Equal start timestamps: the sending peer id is lower than ours, so the
+    // peer wins the tie and the local overlay adopts its message.
+    run_config_with_inputs_sync_broadcaster_ui_and_local_peer(
+        test_config(),
+        backend,
+        &NOOP_SYNC_BROADCASTER_FOR_TEST,
+        RuntimeUi::inactive(),
+        Some(local_peer_higher()?),
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+            sync_input(incoming_break("short", "Look away", TEST_NOW_MS)?),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::ReplaceActiveBreak {
+                message: String::from("Look away"),
+                remaining: Duration::from_secs(20),
+            },
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn synced_break_tie_keeps_local_break_when_local_peer_id_is_lower()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+
+    // Equal start timestamps: our peer id is lower, so the local break wins the
+    // tie and is left untouched, and both machines converge on it.
+    run_config_with_inputs_sync_broadcaster_ui_and_local_peer(
+        test_config(),
+        backend,
+        &NOOP_SYNC_BROADCASTER_FOR_TEST,
+        RuntimeUi::inactive(),
+        Some(local_peer_lower()?),
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+            sync_input(incoming_break("short", "Look away", TEST_NOW_MS)?),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+    );
     Ok(())
 }
 
@@ -763,9 +887,7 @@ fn remote_disable_event_clears_pending_break_without_rebroadcast()
             SyncEvent::ActiveTimeElapsed {
                 elapsed: Duration::from_secs(10),
             },
-            SyncEvent::BreakStarted {
-                name: String::from("short"),
-            },
+            broadcast_break("short"),
         ]
     );
     Ok(())
@@ -826,9 +948,7 @@ fn remote_lock_after_current_break_request_applies_without_rebroadcast()
             SyncEvent::ActiveTimeElapsed {
                 elapsed: Duration::from_secs(10),
             },
-            SyncEvent::BreakStarted {
-                name: String::from("short"),
-            },
+            broadcast_break("short"),
         ]
     );
     Ok(())
@@ -864,9 +984,7 @@ fn stale_remote_lock_after_current_break_request_is_ignored()
             SyncEvent::ActiveTimeElapsed {
                 elapsed: Duration::from_secs(10),
             },
-            SyncEvent::BreakStarted {
-                name: String::from("short"),
-            },
+            broadcast_break("short"),
         ]
     );
     Ok(())
@@ -1361,12 +1479,7 @@ fn ui_events_use_local_runtime_control_path() {
         received_commands(&commands),
         vec![BackendCommand::StartBreak(manual_break("long", 300))]
     );
-    assert_eq!(
-        sync_broadcaster.events(),
-        vec![SyncEvent::BreakStarted {
-            name: String::from("long"),
-        }]
-    );
+    assert_eq!(sync_broadcaster.events(), vec![broadcast_break("long")]);
 }
 
 #[test]
@@ -1415,7 +1528,11 @@ fn run_config_with_sync_broadcaster(
     backend: BackendActor,
     sync_broadcaster: &dyn SyncEventBroadcaster,
 ) -> Result<(), ConfigError> {
-    run_config_with_runtime_sync(config, backend, RuntimeSync::new(None, sync_broadcaster))
+    run_config_with_runtime_sync(
+        config,
+        backend,
+        RuntimeSync::new(None, None, sync_broadcaster),
+    )
 }
 
 fn run_config_with_runtime_sync(
@@ -1424,7 +1541,13 @@ fn run_config_with_runtime_sync(
     sync_runtime: RuntimeSync<'_>,
 ) -> Result<(), ConfigError> {
     let schedule = BreakSchedule::try_from(config.breaks)?;
-    run_with_event_sources(schedule, backend, sync_runtime, RuntimeUi::inactive());
+    run_with_event_sources(
+        schedule,
+        backend,
+        sync_runtime,
+        RuntimeUi::inactive(),
+        Clock::Fixed(TEST_NOW_MS),
+    );
     Ok(())
 }
 
@@ -1478,9 +1601,33 @@ fn run_config_with_inputs_and_sync_broadcaster_and_ui(
     ui: RuntimeUi,
     inputs: impl IntoIterator<Item = RuntimeInput>,
 ) -> Result<(), ConfigError> {
+    run_config_with_inputs_sync_broadcaster_ui_and_local_peer(
+        config,
+        backend,
+        sync_broadcaster,
+        ui,
+        None,
+        inputs,
+    )
+}
+
+fn run_config_with_inputs_sync_broadcaster_ui_and_local_peer(
+    config: Config,
+    backend: BackendActor,
+    sync_broadcaster: &dyn SyncEventBroadcaster,
+    ui: RuntimeUi,
+    local_peer_id: Option<PeerId>,
+    inputs: impl IntoIterator<Item = RuntimeInput>,
+) -> Result<(), ConfigError> {
     let schedule = BreakSchedule::try_from(config.breaks)?;
-    let sync_runtime = RuntimeSync::new(None, sync_broadcaster);
-    let mut daemon = DaemonRuntime::new(schedule, backend, sync_runtime, ui);
+    let sync_runtime = RuntimeSync::new(None, local_peer_id, sync_broadcaster);
+    let mut daemon = DaemonRuntime::new(
+        schedule,
+        backend,
+        sync_runtime,
+        ui,
+        Clock::Fixed(TEST_NOW_MS),
+    );
 
     for input in inputs {
         if !daemon.handle_input(input) {
@@ -1547,6 +1694,18 @@ fn received_ui_commands(receiver: &flume::Receiver<UiCommand>) -> Vec<UiCommand>
 
 fn peer_id() -> Result<PeerId, Box<dyn std::error::Error>> {
     Ok(PeerId::from_str("0102030405060708090a0b0c0d0e0f10")?)
+}
+
+/// A local peer id ordered above [`peer_id`], so an inbound peer wins a start
+/// timestamp tie against it.
+fn local_peer_higher() -> Result<PeerId, Box<dyn std::error::Error>> {
+    Ok(PeerId::from_str("ff112233445566778899aabbccddeeff")?)
+}
+
+/// A local peer id ordered below [`peer_id`], so the local break wins a start
+/// timestamp tie against an inbound peer.
+fn local_peer_lower() -> Result<PeerId, Box<dyn std::error::Error>> {
+    Ok(PeerId::from_str("00112233445566778899aabbccddeeff")?)
 }
 
 fn remote_active_time(elapsed: Duration) -> Result<SyncTransportEvent, Box<dyn std::error::Error>> {
@@ -1658,15 +1817,39 @@ fn break_type(
     }
 }
 
+fn break_message(name: &str) -> String {
+    match name {
+        "long" => String::from("Take a longer break"),
+        _ => String::from("Rest your eyes"),
+    }
+}
+
+fn broadcast_break(name: &str) -> SyncEvent {
+    SyncEvent::BreakStarted {
+        name: name.to_owned(),
+        message: break_message(name),
+        started_at_ms: TEST_NOW_MS,
+    }
+}
+
+fn incoming_break(
+    name: &str,
+    message: &str,
+    started_at_ms: u64,
+) -> Result<SyncTransportEvent, Box<dyn std::error::Error>> {
+    remote_sync_event(SyncEvent::BreakStarted {
+        name: name.to_owned(),
+        message: message.to_owned(),
+        started_at_ms,
+    })
+}
+
 fn scheduled_break(name: &str, slot: usize, duration_secs: u64) -> ScheduledBreak {
     ScheduledBreak {
         name: name.to_owned(),
         origin: BreakOrigin::Scheduled { slot },
         duration: Duration::from_secs(duration_secs),
-        messages: vec![match name {
-            "long" => String::from("Take a longer break"),
-            _ => String::from("Rest your eyes"),
-        }],
+        message: break_message(name),
         autolock: name == "long",
     }
 }
@@ -1676,10 +1859,7 @@ fn manual_break(name: &str, duration_secs: u64) -> ScheduledBreak {
         name: name.to_owned(),
         origin: BreakOrigin::Manual,
         duration: Duration::from_secs(duration_secs),
-        messages: vec![match name {
-            "long" => String::from("Take a longer break"),
-            _ => String::from("Rest your eyes"),
-        }],
+        message: break_message(name),
         autolock: name == "long",
     }
 }

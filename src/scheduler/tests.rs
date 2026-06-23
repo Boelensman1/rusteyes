@@ -1,5 +1,5 @@
 use super::{
-    BreakOrigin, BreakSchedule, BreakScheduler, DEFAULT_BREAK_MESSAGE, ScheduledBreak,
+    BreakOrigin, BreakRule, BreakSchedule, BreakScheduler, DEFAULT_BREAK_MESSAGE, ScheduledBreak,
     UpcomingScheduledBreak,
 };
 use crate::config::{BreakTypeConfig, Breaks, Config, ConfigError, DEFAULT_BREAK_AFTER_ACTIVE};
@@ -14,7 +14,7 @@ fn default_config_schedules_short_and_long_break_slots() {
     assert_eq!(first.name, "short");
     assert_eq!(first.origin, BreakOrigin::Scheduled { slot: 1 });
     assert_eq!(first.duration, Duration::from_secs(20));
-    assert_eq!(first.messages, vec![String::from("Rest your eyes")]);
+    assert_eq!(first.message, "Rest your eyes");
     assert!(!first.autolock);
 
     assert!(scheduler.finish_break());
@@ -23,7 +23,7 @@ fn default_config_schedules_short_and_long_break_slots() {
     assert_eq!(second.name, "long");
     assert_eq!(second.origin, BreakOrigin::Scheduled { slot: 2 });
     assert_eq!(second.duration, Duration::from_mins(5));
-    assert_eq!(second.messages, vec![String::from("Take a longer break")]);
+    assert_eq!(second.message, "Take a longer break");
     assert!(second.autolock);
 
     assert!(scheduler.finish_break());
@@ -438,42 +438,53 @@ fn schedule_rejects_duplicate_break_intervals() {
 
 #[test]
 fn message_at_returns_the_message_for_the_given_index() {
-    let scheduled_break = scheduled_break(&["Rest your eyes", "Look away", "Blink"]);
+    let rule = break_rule(&["Rest your eyes", "Look away", "Blink"]);
 
-    assert_eq!(scheduled_break.message_at(0), "Rest your eyes");
-    assert_eq!(scheduled_break.message_at(1), "Look away");
-    assert_eq!(scheduled_break.message_at(2), "Blink");
+    assert_eq!(rule.message_at(0), "Rest your eyes");
+    assert_eq!(rule.message_at(1), "Look away");
+    assert_eq!(rule.message_at(2), "Blink");
 }
 
 #[test]
 fn message_at_wraps_indices_past_the_end() {
-    let scheduled_break = scheduled_break(&["Rest your eyes", "Look away"]);
+    let rule = break_rule(&["Rest your eyes", "Look away"]);
 
-    assert_eq!(scheduled_break.message_at(2), "Rest your eyes");
-    assert_eq!(scheduled_break.message_at(3), "Look away");
+    assert_eq!(rule.message_at(2), "Rest your eyes");
+    assert_eq!(rule.message_at(3), "Look away");
 }
 
 #[test]
 fn message_at_falls_back_to_the_default_when_no_messages_are_configured() {
-    let scheduled_break = scheduled_break(&[]);
+    let rule = break_rule(&[]);
 
-    assert_eq!(scheduled_break.message_at(0), DEFAULT_BREAK_MESSAGE);
+    assert_eq!(rule.message_at(0), DEFAULT_BREAK_MESSAGE);
 }
 
 #[test]
 fn random_message_returns_a_configured_message() {
     let messages = ["Rest your eyes", "Look away", "Blink"];
-    let scheduled_break = scheduled_break(&messages);
+    let rule = break_rule(&messages);
 
     for _ in 0..32 {
-        assert!(messages.contains(&scheduled_break.random_message()));
+        assert!(messages.contains(&rule.random_message().as_str()));
     }
 }
 
-fn scheduled_break(messages: &[&str]) -> ScheduledBreak {
-    ScheduledBreak {
+#[test]
+fn to_break_resolves_a_single_message_from_the_configured_list() {
+    let messages = ["Rest your eyes", "Look away", "Blink"];
+    let rule = break_rule(&messages);
+
+    for _ in 0..32 {
+        let scheduled_break = rule.to_break(BreakOrigin::Manual);
+        assert!(messages.contains(&scheduled_break.message.as_str()));
+    }
+}
+
+fn break_rule(messages: &[&str]) -> BreakRule {
+    BreakRule {
         name: String::from("short"),
-        origin: BreakOrigin::Manual,
+        interval: 1,
         duration: Duration::from_secs(20),
         messages: messages
             .iter()
