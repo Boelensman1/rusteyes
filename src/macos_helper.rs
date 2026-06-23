@@ -619,17 +619,17 @@ struct WireBreak {
     name: String,
     origin: WireBreakOrigin,
     duration_ms: u64,
-    messages: Vec<String>,
+    message: String,
     autolock: bool,
 }
 
 impl From<ScheduledBreak> for WireBreak {
     fn from(scheduled_break: ScheduledBreak) -> Self {
         Self {
-            name: scheduled_break.name,
+            name: scheduled_break.name.clone(),
             origin: WireBreakOrigin::from(scheduled_break.origin),
             duration_ms: duration_millis(scheduled_break.duration),
-            messages: scheduled_break.messages,
+            message: scheduled_break.random_message().to_owned(),
             autolock: scheduled_break.autolock,
         }
     }
@@ -1112,7 +1112,7 @@ mod tests {
                     name: String::from("short"),
                     origin: WireBreakOrigin::Scheduled { slot: 3 },
                     duration_ms: 1_500,
-                    messages: vec![String::from("Rest your eyes")],
+                    message: String::from("Rest your eyes"),
                     autolock: true,
                 },
             }]

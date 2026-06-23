@@ -301,6 +301,13 @@
   was active, before any lock handoff), and the macOS helper calls
   `NSSound.beep()` on the main thread in `handleFinishBreak`. No config toggle
   was added. Audible verification on a real X session and on macOS is pending.
+- Completed `random-break-message`: a break type with several configured
+  messages now shows a randomly chosen one each break instead of always the
+  first. Selection is centralized on the Rust side via
+  `ScheduledBreak::random_message()` (backed by `getrandom`), the macOS wire
+  protocol carries a single chosen `message` to the Swift helper, and the
+  Linux-only `RuntimeEvent::BreakStartFailed` variant gained a
+  non-Linux `allow(dead_code)` so `-D warnings` builds cleanly on all hosts.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.

@@ -1,4 +1,7 @@
-use super::{BreakOrigin, BreakSchedule, BreakScheduler, ScheduledBreak, UpcomingScheduledBreak};
+use super::{
+    BreakOrigin, BreakSchedule, BreakScheduler, DEFAULT_BREAK_MESSAGE, ScheduledBreak,
+    UpcomingScheduledBreak,
+};
 use crate::config::{BreakTypeConfig, Breaks, Config, ConfigError, DEFAULT_BREAK_AFTER_ACTIVE};
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -431,6 +434,53 @@ fn schedule_rejects_duplicate_break_intervals() {
             duplicate_name: String::from("short")
         })
     );
+}
+
+#[test]
+fn message_at_returns_the_message_for_the_given_index() {
+    let scheduled_break = scheduled_break(&["Rest your eyes", "Look away", "Blink"]);
+
+    assert_eq!(scheduled_break.message_at(0), "Rest your eyes");
+    assert_eq!(scheduled_break.message_at(1), "Look away");
+    assert_eq!(scheduled_break.message_at(2), "Blink");
+}
+
+#[test]
+fn message_at_wraps_indices_past_the_end() {
+    let scheduled_break = scheduled_break(&["Rest your eyes", "Look away"]);
+
+    assert_eq!(scheduled_break.message_at(2), "Rest your eyes");
+    assert_eq!(scheduled_break.message_at(3), "Look away");
+}
+
+#[test]
+fn message_at_falls_back_to_the_default_when_no_messages_are_configured() {
+    let scheduled_break = scheduled_break(&[]);
+
+    assert_eq!(scheduled_break.message_at(0), DEFAULT_BREAK_MESSAGE);
+}
+
+#[test]
+fn random_message_returns_a_configured_message() {
+    let messages = ["Rest your eyes", "Look away", "Blink"];
+    let scheduled_break = scheduled_break(&messages);
+
+    for _ in 0..32 {
+        assert!(messages.contains(&scheduled_break.random_message()));
+    }
+}
+
+fn scheduled_break(messages: &[&str]) -> ScheduledBreak {
+    ScheduledBreak {
+        name: String::from("short"),
+        origin: BreakOrigin::Manual,
+        duration: Duration::from_secs(20),
+        messages: messages
+            .iter()
+            .map(|message| (*message).to_owned())
+            .collect(),
+        autolock: false,
+    }
 }
 
 fn scheduler(breaks: Breaks) -> BreakScheduler {

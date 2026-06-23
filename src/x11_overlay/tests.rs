@@ -5,9 +5,8 @@ use super::layout::{
 use super::{
     MonitorGeometry, OverlayWindow, check_grab_status, is_retryable_grab_status,
     normalize_monitor_geometries, output_has_monitor, overlay_window_event_mask,
-    pointer_grab_event_mask, selected_break_message,
+    pointer_grab_event_mask,
 };
-use crate::scheduler::{BreakOrigin, ScheduledBreak};
 use std::time::Duration;
 use x11rb::protocol::randr::Connection as RandrConnection;
 use x11rb::protocol::xproto::{EventMask, GrabStatus};
@@ -54,13 +53,6 @@ fn monitor_geometries_fall_back_to_root_screen() {
     let monitors = normalize_monitor_geometries(Vec::new(), fallback.clone());
 
     assert_eq!(monitors, vec![fallback]);
-}
-
-#[test]
-fn first_configured_break_message_is_selected() {
-    let scheduled_break = scheduled_break(["Rest your eyes", "Look away"]);
-
-    assert_eq!(selected_break_message(&scheduled_break), "Rest your eyes");
 }
 
 #[test]
@@ -225,14 +217,4 @@ fn failed_grab_status_records_retryability() {
 
     assert!(retryable.is_retryable_grab_failure());
     assert!(!permanent.is_retryable_grab_failure());
-}
-
-fn scheduled_break(messages: impl IntoIterator<Item = &'static str>) -> ScheduledBreak {
-    ScheduledBreak {
-        name: String::from("short"),
-        origin: BreakOrigin::Scheduled { slot: 1 },
-        duration: Duration::from_secs(20),
-        messages: messages.into_iter().map(String::from).collect(),
-        autolock: false,
-    }
 }

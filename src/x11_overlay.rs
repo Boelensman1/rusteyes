@@ -1,4 +1,4 @@
-use crate::scheduler::ScheduledBreak;
+use crate::scheduler::{DEFAULT_BREAK_MESSAGE, ScheduledBreak};
 use std::collections::BTreeSet;
 use std::fmt;
 use std::time::Duration;
@@ -16,8 +16,6 @@ use x11rb::rust_connection::RustConnection;
 use x11rb::{COPY_FROM_PARENT, NONE};
 
 use layout::{TextLine, lock_control_contains_root_position, overlay_layout, x11_text_bytes};
-
-const DEFAULT_BREAK_MESSAGE: &str = "Take a break";
 
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,7 +105,7 @@ impl X11Overlay {
             background_gc,
             foreground_gc,
             input_grab: InputGrab::none(),
-            message: x11_text_bytes(selected_break_message(scheduled_break)),
+            message: x11_text_bytes(scheduled_break.random_message()),
             remaining: scheduled_break.duration,
             lock_after_break: scheduled_break.autolock,
         };
@@ -654,13 +652,6 @@ fn normalize_monitor_geometries(
     } else {
         normalized
     }
-}
-
-fn selected_break_message(scheduled_break: &ScheduledBreak) -> &str {
-    scheduled_break
-        .messages
-        .first()
-        .map_or(DEFAULT_BREAK_MESSAGE, String::as_str)
 }
 
 mod layout {

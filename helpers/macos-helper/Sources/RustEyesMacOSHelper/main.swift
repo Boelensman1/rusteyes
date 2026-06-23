@@ -616,19 +616,19 @@ private struct StartBreakCommand: Decodable {
 
 private struct BreakInfo: Decodable {
     let durationMs: UInt64
-    let messages: [String]
+    let message: String
     let autolock: Bool
 
     private enum CodingKeys: String, CodingKey {
         case durationMs
-        case messages
+        case message
         case autolock
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         durationMs = try container.decode(UInt64.self, forKey: .durationMs)
-        messages = (try? container.decode([String].self, forKey: .messages)) ?? []
+        message = (try? container.decode(String.self, forKey: .message)) ?? ""
         autolock = try container.decode(Bool.self, forKey: .autolock)
     }
 }
@@ -807,9 +807,8 @@ private func handlePollActivity(overlay: BreakOverlayController) throws {
 }
 
 private func breakOverlayState(from command: StartBreakCommand) -> BreakOverlayState {
-    let messages = command.breakInfo.messages
-    let message = messages.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        ?? defaultBreakMessage
+    let trimmed = command.breakInfo.message.trimmingCharacters(in: .whitespacesAndNewlines)
+    let message = trimmed.isEmpty ? defaultBreakMessage : command.breakInfo.message
 
     return BreakOverlayState(
         message: message,

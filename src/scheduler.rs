@@ -1,6 +1,8 @@
 use crate::config::{BreakTypeConfig, Breaks, ConfigError};
 use std::time::Duration;
 
+pub(crate) const DEFAULT_BREAK_MESSAGE: &str = "Take a break";
+
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BreakSchedule {
@@ -267,6 +269,30 @@ pub(crate) struct ScheduledBreak {
     pub(crate) duration: Duration,
     pub(crate) messages: Vec<String>,
     pub(crate) autolock: bool,
+}
+
+impl ScheduledBreak {
+    /// Returns the configured message at `index`, wrapping around the list, or
+    /// [`DEFAULT_BREAK_MESSAGE`] when no messages are configured.
+    fn message_at(&self, index: usize) -> &str {
+        match self.messages.len() {
+            0 => DEFAULT_BREAK_MESSAGE,
+            len => self.messages[index % len].as_str(),
+        }
+    }
+
+    /// Picks a message to display for this break at random.
+    ///
+    /// Falls back to the first message (or [`DEFAULT_BREAK_MESSAGE`] when the
+    /// list is empty) if the system random source is unavailable.
+    pub(crate) fn random_message(&self) -> &str {
+        let mut bytes = [0u8; 8];
+        let index = match getrandom::fill(&mut bytes) {
+            Ok(()) => usize::try_from(u64::from_le_bytes(bytes)).unwrap_or(0),
+            Err(_) => 0,
+        };
+        self.message_at(index)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

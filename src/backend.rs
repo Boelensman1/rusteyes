@@ -193,6 +193,9 @@ pub(crate) enum RuntimeEvent {
     ActiveTimeElapsed(Duration),
     IdleTimeElapsed(Duration),
     WallClockElapsed(Duration),
+    // Only produced by the X11 backend when an input grab cannot be acquired
+    // before the retry timeout; other platforms never fail a break this way.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     BreakStartFailed,
     BreakFinished,
     LockAfterCurrentBreak,
