@@ -201,6 +201,7 @@ pub(crate) enum RuntimeEvent {
     LockAfterCurrentBreak,
     StartManualBreak(String),
     Disable(DisableRequest),
+    Enable,
     Shutdown,
 }
 

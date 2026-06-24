@@ -37,7 +37,14 @@ pub(crate) enum UiCommand {
     ShowPreBreakNotification(PreBreakNotification),
     ClearPreBreakNotification,
     ShowNotification(UiNotification),
-    UpdateActiveTime(Duration),
+    UpdateStatus(StatusDisplay),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StatusDisplay {
+    Active(Duration),
+    DisabledFor(Duration),
+    DisabledUntilRestart,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +156,7 @@ enum UiMenuAction {
     StartBreak(String),
     DisableFor(Duration),
     DisableUntilRestart,
+    Enable,
     Quit,
 }
 
@@ -158,6 +166,7 @@ impl UiMenuAction {
             Self::StartBreak(name) => RuntimeEvent::StartManualBreak(name.clone()),
             Self::DisableFor(duration) => RuntimeEvent::Disable(DisableRequest::For(*duration)),
             Self::DisableUntilRestart => RuntimeEvent::Disable(DisableRequest::UntilRestart),
+            Self::Enable => RuntimeEvent::Enable,
             Self::Quit => RuntimeEvent::Shutdown,
         }
     }
@@ -166,8 +175,8 @@ impl UiMenuAction {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod app {
     use super::{
-        PreBreakNotification, RuntimeEvent, RuntimeUi, UiAppChannels, UiCommand, UiConfig,
-        UiHandle, UiMenuAction, UiNotification, ui_channels,
+        PreBreakNotification, RuntimeEvent, RuntimeUi, StatusDisplay, UiAppChannels, UiCommand,
+        UiConfig, UiHandle, UiMenuAction, UiNotification, ui_channels,
     };
     use notify_rust::{Notification, NotificationHandle, Timeout};
     use std::collections::BTreeMap;
@@ -194,7 +203,7 @@ mod app {
     const PRE_BREAK_NOTIFICATION_SOUND: &str = "message";
     #[cfg(target_os = "macos")]
     const PRE_BREAK_NOTIFICATION_SOUND: &str = "Ping";
-    const ACTIVE_TIME_MENU_ID: &str = "active-time";
+    const STATUS_MENU_ID: &str = "status";
     pub(crate) fn run<F>(config: UiConfig, start_runtime: F) -> Result<(), UiError>
     where
         F: FnOnce(UiLoopProxy, UiHandle) -> Result<JoinHandle<()>, UiError> + 'static,
@@ -314,7 +323,8 @@ mod app {
         event_sender: flume::Sender<RuntimeEvent>,
         runtime_thread: Option<JoinHandle<()>>,
         tray_icon: Option<TrayIcon>,
-        active_time_item: Option<MenuItem>,
+        status_item: Option<MenuItem>,
+        enable_item: Option<MenuItem>,
         pre_break_notification: Option<NotificationHandle>,
         menu_actions: BTreeMap<String, UiMenuAction>,
         initialized: bool,
@@ -331,7 +341,8 @@ mod app {
                 event_sender,
                 runtime_thread: Some(runtime_thread),
                 tray_icon: None,
-                active_time_item: None,
+                status_item: None,
+                enable_item: None,
                 pre_break_notification: None,
                 menu_actions: BTreeMap::new(),
                 initialized: false,
@@ -349,7 +360,8 @@ mod app {
             }));
 
             let built_tray_icon = build_tray_icon(&self.config, &mut self.menu_actions)?;
-            self.active_time_item = Some(built_tray_icon.active_time_item);
+            self.status_item = Some(built_tray_icon.status_item);
+            self.enable_item = Some(built_tray_icon.enable_item);
             self.tray_icon = Some(built_tray_icon.tray_icon);
             self.initialized = true;
             Ok(())
@@ -383,9 +395,12 @@ mod app {
                         warn!(%error, ?notification, "failed to show notification");
                     }
                 }
-                UiCommand::UpdateActiveTime(active_time) => {
-                    if let Some(item) = &self.active_time_item {
-                        item.set_text(active_time_menu_text(active_time));
+                UiCommand::UpdateStatus(status) => {
+                    if let Some(item) = &self.status_item {
+                        item.set_text(status_menu_text(&status));
+                    }
+                    if let Some(item) = &self.enable_item {
+                        item.set_enabled(!matches!(status, StatusDisplay::Active(_)));
                     }
                 }
             }
@@ -410,7 +425,8 @@ mod app {
 
     struct BuiltTrayIcon {
         tray_icon: TrayIcon,
-        active_time_item: MenuItem,
+        status_item: MenuItem,
+        enable_item: MenuItem,
     }
 
     fn build_tray_icon(
@@ -419,13 +435,13 @@ mod app {
     ) -> Result<BuiltTrayIcon, UiError> {
         let menu = Submenu::new(APP_NAME, true);
 
-        let active_time_item = MenuItem::with_id(
-            MenuId::new(ACTIVE_TIME_MENU_ID),
-            active_time_menu_text(Duration::ZERO),
+        let status_item = MenuItem::with_id(
+            MenuId::new(STATUS_MENU_ID),
+            status_menu_text(&StatusDisplay::Active(Duration::ZERO)),
             false,
             None,
         );
-        menu.append(&active_time_item)
+        menu.append(&status_item)
             .map_err(|error| UiError::menu(error.to_string()))?;
         append_separator(&menu)?;
 
@@ -468,6 +484,14 @@ mod app {
             .map_err(|error| UiError::menu(error.to_string()))?;
         actions.insert(disable_until_restart_id, UiMenuAction::DisableUntilRestart);
 
+        // Always present; clickable only while disabled. The app starts enabled,
+        // so the item begins greyed out and is toggled via UpdateStatus.
+        let enable_id = String::from("enable");
+        let enable_item = MenuItem::with_id(MenuId::new(&enable_id), "Enable", false, None);
+        menu.append(&enable_item)
+            .map_err(|error| UiError::menu(error.to_string()))?;
+        actions.insert(enable_id, UiMenuAction::Enable);
+
         append_separator(&menu)?;
 
         let quit_id = String::from("quit");
@@ -495,7 +519,8 @@ mod app {
 
         Ok(BuiltTrayIcon {
             tray_icon,
-            active_time_item,
+            status_item,
+            enable_item,
         })
     }
 
@@ -569,8 +594,16 @@ mod app {
         notification_builder
     }
 
-    fn active_time_menu_text(active_time: Duration) -> String {
-        format!("Active time: {}", humantime::format_duration(active_time))
+    fn status_menu_text(status: &StatusDisplay) -> String {
+        match status {
+            StatusDisplay::Active(active_time) => {
+                format!("Active time: {}", humantime::format_duration(*active_time))
+            }
+            StatusDisplay::DisabledFor(remaining) => {
+                format!("Disabled for {}", humantime::format_duration(*remaining))
+            }
+            StatusDisplay::DisabledUntilRestart => String::from("Permanently disabled"),
+        }
     }
 
     fn start_break_menu_id(name: &str) -> String {
@@ -669,10 +702,18 @@ mod app {
         }
 
         #[test]
-        fn active_time_menu_text_formats_elapsed_duration() {
+        fn status_menu_text_renders_each_state() {
             assert_eq!(
-                active_time_menu_text(Duration::from_secs(65)),
+                status_menu_text(&StatusDisplay::Active(Duration::from_secs(65))),
                 "Active time: 1m 5s"
+            );
+            assert_eq!(
+                status_menu_text(&StatusDisplay::DisabledFor(Duration::from_secs(65))),
+                "Disabled for 1m 5s"
+            );
+            assert_eq!(
+                status_menu_text(&StatusDisplay::DisabledUntilRestart),
+                "Permanently disabled"
             );
         }
 
@@ -706,6 +747,7 @@ mod tests {
             UiMenuAction::DisableUntilRestart.runtime_event(),
             RuntimeEvent::Disable(DisableRequest::UntilRestart)
         );
+        assert_eq!(UiMenuAction::Enable.runtime_event(), RuntimeEvent::Enable);
         assert_eq!(UiMenuAction::Quit.runtime_event(), RuntimeEvent::Shutdown);
     }
 

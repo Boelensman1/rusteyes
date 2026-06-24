@@ -7,7 +7,9 @@ use crate::sync_protocol::{PeerId, SyncCompatibilityFingerprint, SyncEvent};
 use crate::sync_transport::{
     PeerRejectionReason, SyncTransport, SyncTransportError, SyncTransportEvent,
 };
-use crate::ui::{PreBreakNotification, RuntimeUi, UiCommand, UiConfig, UiNotification};
+use crate::ui::{
+    PreBreakNotification, RuntimeUi, StatusDisplay, UiCommand, UiConfig, UiNotification,
+};
 #[cfg(target_os = "linux")]
 use crate::x11_activity::X11ActivityBackend;
 use std::cmp::Ordering;
@@ -174,7 +176,7 @@ struct DaemonRuntime<'a> {
     current_break: Option<CurrentBreakState>,
     pre_break_notice: Option<PreBreakNoticeState>,
     notified_rejected_peers: BTreeSet<PeerId>,
-    displayed_active_time: Duration,
+    displayed_status: StatusDisplay,
     local_peer_id: Option<PeerId>,
     clock: Clock,
 }
@@ -203,7 +205,7 @@ impl<'a> DaemonRuntime<'a> {
             current_break: None,
             pre_break_notice: None,
             notified_rejected_peers: BTreeSet::new(),
-            displayed_active_time: Duration::ZERO,
+            displayed_status: StatusDisplay::Active(Duration::ZERO),
             local_peer_id: sync_runtime.local_peer_id,
             clock,
         }
@@ -292,6 +294,7 @@ impl<'a> DaemonRuntime<'a> {
             RuntimeEvent::Disable(DisableRequest::UntilRestart) => {
                 return self.disable_until_restart(SyncPropagation::Broadcast);
             }
+            RuntimeEvent::Enable => self.enable(SyncPropagation::Broadcast),
             RuntimeEvent::Shutdown => {
                 self.clear_pre_break_notice();
                 return false;
@@ -388,7 +391,7 @@ impl<'a> DaemonRuntime<'a> {
         if scheduled_break.is_some() {
             self.clear_pre_break_notice();
         }
-        self.update_active_time_display();
+        self.update_status_display();
 
         if let Some(scheduled_break) = scheduled_break {
             self.start_break(scheduled_break, propagation)
@@ -405,7 +408,7 @@ impl<'a> DaemonRuntime<'a> {
 
         self.scheduler.reset_active_time();
         self.clear_pre_break_notice();
-        self.update_active_time_display();
+        self.update_status_display();
     }
 
     fn start_manual_break(&mut self, name: &str, propagation: SyncPropagation) -> bool {
@@ -428,7 +431,7 @@ impl<'a> DaemonRuntime<'a> {
         if let Some(message) = message {
             scheduled_break.message = message;
         }
-        self.update_active_time_display();
+        self.update_status_display();
         let started_at_ms = started_at_ms.unwrap_or_else(|| self.clock.now_unix_millis());
         self.start_break_at(scheduled_break, started_at_ms, propagation)
     }
@@ -534,7 +537,7 @@ impl<'a> DaemonRuntime<'a> {
         self.current_break = None;
 
         if self.scheduler.finish_break() {
-            self.update_active_time_display();
+            self.update_status_display();
         }
 
         true
@@ -556,7 +559,7 @@ impl<'a> DaemonRuntime<'a> {
         let should_lock = current_break.lock_after();
 
         if self.scheduler.finish_break() {
-            self.update_active_time_display();
+            self.update_status_display();
         }
 
         self.handle_command(BackendCommand::FinishBreak {
@@ -594,23 +597,26 @@ impl<'a> DaemonRuntime<'a> {
             DisableMode::Enabled | DisableMode::UntilRestart => {}
         }
 
+        self.update_status_display();
         true
     }
 
     fn disable_for(&mut self, duration: Duration, propagation: SyncPropagation) -> bool {
+        // Set the mode before disabling the scheduler so the status line the
+        // scheduler refresh emits reflects the new disabled countdown.
+        self.disable_mode = DisableMode::Timed(duration);
         if !self.disable_scheduler() {
             return false;
         }
-        self.disable_mode = DisableMode::Timed(duration);
         self.broadcast_if_needed(propagation, &SyncEvent::DisableFor { duration });
         true
     }
 
     fn disable_until_restart(&mut self, propagation: SyncPropagation) -> bool {
+        self.disable_mode = DisableMode::UntilRestart;
         if !self.disable_scheduler() {
             return false;
         }
-        self.disable_mode = DisableMode::UntilRestart;
         self.broadcast_if_needed(propagation, &SyncEvent::DisableUntilRestart);
         true
     }
@@ -618,7 +624,7 @@ impl<'a> DaemonRuntime<'a> {
     fn enable(&mut self, propagation: SyncPropagation) {
         self.scheduler.enable();
         self.disable_mode = DisableMode::Enabled;
-        self.update_active_time_display();
+        self.update_status_display();
         self.broadcast_if_needed(propagation, &SyncEvent::Enable);
     }
 
@@ -627,10 +633,10 @@ impl<'a> DaemonRuntime<'a> {
         self.clear_pre_break_notice();
 
         if self.scheduler.disable() {
-            self.update_active_time_display();
+            self.update_status_display();
             self.handle_command(BackendCommand::ClearBreak)
         } else {
-            self.update_active_time_display();
+            self.update_status_display();
             true
         }
     }
@@ -719,19 +725,20 @@ impl<'a> DaemonRuntime<'a> {
         }
     }
 
-    fn update_active_time_display(&mut self) {
-        let active_time = self.scheduler.active_elapsed();
+    fn update_status_display(&mut self) {
+        let status = match self.disable_mode {
+            DisableMode::Enabled => StatusDisplay::Active(self.scheduler.active_elapsed()),
+            DisableMode::Timed(remaining) => StatusDisplay::DisabledFor(remaining),
+            DisableMode::UntilRestart => StatusDisplay::DisabledUntilRestart,
+        };
 
-        if self.displayed_active_time == active_time {
+        if self.displayed_status == status {
             return;
         }
 
-        self.displayed_active_time = active_time;
-        if let Err(error) = self
-            .ui
-            .send_command(UiCommand::UpdateActiveTime(active_time))
-        {
-            warn!(%error, "failed to send active-time UI update");
+        self.displayed_status = status.clone();
+        if let Err(error) = self.ui.send_command(UiCommand::UpdateStatus(status)) {
+            warn!(%error, "failed to send status UI update");
         }
     }
 

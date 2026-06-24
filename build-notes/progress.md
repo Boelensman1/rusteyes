@@ -346,6 +346,14 @@
   single `StdStream { Stdout, Stderr }` that dups fd 1 or fd 2, preserving the
   macOS reentrant-lock workaround. No dependency, nix, or plist changes; redeploy
   of the rebuilt binary under launchd to confirm live delivery is pending.
+- Completed `disabled-status-and-reenable`: the tray/menu-bar status row now
+  reflects the disable state — a per-second `Disabled for …` countdown while
+  timed-disabled and `Permanently disabled` until restart — replacing the active
+  time line, and a new always-present "Enable" item (greyed while enabled) routes
+  through `RuntimeEvent::Enable` to re-enable and broadcast to peers. The single
+  status command became `UiCommand::UpdateStatus(StatusDisplay)`, with the
+  countdown driven off the existing 1s wall-clock tick. Manual tray verification
+  is pending like the other tray-UI steps.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
