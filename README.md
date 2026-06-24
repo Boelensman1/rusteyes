@@ -142,28 +142,6 @@ mode does not require `~/Applications/Home Manager Apps` or other per-user app
 links. If notifications were previously denied, re-enable RustEyes in macOS
 Notification settings after switching to the fixed package.
 
-Temporary macOS break diagnostics can be enabled through the same LaunchAgent
-environment. This adds verbose break-tail logging, a temporary overlay
-`Force exit` button, and a machine-global force-clear trigger file:
-
-```nix
-services.rusteyes = {
-  enable = true;
-  launchAgent.enable = true;
-  breakDiagnostics.enable = true;
-  logLevel = "rusteyes=trace";
-};
-```
-
-LaunchAgent logs are written to `~/Library/Logs/rusteyes.out.log` and
-`~/Library/Logs/rusteyes.err.log`. RustEyes creates the shared trigger as a
-world-writable regular file. During a stuck break, another macOS user can
-request recovery by appending to it:
-
-```sh
-printf force >> /tmp/rusteyes-force-clear
-```
-
 ## Common Commands
 
 ```sh

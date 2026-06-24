@@ -9,20 +9,16 @@ use crate::scheduler::{BreakOrigin, ScheduledBreak};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fmt;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use tracing::{trace, warn};
 
 const PROTOCOL_VERSION: u16 = 9;
 const HELPER_PATH_ENV: &str = "RUSTEYES_MACOS_HELPER";
-const BREAK_DIAGNOSTICS_ENV: &str = "RUSTEYES_BREAK_DIAGNOSTICS";
-const FORCE_CLEAR_PATH_ENV: &str = "RUSTEYES_FORCE_CLEAR_PATH";
-const DEFAULT_FORCE_CLEAR_PATH: &str = "/tmp/rusteyes-force-clear";
 const DEVELOPMENT_HELPER_PATH: &str = "helpers/macos-helper/.build/debug/rusteyes-macos-helper";
 const BUNDLED_HELPER_PATH_FROM_EXE: &str = "../Resources/rusteyes-macos-helper";
 const HELPER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -47,9 +43,7 @@ struct MacOSHelperCore<W> {
     session: HelperSession<W>,
     poller: ActivityPoller,
     active_break: Option<ActiveBreak>,
-    pending_force_clear_reason: Option<String>,
     lock: MacOSLock,
-    diagnostics: BreakDiagnostics,
 }
 
 impl MacOSHelperBackend {
@@ -92,11 +86,7 @@ impl MacOSHelperBackend {
 
         Ok(Self {
             child,
-            core: MacOSHelperCore::new(
-                session,
-                MacOSLock::from(lock_config),
-                BreakDiagnostics::from_env(),
-            ),
+            core: MacOSHelperCore::new(session, MacOSLock::from(lock_config)),
             shutdown_sent: false,
         })
     }
@@ -132,14 +122,12 @@ impl<W> MacOSHelperCore<W>
 where
     W: Write,
 {
-    fn new(session: HelperSession<W>, lock: MacOSLock, diagnostics: BreakDiagnostics) -> Self {
+    fn new(session: HelperSession<W>, lock: MacOSLock) -> Self {
         Self {
             session,
             poller: ActivityPoller::new(ACTIVITY_POLL_INTERVAL),
             active_break: None,
-            pending_force_clear_reason: None,
             lock,
-            diagnostics,
         }
     }
 
@@ -165,14 +153,6 @@ where
 
     fn sample_activity_once(&mut self) -> Result<(), MacOSHelperError> {
         let sample = self.session.poll_activity()?;
-        if self.diagnostics.consume_force_clear_trigger() {
-            self.request_force_clear(
-                "shared force-clear file trigger",
-                sample.session_locked,
-                false,
-            )?;
-        }
-        self.complete_pending_force_clear_if_unlocked(sample.session_locked)?;
         self.poller.queue_sample(sample.activity);
 
         Ok(())
@@ -180,25 +160,6 @@ where
 
     fn sample_overlay_once(&mut self) -> Result<(), MacOSHelperError> {
         let sample = self.session.poll_activity()?;
-        self.diagnostics.log_helper_sample(&sample);
-        if self.diagnostics.consume_force_clear_trigger() {
-            return self.request_force_clear(
-                "shared force-clear file trigger",
-                sample.session_locked,
-                true,
-            );
-        }
-        if self.complete_pending_force_clear_if_unlocked(sample.session_locked)? {
-            return Ok(());
-        }
-        if sample.force_exit_requested {
-            let reason = sample
-                .force_exit_reason
-                .as_deref()
-                .unwrap_or("helper force-exit request");
-            self.finish_force_cleared_break(reason);
-            return Ok(());
-        }
 
         if self
             .active_break
@@ -206,7 +167,6 @@ where
             .is_some_and(ActiveBreak::has_deferred_finish)
         {
             if sample.session_locked {
-                self.diagnostics.log_deferred_finish_waiting();
                 self.poller
                     .queue_event(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL));
                 return Ok(());
@@ -231,16 +191,13 @@ where
         if let Some(update) = self
             .active_break
             .as_mut()
-            .map(|active_break| active_break.apply_sample(&sample, break_elapsed))
+            .map(|active_break| active_break.apply_sample(sample, break_elapsed))
         {
-            self.diagnostics.log_overlay_sample(update, break_elapsed);
             if update.finished {
                 if sample.session_locked {
                     if let Some(active_break) = self.active_break.as_mut() {
                         active_break.defer_finish(update.lock_after_break);
                     }
-                    self.diagnostics
-                        .log_finish_deferred(update.lock_after_break);
                 } else {
                     self.finish_active_break(update.lock_after_break)?;
                 }
@@ -261,12 +218,7 @@ where
     fn start_break(&mut self, scheduled_break: ScheduledBreak) {
         let duration = scheduled_break.duration;
         let lock_after_break = scheduled_break.autolock;
-        let break_name = scheduled_break.name.clone();
         if self.send_backend_command(BackendCommand::StartBreak(scheduled_break)) {
-            self.pending_force_clear_reason = None;
-            self.diagnostics.discard_force_clear_trigger();
-            self.diagnostics
-                .log_break_start(&break_name, duration, lock_after_break);
             self.active_break = Some(ActiveBreak::new(duration, lock_after_break));
         }
     }
@@ -278,12 +230,11 @@ where
     }
 
     fn finish_active_break(&mut self, lock_after: bool) -> Result<(), MacOSHelperError> {
-        self.finish_active_break_with_effective_lock(lock_after, lock_after)
+        self.finish_active_break_with_effective_lock(lock_after)
     }
 
     fn finish_active_break_with_effective_lock(
         &mut self,
-        requested_lock_after: bool,
         effective_lock_after: bool,
     ) -> Result<(), MacOSHelperError> {
         if self.active_break.take().is_none() {
@@ -291,8 +242,6 @@ where
         }
 
         let helper_lock_after = self.lock.helper_lock_after(effective_lock_after);
-        self.diagnostics
-            .log_finish_break(requested_lock_after, helper_lock_after);
         self.session.send_command(BackendCommand::FinishBreak {
             lock_after: helper_lock_after,
         })?;
@@ -305,14 +254,10 @@ where
     }
 
     fn finish_deferred_active_break(&mut self) -> Result<(), MacOSHelperError> {
-        let requested_lock_after = self
-            .active_break
-            .as_mut()
-            .and_then(ActiveBreak::take_deferred_finish)
-            .is_some_and(|deferred| deferred.lock_after_break);
-        self.diagnostics
-            .log_deferred_finish_resuming(requested_lock_after);
-        self.finish_active_break_with_effective_lock(requested_lock_after, false)
+        if let Some(active_break) = self.active_break.as_mut() {
+            let _ = active_break.take_deferred_finish();
+        }
+        self.finish_active_break_with_effective_lock(false)
     }
 
     fn start_configured_lock_command(&self) -> Result<(), MacOSHelperError> {
@@ -320,15 +265,12 @@ where
             return Ok(());
         };
 
-        self.diagnostics
-            .log_configured_lock_command(&lock_command.description());
         start_lock_command(lock_command).map_err(|error| MacOSHelperError::lock_command(&error))
     }
 
     fn clear_break(&mut self) {
         if self.send_backend_command(BackendCommand::ClearBreak) {
             self.active_break = None;
-            self.pending_force_clear_reason = None;
         }
     }
 
@@ -358,60 +300,6 @@ where
     fn queue_backend_error(&mut self, error: &MacOSHelperError) {
         warn!(%error, "macOS backend error");
         self.poller.queue_event(RuntimeEvent::Shutdown);
-    }
-
-    fn request_force_clear(
-        &mut self,
-        reason: &str,
-        session_locked: bool,
-        finish_active_break: bool,
-    ) -> Result<(), MacOSHelperError> {
-        if session_locked {
-            self.diagnostics.log_force_clear_deferred(reason);
-            self.pending_force_clear_reason = Some(reason.to_string());
-            return Ok(());
-        }
-
-        self.force_clear_break(reason, finish_active_break)
-    }
-
-    fn complete_pending_force_clear_if_unlocked(
-        &mut self,
-        session_locked: bool,
-    ) -> Result<bool, MacOSHelperError> {
-        if session_locked {
-            return Ok(false);
-        }
-
-        let Some(reason) = self.pending_force_clear_reason.take() else {
-            return Ok(false);
-        };
-        let finish_active_break = self.active_break.is_some();
-        self.force_clear_break(&reason, finish_active_break)?;
-        Ok(true)
-    }
-
-    fn force_clear_break(
-        &mut self,
-        reason: &str,
-        finish_active_break: bool,
-    ) -> Result<(), MacOSHelperError> {
-        self.diagnostics.log_force_clear(reason);
-        self.session.send_command(BackendCommand::ClearBreak)?;
-        if finish_active_break {
-            self.finish_force_cleared_break(reason);
-        }
-        Ok(())
-    }
-
-    fn finish_force_cleared_break(&mut self, reason: &str) {
-        if self.active_break.take().is_none() {
-            return;
-        }
-
-        self.pending_force_clear_reason = None;
-        self.diagnostics.log_force_clear(reason);
-        self.poller.queue_event(RuntimeEvent::BreakFinished);
     }
 
     fn handle_command(&mut self, command: BackendCommand) {
@@ -451,303 +339,6 @@ impl MacOSHelperBackend {
             &mut self.shutdown_sent,
         )
     }
-}
-
-#[derive(Debug)]
-struct BreakDiagnostics {
-    enabled: bool,
-    force_clear: Option<ForceClearTrigger>,
-}
-
-impl BreakDiagnostics {
-    fn from_env() -> Self {
-        let enabled = env_flag(BREAK_DIAGNOSTICS_ENV);
-        if !enabled {
-            return Self::disabled();
-        }
-
-        let path = env::var_os(FORCE_CLEAR_PATH_ENV)
-            .map_or_else(|| PathBuf::from(DEFAULT_FORCE_CLEAR_PATH), PathBuf::from);
-        let force_clear = match ForceClearTrigger::prepare(path) {
-            Ok(trigger) => Some(trigger),
-            Err(error) => {
-                warn!(
-                    %error,
-                    "break diagnostics enabled but shared force-clear trigger is unavailable"
-                );
-                None
-            }
-        };
-
-        let force_clear_path = force_clear
-            .as_ref()
-            .map(|trigger| trigger.path.display().to_string());
-        warn!(?force_clear_path, "macOS break diagnostics enabled");
-
-        Self {
-            enabled,
-            force_clear,
-        }
-    }
-
-    const fn disabled() -> Self {
-        Self {
-            enabled: false,
-            force_clear: None,
-        }
-    }
-
-    fn discard_force_clear_trigger(&mut self) {
-        if !self.enabled {
-            return;
-        }
-
-        let Some(trigger) = &mut self.force_clear else {
-            return;
-        };
-        if let Err(error) = trigger.discard_pending_write() {
-            warn!(%error, path = %trigger.path.display(), "disabled force-clear trigger");
-            self.force_clear = None;
-        }
-    }
-
-    fn consume_force_clear_trigger(&mut self) -> bool {
-        if !self.enabled {
-            return false;
-        }
-
-        let Some(trigger) = &mut self.force_clear else {
-            return false;
-        };
-        match trigger.consume_if_changed() {
-            Ok(changed) => changed,
-            Err(error) => {
-                warn!(%error, path = %trigger.path.display(), "disabled force-clear trigger");
-                self.force_clear = None;
-                false
-            }
-        }
-    }
-
-    fn log_break_start(&self, name: &str, duration: Duration, lock_after: bool) {
-        if self.enabled {
-            warn!(
-                break_name = name,
-                ?duration,
-                lock_after,
-                "diagnostic macOS break started"
-            );
-        }
-    }
-
-    fn log_overlay_sample(&self, update: ActiveBreakUpdate, elapsed: Duration) {
-        if self.enabled && update.remaining <= Duration::from_secs(5) {
-            warn!(
-                remaining = ?update.remaining,
-                lock_after = update.lock_after_break,
-                lock_requested = update.lock_after_break_requested,
-                finished = update.finished,
-                ?elapsed,
-                "diagnostic macOS overlay sample near finish"
-            );
-        }
-    }
-
-    fn log_finish_deferred(&self, lock_after: bool) {
-        if self.enabled {
-            warn!(
-                lock_after,
-                "diagnostic macOS break finish deferred until session unlock"
-            );
-        }
-    }
-
-    fn log_deferred_finish_waiting(&self) {
-        if self.enabled {
-            warn!("diagnostic macOS break finish still waiting for session unlock");
-        }
-    }
-
-    fn log_deferred_finish_resuming(&self, requested_lock_after: bool) {
-        if self.enabled {
-            warn!(
-                requested_lock_after,
-                "diagnostic macOS completing deferred break finish after session unlock"
-            );
-        }
-    }
-
-    fn log_helper_sample(&self, sample: &HelperActivitySample) {
-        if self.enabled {
-            warn!(
-                idle_for = ?sample.activity.idle_for(),
-                session_locked = sample.session_locked,
-                lock_requested = sample.lock_after_break_requested,
-                force_exit_requested = sample.force_exit_requested,
-                force_exit_reason = ?sample.force_exit_reason,
-                overlay_state = ?sample.overlay_state,
-                "diagnostic received macOS helper activity sample"
-            );
-        }
-    }
-
-    fn log_finish_break(&self, lock_after: bool, helper_lock_after: bool) {
-        if self.enabled {
-            warn!(
-                lock_after,
-                helper_lock_after, "diagnostic macOS backend sending finishBreak"
-            );
-        }
-    }
-
-    fn log_configured_lock_command(&self, command: &str) {
-        if self.enabled {
-            warn!(%command, "diagnostic macOS backend starting configured lock command");
-        }
-    }
-
-    fn log_force_clear(&self, reason: &str) {
-        if self.enabled {
-            warn!(reason, "diagnostic macOS force-clearing active break");
-        }
-    }
-
-    fn log_force_clear_deferred(&self, reason: &str) {
-        if self.enabled {
-            warn!(
-                reason,
-                "diagnostic macOS force-clear deferred until session unlock"
-            );
-        }
-    }
-}
-
-#[derive(Debug)]
-struct ForceClearTrigger {
-    path: PathBuf,
-    observed: ForceClearSnapshot,
-}
-
-impl ForceClearTrigger {
-    fn prepare(path: PathBuf) -> Result<Self, MacOSHelperError> {
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o666)
-            .open(&path)
-            .map_err(|error| {
-                MacOSHelperError::new(format!("failed to open {}: {error}", path.display()))
-            })?;
-        let metadata = file.metadata().map_err(|error| {
-            MacOSHelperError::new(format!("failed to inspect {}: {error}", path.display()))
-        })?;
-        if !metadata.is_file() {
-            return Err(MacOSHelperError::new(format!(
-                "force-clear path is not a regular file: {}",
-                path.display()
-            )));
-        }
-
-        file.set_permissions(fs::Permissions::from_mode(0o666))
-            .map_err(|error| {
-                MacOSHelperError::new(format!(
-                    "failed to make {} world-writable: {error}",
-                    path.display()
-                ))
-            })?;
-        file.set_len(0).map_err(|error| {
-            MacOSHelperError::new(format!("failed to reset {}: {error}", path.display()))
-        })?;
-        let metadata = file.metadata().map_err(|error| {
-            MacOSHelperError::new(format!(
-                "failed to inspect reset {}: {error}",
-                path.display()
-            ))
-        })?;
-
-        Ok(Self {
-            path,
-            observed: ForceClearSnapshot::from_metadata(&metadata),
-        })
-    }
-
-    fn discard_pending_write(&mut self) -> Result<(), MacOSHelperError> {
-        if self.changed()? {
-            self.reset_observed()?;
-        }
-        Ok(())
-    }
-
-    fn consume_if_changed(&mut self) -> Result<bool, MacOSHelperError> {
-        if !self.changed()? {
-            return Ok(false);
-        }
-
-        self.reset_observed()?;
-        Ok(true)
-    }
-
-    fn changed(&self) -> Result<bool, MacOSHelperError> {
-        let metadata = fs::metadata(&self.path).map_err(|error| {
-            MacOSHelperError::new(format!(
-                "failed to inspect {}: {error}",
-                self.path.display()
-            ))
-        })?;
-        if !metadata.is_file() {
-            return Err(MacOSHelperError::new(format!(
-                "force-clear path is no longer a regular file: {}",
-                self.path.display()
-            )));
-        }
-
-        Ok(ForceClearSnapshot::from_metadata(&metadata) != self.observed)
-    }
-
-    fn reset_observed(&mut self) -> Result<(), MacOSHelperError> {
-        let file = OpenOptions::new()
-            .write(true)
-            .open(&self.path)
-            .map_err(|error| {
-                MacOSHelperError::new(format!(
-                    "failed to open {} for reset: {error}",
-                    self.path.display()
-                ))
-            })?;
-        file.set_len(0).map_err(|error| {
-            MacOSHelperError::new(format!("failed to reset {}: {error}", self.path.display()))
-        })?;
-        self.observed = ForceClearSnapshot::from_metadata(&file.metadata().map_err(|error| {
-            MacOSHelperError::new(format!(
-                "failed to inspect reset {}: {error}",
-                self.path.display()
-            ))
-        })?);
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ForceClearSnapshot {
-    len: u64,
-    modified: Option<SystemTime>,
-}
-
-impl ForceClearSnapshot {
-    fn from_metadata(metadata: &fs::Metadata) -> Self {
-        Self {
-            len: metadata.len(),
-            modified: metadata.modified().ok(),
-        }
-    }
-}
-
-fn env_flag(name: &str) -> bool {
-    env::var(name)
-        .ok()
-        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -794,7 +385,7 @@ impl ActiveBreak {
 
     fn apply_sample(
         &mut self,
-        sample: &HelperActivitySample,
+        sample: HelperActivitySample,
         elapsed: Duration,
     ) -> ActiveBreakUpdate {
         if sample.lock_after_break_requested {
@@ -1010,12 +601,6 @@ where
         message: &DaemonMessage,
         expected_command: HelperCommand,
     ) -> Result<(), MacOSHelperError> {
-        if env_flag(BREAK_DIAGNOSTICS_ENV) {
-            warn!(
-                command = expected_command.as_str(),
-                "diagnostic sending macOS helper command"
-            );
-        }
         self.send(message)?;
 
         let error_context = format!("{} command", expected_command.as_str());
@@ -1028,12 +613,6 @@ where
             })?;
 
         if command == expected_command {
-            if env_flag(BREAK_DIAGNOSTICS_ENV) {
-                warn!(
-                    command = command.as_str(),
-                    "diagnostic received macOS helper command completion"
-                );
-            }
             Ok(())
         } else {
             Err(MacOSHelperError::new(format!(
@@ -1065,9 +644,6 @@ where
     }
 
     fn poll_activity(&mut self) -> Result<HelperActivitySample, MacOSHelperError> {
-        if env_flag(BREAK_DIAGNOSTICS_ENV) {
-            warn!("diagnostic sending macOS helper pollActivity");
-        }
         self.send(&DaemonMessage::PollActivity)?;
 
         self.receive_expected(
@@ -1078,16 +654,10 @@ where
                     idle_ms,
                     session_locked,
                     lock_after_break_requested,
-                    force_exit_requested,
-                    force_exit_reason,
-                    overlay_state,
                 } => Ok(HelperActivitySample {
                     activity: ActivitySample::new(Duration::from_millis(idle_ms)),
                     session_locked,
                     lock_after_break_requested,
-                    force_exit_requested,
-                    force_exit_reason,
-                    overlay_state,
                 }),
                 message => Err(message),
             },
@@ -1299,14 +869,11 @@ impl HelperCommand {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct HelperActivitySample {
     activity: ActivitySample,
     session_locked: bool,
     lock_after_break_requested: bool,
-    force_exit_requested: bool,
-    force_exit_reason: Option<String>,
-    overlay_state: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1322,12 +889,6 @@ enum HelperMessage {
         session_locked: bool,
         #[serde(rename = "lockAfterBreakRequested")]
         lock_after_break_requested: bool,
-        #[serde(rename = "forceExitRequested", default)]
-        force_exit_requested: bool,
-        #[serde(rename = "forceExitReason", default)]
-        force_exit_reason: Option<String>,
-        #[serde(rename = "overlayState", default)]
-        overlay_state: Option<String>,
     },
     PreflightResult {
         #[serde(rename = "accessibilityTrusted")]
@@ -1606,12 +1167,11 @@ fn remember_first_error(first_error: &mut Option<MacOSHelperError>, error: MacOS
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use std::os::unix::fs::PermissionsExt;
-    use std::time::UNIX_EPOCH;
 
     #[test]
     fn handshake_writes_hello_and_accepts_ready() -> Result<(), Box<dyn std::error::Error>> {
-        let input = Cursor::new(br#"{"type":"ready","version":9}"#.to_vec());
+        let input =
+            Cursor::new(format!(r#"{{"type":"ready","version":{PROTOCOL_VERSION}}}"#).into_bytes());
         let mut output = Vec::new();
 
         {
@@ -1707,7 +1267,7 @@ mod tests {
 
     #[test]
     fn handshake_rejects_incompatible_version() {
-        let input = Cursor::new(br#"{"type":"ready","version":10}"#.to_vec());
+        let input = Cursor::new(br#"{"type":"ready","version":8}"#.to_vec());
         let mut output = Vec::new();
         let mut session = HelperSession::new(input, &mut output);
 
@@ -1724,7 +1284,7 @@ mod tests {
     #[test]
     fn poll_activity_writes_request_and_decodes_sample() -> Result<(), Box<dyn std::error::Error>> {
         let input = Cursor::new(
-            br#"{"type":"activitySample","idleMs":750,"lockAfterBreakRequested":true}"#.to_vec(),
+            br#"{"type":"activitySample","idleMs":750,"sessionLocked":true,"lockAfterBreakRequested":true}"#.to_vec(),
         );
         let mut output = Vec::new();
         let sample = {
@@ -1733,6 +1293,7 @@ mod tests {
         };
 
         assert_eq!(sample.activity.idle_for(), Duration::from_millis(750));
+        assert!(sample.session_locked);
         assert!(sample.lock_after_break_requested);
         assert_eq!(daemon_messages(&output)?, vec![DaemonMessage::PollActivity]);
         Ok(())
@@ -1973,30 +1534,6 @@ mod tests {
                 idle_ms: 1_000,
                 session_locked: false,
                 lock_after_break_requested: false,
-                force_exit_requested: false,
-                force_exit_reason: None,
-                overlay_state: None,
-            }
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn activity_sample_force_exit_fields_are_decoded() -> Result<(), Box<dyn std::error::Error>> {
-        let input = Cursor::new(
-            br#"{"type":"activitySample","idleMs":1000,"lockAfterBreakRequested":false,"forceExitRequested":true,"forceExitReason":"button","overlayState":"inactive"}"#.to_vec(),
-        );
-        let mut session = HelperSession::new(input, Vec::new());
-
-        assert_eq!(
-            session.receive()?,
-            HelperMessage::ActivitySample {
-                idle_ms: 1_000,
-                session_locked: false,
-                lock_after_break_requested: false,
-                force_exit_requested: true,
-                force_exit_reason: Some(String::from("button")),
-                overlay_state: Some(String::from("inactive")),
             }
         );
         Ok(())
@@ -2015,9 +1552,6 @@ mod tests {
                 idle_ms: 1_000,
                 session_locked: true,
                 lock_after_break_requested: false,
-                force_exit_requested: false,
-                force_exit_reason: None,
-                overlay_state: None,
             }
         );
         Ok(())
@@ -2028,13 +1562,10 @@ mod tests {
         let mut active_break = ActiveBreak::new(Duration::from_secs(2), false);
 
         let update = active_break.apply_sample(
-            &HelperActivitySample {
+            HelperActivitySample {
                 activity: ActivitySample::new(Duration::from_secs(2)),
                 session_locked: false,
                 lock_after_break_requested: true,
-                force_exit_requested: false,
-                force_exit_reason: None,
-                overlay_state: None,
             },
             Duration::from_secs(1),
         );
@@ -2054,7 +1585,7 @@ mod tests {
     fn finished_overlay_sample_finishes_helper_without_zero_update()
     -> Result<(), Box<dyn std::error::Error>> {
         let input = Cursor::new(
-            br#"{"type":"activitySample","idleMs":1000,"lockAfterBreakRequested":false}
+            br#"{"type":"activitySample","idleMs":1000,"sessionLocked":false,"lockAfterBreakRequested":false}
 {"type":"commandComplete","command":"finishBreak"}"#
                 .to_vec(),
         );
@@ -2062,7 +1593,6 @@ mod tests {
         let mut core = MacOSHelperCore::new(
             HelperSession::new(input, &mut output),
             MacOSLock::PlatformDefault,
-            BreakDiagnostics::disabled(),
         );
         core.active_break = Some(ActiveBreak::new(OVERLAY_TICK_INTERVAL, false));
 
@@ -2094,7 +1624,7 @@ mod tests {
     #[test]
     fn finished_overlay_sample_preserves_lock_request() -> Result<(), Box<dyn std::error::Error>> {
         let input = Cursor::new(
-            br#"{"type":"activitySample","idleMs":1000,"lockAfterBreakRequested":true}
+            br#"{"type":"activitySample","idleMs":1000,"sessionLocked":false,"lockAfterBreakRequested":true}
 {"type":"commandComplete","command":"finishBreak"}"#
                 .to_vec(),
         );
@@ -2102,7 +1632,6 @@ mod tests {
         let mut core = MacOSHelperCore::new(
             HelperSession::new(input, &mut output),
             MacOSLock::PlatformDefault,
-            BreakDiagnostics::disabled(),
         );
         core.active_break = Some(ActiveBreak::new(OVERLAY_TICK_INTERVAL, false));
 
@@ -2137,7 +1666,6 @@ mod tests {
         let mut core = MacOSHelperCore::new(
             HelperSession::new(input, &mut output),
             MacOSLock::PlatformDefault,
-            BreakDiagnostics::disabled(),
         );
         core.active_break = Some(ActiveBreak::new(OVERLAY_TICK_INTERVAL, true));
 
@@ -2175,7 +1703,6 @@ mod tests {
         let mut core = MacOSHelperCore::new(
             HelperSession::new(input, &mut output),
             MacOSLock::PlatformDefault,
-            BreakDiagnostics::disabled(),
         );
         core.active_break = Some(ActiveBreak::new(OVERLAY_TICK_INTERVAL, true));
 
@@ -2205,175 +1732,6 @@ mod tests {
                 DaemonMessage::FinishBreak { lock_after: false },
             ]
         );
-        Ok(())
-    }
-
-    #[test]
-    fn force_exit_activity_sample_finishes_backend_break() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let input = Cursor::new(
-            br#"{"type":"activitySample","idleMs":1000,"lockAfterBreakRequested":false,"forceExitRequested":true,"forceExitReason":"button","overlayState":"inactive"}"#.to_vec(),
-        );
-        let mut output = Vec::new();
-        let mut core = MacOSHelperCore::new(
-            HelperSession::new(input, &mut output),
-            MacOSLock::PlatformDefault,
-            BreakDiagnostics::disabled(),
-        );
-        core.active_break = Some(ActiveBreak::new(Duration::from_secs(5), true));
-
-        core.sample_overlay_once()?;
-
-        assert_eq!(core.active_break, None);
-        assert_eq!(core.next_event(), Some(RuntimeEvent::BreakFinished));
-        assert_eq!(core.next_event(), None);
-        drop(core);
-
-        assert_eq!(daemon_messages(&output)?, vec![DaemonMessage::PollActivity]);
-        Ok(())
-    }
-
-    #[test]
-    fn force_clear_trigger_is_world_writable_and_consumes_writes()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let path = unique_force_clear_path("trigger");
-        let mut trigger = ForceClearTrigger::prepare(path.clone())?;
-
-        assert_eq!(
-            std::fs::metadata(&path)?.permissions().mode() & 0o777,
-            0o666
-        );
-        assert!(!trigger.consume_if_changed()?);
-
-        append_force_clear(&path)?;
-
-        assert!(trigger.consume_if_changed()?);
-        assert_eq!(std::fs::metadata(&path)?.len(), 0);
-        assert!(!trigger.consume_if_changed()?);
-
-        std::fs::remove_file(path)?;
-        Ok(())
-    }
-
-    #[test]
-    fn force_clear_file_trigger_clears_active_backend_break()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let path = unique_force_clear_path("backend");
-        let trigger = ForceClearTrigger::prepare(path.clone())?;
-        append_force_clear(&path)?;
-
-        let input = Cursor::new(
-            br#"{"type":"activitySample","idleMs":1000,"sessionLocked":false,"lockAfterBreakRequested":false}
-{"type":"commandComplete","command":"clearBreak"}"#
-                .to_vec(),
-        );
-        let mut output = Vec::new();
-        let mut core = MacOSHelperCore::new(
-            HelperSession::new(input, &mut output),
-            MacOSLock::PlatformDefault,
-            BreakDiagnostics {
-                enabled: true,
-                force_clear: Some(trigger),
-            },
-        );
-        core.active_break = Some(ActiveBreak::new(Duration::from_secs(5), true));
-
-        core.sample_overlay_once()?;
-
-        assert_eq!(core.active_break, None);
-        assert_eq!(core.next_event(), Some(RuntimeEvent::BreakFinished));
-        assert_eq!(core.next_event(), None);
-        drop(core);
-
-        assert_eq!(
-            daemon_messages(&output)?,
-            vec![DaemonMessage::PollActivity, DaemonMessage::ClearBreak]
-        );
-        std::fs::remove_file(path)?;
-        Ok(())
-    }
-
-    #[test]
-    fn force_clear_file_trigger_sends_clear_without_active_backend_break()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let path = unique_force_clear_path("inactive");
-        let trigger = ForceClearTrigger::prepare(path.clone())?;
-        append_force_clear(&path)?;
-
-        let input = Cursor::new(
-            br#"{"type":"activitySample","idleMs":1000,"sessionLocked":false,"lockAfterBreakRequested":false}
-{"type":"commandComplete","command":"clearBreak"}"#
-                .to_vec(),
-        );
-        let mut output = Vec::new();
-        let mut core = MacOSHelperCore::new(
-            HelperSession::new(input, &mut output),
-            MacOSLock::PlatformDefault,
-            BreakDiagnostics {
-                enabled: true,
-                force_clear: Some(trigger),
-            },
-        );
-
-        core.sample_activity_once()?;
-
-        assert_eq!(core.active_break, None);
-        drop(core);
-
-        assert_eq!(
-            daemon_messages(&output)?,
-            vec![DaemonMessage::PollActivity, DaemonMessage::ClearBreak]
-        );
-        std::fs::remove_file(path)?;
-        Ok(())
-    }
-
-    #[test]
-    fn force_clear_file_trigger_while_locked_waits_for_unlock()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let path = unique_force_clear_path("locked");
-        let trigger = ForceClearTrigger::prepare(path.clone())?;
-        append_force_clear(&path)?;
-
-        let input = Cursor::new(
-            br#"{"type":"activitySample","idleMs":1000,"sessionLocked":true,"lockAfterBreakRequested":false}
-{"type":"activitySample","idleMs":1000,"sessionLocked":false,"lockAfterBreakRequested":false}
-{"type":"commandComplete","command":"clearBreak"}"#
-                .to_vec(),
-        );
-        let mut output = Vec::new();
-        let mut core = MacOSHelperCore::new(
-            HelperSession::new(input, &mut output),
-            MacOSLock::PlatformDefault,
-            BreakDiagnostics {
-                enabled: true,
-                force_clear: Some(trigger),
-            },
-        );
-        core.active_break = Some(ActiveBreak::new(Duration::from_secs(5), true));
-
-        core.sample_overlay_once()?;
-        assert!(core.active_break.is_some());
-        assert_eq!(
-            core.pending_force_clear_reason.as_deref(),
-            Some("shared force-clear file trigger")
-        );
-
-        core.sample_overlay_once()?;
-        assert_eq!(core.active_break, None);
-        assert_eq!(core.next_event(), Some(RuntimeEvent::BreakFinished));
-        assert_eq!(core.next_event(), None);
-        drop(core);
-
-        assert_eq!(
-            daemon_messages(&output)?,
-            vec![
-                DaemonMessage::PollActivity,
-                DaemonMessage::PollActivity,
-                DaemonMessage::ClearBreak,
-            ]
-        );
-        std::fs::remove_file(path)?;
         Ok(())
     }
 
@@ -2434,23 +1792,6 @@ mod tests {
             .lines()
             .map(|line| Ok(serde_json::from_str(line)?))
             .collect()
-    }
-
-    fn unique_force_clear_path(name: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos());
-        env::temp_dir().join(format!(
-            "rusteyes-force-clear-test-{name}-{}-{unique}",
-            std::process::id()
-        ))
-    }
-
-    fn append_force_clear(path: &Path) -> io::Result<()> {
-        OpenOptions::new()
-            .append(true)
-            .open(path)?
-            .write_all(b"force\n")
     }
 
     /// A reader that blocks until its paired sender is dropped, then reports EOF.

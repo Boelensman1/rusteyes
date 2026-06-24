@@ -337,30 +337,15 @@
   a reader thread so a wedged helper is killed (the OS then removes the tap)
   instead of blocking the backend forever. Manual macOS verification of the
   locked-lid zero-finish path, watchdogs, and wedge path is pending.
-- Completed `macos-break-diagnostics`: temporary diagnostics can now be enabled
-  with Nix `services.rusteyes.breakDiagnostics.enable`, which injects
-  `RUSTEYES_BREAK_DIAGNOSTICS=1` and a machine-global
-  `/tmp/rusteyes-force-clear` trigger. Rust logs macOS break-tail samples,
-  helper command send/ack, force-clear requests, and configured lock commands;
-  the Swift helper logs overlay show/update/clear, watchdogs, activity samples,
-  finish/clear commands, and helper-native lock start/return. Helper protocol
-  version 8 activity samples carry optional force-exit and overlay-state fields.
-  Diagnostics also show a temporary `Force exit` overlay button and create the
-  shared force-clear file as a world-writable regular file so another macOS user
-  can append to it to clear a stuck active break. Helper-native autolock now
-  starts asynchronously after `finishBreak` is acknowledged so lock execution
-  cannot block overlay cleanup acknowledgement.
 - Completed `macos-locked-break-finish`: helper protocol version 9 activity
   samples now include `sessionLocked` from `CGSessionCopyCurrentDictionary`.
   If a macOS break reaches zero while the session is locked, RustEyes keeps the
   break active in a deferred-finish state and waits for the first unlocked
   sample before sending `finishBreak` and queueing `BreakFinished`; the unlock
   completion suppresses a second lock request because the session was already
-  locked at break end. Diagnostics force-clear now polls lock state first,
-  defers locked clears until unlock, and can send helper `clearBreak` even when
-  RustEyes no longer has an active break. The helper also tags overlay windows,
-  clears any remaining tagged windows, and gives the temporary `Force exit`
-  button an AppKit mouse-down fallback.
+  locked at break end. Temporary diagnostics, the shared force-clear trigger,
+  and the overlay `Force exit` button were removed after confirming the
+  locked-session finish path fixed the issue.
 - Completed `log-stream-routing`: the logger now splits tracing output by level
   across two `fmt` layers — INFO/DEBUG/TRACE to stdout (launchd `StandardOutPath`
   / journald) and WARN/ERROR to stderr — so the error log stays a clean "something
