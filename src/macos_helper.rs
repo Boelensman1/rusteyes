@@ -35,11 +35,15 @@ const HELPER_READ_TIMEOUT: Duration = Duration::from_secs(5);
 #[allow(clippy::module_name_repetitions)]
 pub(crate) struct MacOSHelperBackend {
     child: Child,
-    session: HelperSession<ChildStdin>,
+    core: MacOSHelperCore<ChildStdin>,
+    shutdown_sent: bool,
+}
+
+struct MacOSHelperCore<W> {
+    session: HelperSession<W>,
     poller: ActivityPoller,
     active_break: Option<ActiveBreak>,
     lock: MacOSLock,
-    shutdown_sent: bool,
 }
 
 impl MacOSHelperBackend {
@@ -82,10 +86,7 @@ impl MacOSHelperBackend {
 
         Ok(Self {
             child,
-            session,
-            poller: ActivityPoller::new(ACTIVITY_POLL_INTERVAL),
-            active_break: None,
-            lock: MacOSLock::from(lock_config),
+            core: MacOSHelperCore::new(session, MacOSLock::from(lock_config)),
             shutdown_sent: false,
         })
     }
@@ -96,16 +97,16 @@ impl MacOSHelperBackend {
         event_sender: &BackendEventSender,
     ) {
         loop {
-            while let Some(event) = self.poller.next_event() {
+            while let Some(event) = self.core.next_event() {
                 if event_sender.send(event).is_err() {
                     return;
                 }
             }
 
-            match wait_for_command_or_timeout(command_receiver, self.next_sample_delay()) {
-                BackendWait::Command(command) => self.handle_command(command),
+            match wait_for_command_or_timeout(command_receiver, self.core.next_sample_delay()) {
+                BackendWait::Command(command) => self.core.handle_command(command),
                 BackendWait::Timeout => {
-                    if let Err(error) = self.sample_once() {
+                    if let Err(error) = self.core.sample_once() {
                         warn!(%error, "failed to poll macOS activity");
                         _ = event_sender.send(RuntimeEvent::Shutdown);
                         return;
@@ -114,6 +115,24 @@ impl MacOSHelperBackend {
                 BackendWait::Disconnected => return,
             }
         }
+    }
+}
+
+impl<W> MacOSHelperCore<W>
+where
+    W: Write,
+{
+    fn new(session: HelperSession<W>, lock: MacOSLock) -> Self {
+        Self {
+            session,
+            poller: ActivityPoller::new(ACTIVITY_POLL_INTERVAL),
+            active_break: None,
+            lock,
+        }
+    }
+
+    fn next_event(&mut self) -> Option<RuntimeEvent> {
+        self.poller.next_event()
     }
 
     fn next_sample_delay(&self) -> Duration {
@@ -155,8 +174,12 @@ impl MacOSHelperBackend {
             .as_mut()
             .map(|active_break| active_break.apply_sample(sample, break_elapsed))
         {
-            self.session
-                .update_break(update.remaining, update.lock_after_break)?;
+            if update.finished {
+                self.finish_active_break(update.lock_after_break)?;
+            } else {
+                self.session
+                    .update_break(update.remaining, update.lock_after_break)?;
+            }
             queue_overlay_runtime_events(&mut self.poller, update);
         }
 
@@ -172,31 +195,34 @@ impl MacOSHelperBackend {
     }
 
     fn finish_break(&mut self, lock_after: bool) {
-        let helper_lock_after = self.lock.helper_lock_after(lock_after);
-        match self.session.send_command(BackendCommand::FinishBreak {
-            lock_after: helper_lock_after,
-        }) {
-            Ok(()) => {
-                self.active_break = None;
-                if lock_after {
-                    self.start_configured_lock_command();
-                }
-            }
-            Err(error) => {
-                self.active_break = None;
-                self.queue_backend_error(&error);
-            }
+        if let Err(error) = self.finish_active_break(lock_after) {
+            self.queue_backend_error(&error);
         }
     }
 
-    fn start_configured_lock_command(&mut self) {
+    fn finish_active_break(&mut self, lock_after: bool) -> Result<(), MacOSHelperError> {
+        if self.active_break.take().is_none() {
+            return Ok(());
+        }
+
+        let helper_lock_after = self.lock.helper_lock_after(lock_after);
+        self.session.send_command(BackendCommand::FinishBreak {
+            lock_after: helper_lock_after,
+        })?;
+
+        if lock_after {
+            self.start_configured_lock_command()?;
+        }
+
+        Ok(())
+    }
+
+    fn start_configured_lock_command(&self) -> Result<(), MacOSHelperError> {
         let MacOSLock::Command(lock_command) = &self.lock else {
-            return;
+            return Ok(());
         };
 
-        if let Err(error) = start_lock_command(lock_command) {
-            self.queue_backend_error(&MacOSHelperError::lock_command(&error));
-        }
+        start_lock_command(lock_command).map_err(|error| MacOSHelperError::lock_command(&error))
     }
 
     fn clear_break(&mut self) {
@@ -233,14 +259,6 @@ impl MacOSHelperBackend {
         self.poller.queue_event(RuntimeEvent::Shutdown);
     }
 
-    fn shutdown_helper(&mut self) -> Result<(), MacOSHelperError> {
-        shutdown_helper_process(
-            &mut self.child,
-            Some(&mut self.session),
-            &mut self.shutdown_sent,
-        )
-    }
-
     fn handle_command(&mut self, command: BackendCommand) {
         match command {
             BackendCommand::StartBreak(scheduled_break) => self.start_break(scheduled_break),
@@ -267,6 +285,16 @@ impl MacOSHelperBackend {
         {
             self.queue_backend_error(&error);
         }
+    }
+}
+
+impl MacOSHelperBackend {
+    fn shutdown_helper(&mut self) -> Result<(), MacOSHelperError> {
+        shutdown_helper_process(
+            &mut self.child,
+            Some(&mut self.core.session),
+            &mut self.shutdown_sent,
+        )
     }
 }
 
@@ -1457,6 +1485,81 @@ mod tests {
                 finished: false,
             }
         );
+    }
+
+    #[test]
+    fn finished_overlay_sample_finishes_helper_without_zero_update()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let input = Cursor::new(
+            br#"{"type":"activitySample","idleMs":1000,"lockAfterBreakRequested":false}
+{"type":"commandComplete","command":"finishBreak"}"#
+                .to_vec(),
+        );
+        let mut output = Vec::new();
+        let mut core = MacOSHelperCore::new(
+            HelperSession::new(input, &mut output),
+            MacOSLock::PlatformDefault,
+        );
+        core.active_break = Some(ActiveBreak::new(OVERLAY_TICK_INTERVAL, false));
+
+        core.sample_overlay_once()?;
+
+        assert_eq!(core.active_break, None);
+        assert_eq!(
+            core.next_event(),
+            Some(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL))
+        );
+        assert_eq!(core.next_event(), Some(RuntimeEvent::BreakFinished));
+        assert_eq!(core.next_event(), None);
+
+        // The runtime still sends FinishBreak after consuming BreakFinished;
+        // the backend must ignore it because the helper was already cleared.
+        core.finish_break(false);
+        drop(core);
+
+        assert_eq!(
+            daemon_messages(&output)?,
+            vec![
+                DaemonMessage::PollActivity,
+                DaemonMessage::FinishBreak { lock_after: false },
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn finished_overlay_sample_preserves_lock_request() -> Result<(), Box<dyn std::error::Error>> {
+        let input = Cursor::new(
+            br#"{"type":"activitySample","idleMs":1000,"lockAfterBreakRequested":true}
+{"type":"commandComplete","command":"finishBreak"}"#
+                .to_vec(),
+        );
+        let mut output = Vec::new();
+        let mut core = MacOSHelperCore::new(
+            HelperSession::new(input, &mut output),
+            MacOSLock::PlatformDefault,
+        );
+        core.active_break = Some(ActiveBreak::new(OVERLAY_TICK_INTERVAL, false));
+
+        core.sample_overlay_once()?;
+
+        assert_eq!(
+            core.next_event(),
+            Some(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL))
+        );
+        assert_eq!(core.next_event(), Some(RuntimeEvent::LockAfterCurrentBreak));
+        assert_eq!(core.next_event(), Some(RuntimeEvent::BreakFinished));
+        assert_eq!(core.next_event(), None);
+        drop(core);
+
+        assert_eq!(
+            daemon_messages(&output)?,
+            vec![
+                DaemonMessage::PollActivity,
+                DaemonMessage::FinishBreak { lock_after: true },
+            ]
+        );
+        Ok(())
     }
 
     #[test]

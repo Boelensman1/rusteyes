@@ -140,7 +140,7 @@ private final class BreakOverlayController {
     // overlay is up. Both live on the main queue so they fire even when the
     // protocol thread is blocked on a read, and their handlers run on the main
     // thread so they can call `clear()` directly. See main.swift watchdog notes.
-    private let zeroWatchdogTimeout = watchdogTimeout(defaultSeconds: 5)
+    private let zeroWatchdogTimeout = watchdogTimeout(defaultSeconds: 1)
     private let heartbeatWatchdogTimeout = watchdogTimeout(defaultSeconds: 10)
     private var zeroWatchdog: DispatchSourceTimer?
     private var heartbeatWatchdog: DispatchSourceTimer?
