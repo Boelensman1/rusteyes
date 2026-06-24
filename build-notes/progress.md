@@ -350,6 +350,17 @@
   can append to it to clear a stuck active break. Helper-native autolock now
   starts asynchronously after `finishBreak` is acknowledged so lock execution
   cannot block overlay cleanup acknowledgement.
+- Completed `macos-locked-break-finish`: helper protocol version 9 activity
+  samples now include `sessionLocked` from `CGSessionCopyCurrentDictionary`.
+  If a macOS break reaches zero while the session is locked, RustEyes keeps the
+  break active in a deferred-finish state and waits for the first unlocked
+  sample before sending `finishBreak` and queueing `BreakFinished`; the unlock
+  completion suppresses a second lock request because the session was already
+  locked at break end. Diagnostics force-clear now polls lock state first,
+  defers locked clears until unlock, and can send helper `clearBreak` even when
+  RustEyes no longer has an active break. The helper also tags overlay windows,
+  clears any remaining tagged windows, and gives the temporary `Force exit`
+  button an AppKit mouse-down fallback.
 - Completed `log-stream-routing`: the logger now splits tracing output by level
   across two `fmt` layers — INFO/DEBUG/TRACE to stdout (launchd `StandardOutPath`
   / journald) and WARN/ERROR to stderr — so the error log stays a clean "something

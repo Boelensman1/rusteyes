@@ -4,7 +4,7 @@ import CoreGraphics
 import Darwin
 import Foundation
 
-private let protocolVersion = 8
+private let protocolVersion = 9
 private let directInvocationExitCode: Int32 = 2
 private let directInvocationMessage =
     "rusteyes-macos-helper is an internal RustEyes helper. Start RustEyes with the main rusteyes binary; do not run this helper directly."
@@ -14,6 +14,8 @@ private let lockControlLabel = "Lock after break"
 private let lockControlRequestedLabel = "Locking after break"
 private let forceExitLabel = "Force exit"
 private let breakDiagnosticsEnabled = envFlag("RUSTEYES_BREAK_DIAGNOSTICS")
+private let breakOverlayWindowIdentifier = NSUserInterfaceItemIdentifier("dev.rusteyes.break-overlay")
+private let sessionScreenIsLockedKey = "CGSSessionScreenIsLocked"
 private let loginFrameworkPath = "/System/Library/PrivateFrameworks/login.framework/Versions/Current/login"
 private let lockScreenSymbolName = "SACLockScreenImmediate"
 private typealias LockScreenImmediate = @convention(c) () -> Void
@@ -239,8 +241,9 @@ private final class BreakOverlayController {
         diagnosticLog("clear overlay \(diagnosticStateDescription())")
         disarmZeroWatchdog()
         disarmHeartbeatWatchdog()
-        for window in windows {
+        for window in overlayWindowsToClear() {
             window.orderOut(nil)
+            window.contentView = nil
             window.close()
         }
         windows.removeAll()
@@ -249,6 +252,19 @@ private final class BreakOverlayController {
         state = nil
         lockAfterBreakRequested = false
         forceExitRequest = nil
+    }
+
+    private func overlayWindowsToClear() -> [NSWindow] {
+        var seen = Set<ObjectIdentifier>()
+        var result: [NSWindow] = []
+        for window in windows + NSApplication.shared.windows
+            where window.identifier == breakOverlayWindowIdentifier
+        {
+            if seen.insert(ObjectIdentifier(window)).inserted {
+                result.append(window)
+            }
+        }
+        return result
     }
 
     private func armZeroWatchdog() {
@@ -329,12 +345,16 @@ private final class BreakOverlayController {
         window.contentView = BreakOverlayView(
             frame: NSRect(origin: .zero, size: frame.size),
             state: state,
-            diagnosticsEnabled: diagnosticsEnabled
+            diagnosticsEnabled: diagnosticsEnabled,
+            forceExitHandler: { [weak self] in
+                self?.markForceExitRequested()
+            }
         )
         window.hasShadow = false
         window.ignoresMouseEvents = false
         window.isOpaque = true
         window.isReleasedWhenClosed = false
+        window.identifier = breakOverlayWindowIdentifier
         window.level = .screenSaver
         return window
     }
@@ -469,10 +489,17 @@ private final class BreakOverlayController {
 private final class BreakOverlayView: NSView {
     private var state: BreakOverlayState
     private let diagnosticsEnabled: Bool
+    private let forceExitHandler: (() -> Void)?
 
-    init(frame frameRect: NSRect, state: BreakOverlayState, diagnosticsEnabled: Bool) {
+    init(
+        frame frameRect: NSRect,
+        state: BreakOverlayState,
+        diagnosticsEnabled: Bool,
+        forceExitHandler: (() -> Void)?
+    ) {
         self.state = state
         self.diagnosticsEnabled = diagnosticsEnabled
+        self.forceExitHandler = forceExitHandler
         super.init(frame: frameRect)
     }
 
@@ -504,6 +531,16 @@ private final class BreakOverlayView: NSView {
         }
 
         return forceExitControlRect.contains(point)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if diagnosticsEnabled, forceExitControlContains(point) {
+            forceExitHandler?()
+            return
+        }
+
+        super.mouseDown(with: event)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -893,6 +930,7 @@ private struct PreflightResultMessage: Encodable {
 private struct ActivitySampleMessage: Encodable {
     let type = "activitySample"
     let idleMs: UInt64
+    let sessionLocked: Bool
     let lockAfterBreakRequested: Bool
     let forceExitRequested: Bool
     let forceExitReason: String?
@@ -1066,6 +1104,7 @@ private func handlePollActivity(overlay: BreakOverlayController) throws {
     }
 
     let idleMilliseconds = min(idleSeconds * 1000, Double(UInt64.max))
+    let sessionLocked = isSessionLocked()
     let sampleState = runReturningOnMain { () -> (Bool, ForceExitRequest?, String) in
         overlay.noteHeartbeat()
         return (
@@ -1076,16 +1115,32 @@ private func handlePollActivity(overlay: BreakOverlayController) throws {
     }
     if breakDiagnosticsEnabled {
         diagnosticLog(
-            "pollActivity idleMs=\(UInt64(idleMilliseconds)) lockAfterRequest=\(sampleState.0) forceExit=\(sampleState.1 != nil) overlayState=\(sampleState.2)"
+            "pollActivity idleMs=\(UInt64(idleMilliseconds)) sessionLocked=\(sessionLocked) lockAfterRequest=\(sampleState.0) forceExit=\(sampleState.1 != nil) overlayState=\(sampleState.2)"
         )
     }
     try writeMessage(ActivitySampleMessage(
         idleMs: UInt64(idleMilliseconds),
+        sessionLocked: sessionLocked,
         lockAfterBreakRequested: sampleState.0,
         forceExitRequested: sampleState.1 != nil,
         forceExitReason: sampleState.1?.reason,
         overlayState: breakDiagnosticsEnabled ? sampleState.2 : nil
     ))
+}
+
+private func isSessionLocked() -> Bool {
+    guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else {
+        return false
+    }
+
+    if let locked = session[sessionScreenIsLockedKey] as? Bool {
+        return locked
+    }
+    if let locked = session[sessionScreenIsLockedKey] as? NSNumber {
+        return locked.boolValue
+    }
+
+    return false
 }
 
 private func breakOverlayState(from command: StartBreakCommand) -> BreakOverlayState {

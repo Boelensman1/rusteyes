@@ -18,7 +18,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 use tracing::{trace, warn};
 
-const PROTOCOL_VERSION: u16 = 8;
+const PROTOCOL_VERSION: u16 = 9;
 const HELPER_PATH_ENV: &str = "RUSTEYES_MACOS_HELPER";
 const BREAK_DIAGNOSTICS_ENV: &str = "RUSTEYES_BREAK_DIAGNOSTICS";
 const FORCE_CLEAR_PATH_ENV: &str = "RUSTEYES_FORCE_CLEAR_PATH";
@@ -47,6 +47,7 @@ struct MacOSHelperCore<W> {
     session: HelperSession<W>,
     poller: ActivityPoller,
     active_break: Option<ActiveBreak>,
+    pending_force_clear_reason: Option<String>,
     lock: MacOSLock,
     diagnostics: BreakDiagnostics,
 }
@@ -136,6 +137,7 @@ where
             session,
             poller: ActivityPoller::new(ACTIVITY_POLL_INTERVAL),
             active_break: None,
+            pending_force_clear_reason: None,
             lock,
             diagnostics,
         }
@@ -162,26 +164,58 @@ where
     }
 
     fn sample_activity_once(&mut self) -> Result<(), MacOSHelperError> {
-        self.diagnostics.discard_force_clear_trigger();
         let sample = self.session.poll_activity()?;
+        if self.diagnostics.consume_force_clear_trigger() {
+            self.request_force_clear(
+                "shared force-clear file trigger",
+                sample.session_locked,
+                false,
+            )?;
+        }
+        self.complete_pending_force_clear_if_unlocked(sample.session_locked)?;
         self.poller.queue_sample(sample.activity);
 
         Ok(())
     }
 
     fn sample_overlay_once(&mut self) -> Result<(), MacOSHelperError> {
-        if self.diagnostics.consume_force_clear_trigger() {
-            return self.force_clear_active_break("shared force-clear file trigger");
-        }
-
         let sample = self.session.poll_activity()?;
         self.diagnostics.log_helper_sample(&sample);
+        if self.diagnostics.consume_force_clear_trigger() {
+            return self.request_force_clear(
+                "shared force-clear file trigger",
+                sample.session_locked,
+                true,
+            );
+        }
+        if self.complete_pending_force_clear_if_unlocked(sample.session_locked)? {
+            return Ok(());
+        }
         if sample.force_exit_requested {
             let reason = sample
                 .force_exit_reason
                 .as_deref()
                 .unwrap_or("helper force-exit request");
             self.finish_force_cleared_break(reason);
+            return Ok(());
+        }
+
+        if self
+            .active_break
+            .as_ref()
+            .is_some_and(ActiveBreak::has_deferred_finish)
+        {
+            if sample.session_locked {
+                self.diagnostics.log_deferred_finish_waiting();
+                self.poller
+                    .queue_event(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL));
+                return Ok(());
+            }
+
+            self.finish_deferred_active_break()?;
+            self.poller
+                .queue_event(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL));
+            self.poller.queue_event(RuntimeEvent::BreakFinished);
             return Ok(());
         }
 
@@ -201,12 +235,24 @@ where
         {
             self.diagnostics.log_overlay_sample(update, break_elapsed);
             if update.finished {
-                self.finish_active_break(update.lock_after_break)?;
+                if sample.session_locked {
+                    if let Some(active_break) = self.active_break.as_mut() {
+                        active_break.defer_finish(update.lock_after_break);
+                    }
+                    self.diagnostics
+                        .log_finish_deferred(update.lock_after_break);
+                } else {
+                    self.finish_active_break(update.lock_after_break)?;
+                }
             } else {
                 self.session
                     .update_break(update.remaining, update.lock_after_break)?;
             }
-            queue_overlay_runtime_events(&mut self.poller, update);
+            queue_overlay_runtime_events(
+                &mut self.poller,
+                update,
+                update.finished && !sample.session_locked,
+            );
         }
 
         Ok(())
@@ -217,6 +263,7 @@ where
         let lock_after_break = scheduled_break.autolock;
         let break_name = scheduled_break.name.clone();
         if self.send_backend_command(BackendCommand::StartBreak(scheduled_break)) {
+            self.pending_force_clear_reason = None;
             self.diagnostics.discard_force_clear_trigger();
             self.diagnostics
                 .log_break_start(&break_name, duration, lock_after_break);
@@ -231,22 +278,41 @@ where
     }
 
     fn finish_active_break(&mut self, lock_after: bool) -> Result<(), MacOSHelperError> {
+        self.finish_active_break_with_effective_lock(lock_after, lock_after)
+    }
+
+    fn finish_active_break_with_effective_lock(
+        &mut self,
+        requested_lock_after: bool,
+        effective_lock_after: bool,
+    ) -> Result<(), MacOSHelperError> {
         if self.active_break.take().is_none() {
             return Ok(());
         }
 
-        let helper_lock_after = self.lock.helper_lock_after(lock_after);
+        let helper_lock_after = self.lock.helper_lock_after(effective_lock_after);
         self.diagnostics
-            .log_finish_break(lock_after, helper_lock_after);
+            .log_finish_break(requested_lock_after, helper_lock_after);
         self.session.send_command(BackendCommand::FinishBreak {
             lock_after: helper_lock_after,
         })?;
 
-        if lock_after {
+        if effective_lock_after {
             self.start_configured_lock_command()?;
         }
 
         Ok(())
+    }
+
+    fn finish_deferred_active_break(&mut self) -> Result<(), MacOSHelperError> {
+        let requested_lock_after = self
+            .active_break
+            .as_mut()
+            .and_then(ActiveBreak::take_deferred_finish)
+            .is_some_and(|deferred| deferred.lock_after_break);
+        self.diagnostics
+            .log_deferred_finish_resuming(requested_lock_after);
+        self.finish_active_break_with_effective_lock(requested_lock_after, false)
     }
 
     fn start_configured_lock_command(&self) -> Result<(), MacOSHelperError> {
@@ -262,6 +328,7 @@ where
     fn clear_break(&mut self) {
         if self.send_backend_command(BackendCommand::ClearBreak) {
             self.active_break = None;
+            self.pending_force_clear_reason = None;
         }
     }
 
@@ -293,14 +360,47 @@ where
         self.poller.queue_event(RuntimeEvent::Shutdown);
     }
 
-    fn force_clear_active_break(&mut self, reason: &str) -> Result<(), MacOSHelperError> {
-        if self.active_break.is_none() {
+    fn request_force_clear(
+        &mut self,
+        reason: &str,
+        session_locked: bool,
+        finish_active_break: bool,
+    ) -> Result<(), MacOSHelperError> {
+        if session_locked {
+            self.diagnostics.log_force_clear_deferred(reason);
+            self.pending_force_clear_reason = Some(reason.to_string());
             return Ok(());
         }
 
+        self.force_clear_break(reason, finish_active_break)
+    }
+
+    fn complete_pending_force_clear_if_unlocked(
+        &mut self,
+        session_locked: bool,
+    ) -> Result<bool, MacOSHelperError> {
+        if session_locked {
+            return Ok(false);
+        }
+
+        let Some(reason) = self.pending_force_clear_reason.take() else {
+            return Ok(false);
+        };
+        let finish_active_break = self.active_break.is_some();
+        self.force_clear_break(&reason, finish_active_break)?;
+        Ok(true)
+    }
+
+    fn force_clear_break(
+        &mut self,
+        reason: &str,
+        finish_active_break: bool,
+    ) -> Result<(), MacOSHelperError> {
         self.diagnostics.log_force_clear(reason);
         self.session.send_command(BackendCommand::ClearBreak)?;
-        self.finish_force_cleared_break(reason);
+        if finish_active_break {
+            self.finish_force_cleared_break(reason);
+        }
         Ok(())
     }
 
@@ -309,6 +409,7 @@ where
             return;
         }
 
+        self.pending_force_clear_reason = None;
         self.diagnostics.log_force_clear(reason);
         self.poller.queue_event(RuntimeEvent::BreakFinished);
     }
@@ -452,10 +553,35 @@ impl BreakDiagnostics {
         }
     }
 
+    fn log_finish_deferred(&self, lock_after: bool) {
+        if self.enabled {
+            warn!(
+                lock_after,
+                "diagnostic macOS break finish deferred until session unlock"
+            );
+        }
+    }
+
+    fn log_deferred_finish_waiting(&self) {
+        if self.enabled {
+            warn!("diagnostic macOS break finish still waiting for session unlock");
+        }
+    }
+
+    fn log_deferred_finish_resuming(&self, requested_lock_after: bool) {
+        if self.enabled {
+            warn!(
+                requested_lock_after,
+                "diagnostic macOS completing deferred break finish after session unlock"
+            );
+        }
+    }
+
     fn log_helper_sample(&self, sample: &HelperActivitySample) {
         if self.enabled {
             warn!(
                 idle_for = ?sample.activity.idle_for(),
+                session_locked = sample.session_locked,
                 lock_requested = sample.lock_after_break_requested,
                 force_exit_requested = sample.force_exit_requested,
                 force_exit_reason = ?sample.force_exit_reason,
@@ -483,6 +609,15 @@ impl BreakDiagnostics {
     fn log_force_clear(&self, reason: &str) {
         if self.enabled {
             warn!(reason, "diagnostic macOS force-clearing active break");
+        }
+    }
+
+    fn log_force_clear_deferred(&self, reason: &str) {
+        if self.enabled {
+            warn!(
+                reason,
+                "diagnostic macOS force-clear deferred until session unlock"
+            );
         }
     }
 }
@@ -640,6 +775,12 @@ impl From<LockConfig> for MacOSLock {
 struct ActiveBreak {
     timer: BreakTimer,
     lock_after_break: bool,
+    deferred_finish: Option<DeferredFinish>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DeferredFinish {
+    lock_after_break: bool,
 }
 
 impl ActiveBreak {
@@ -647,6 +788,7 @@ impl ActiveBreak {
         Self {
             timer: BreakTimer::new(duration),
             lock_after_break,
+            deferred_finish: None,
         }
     }
 
@@ -679,6 +821,19 @@ impl ActiveBreak {
 
     fn replace_remaining(&mut self, remaining: Duration) {
         self.timer = BreakTimer::new(remaining);
+        self.deferred_finish = None;
+    }
+
+    fn defer_finish(&mut self, lock_after_break: bool) {
+        self.deferred_finish = Some(DeferredFinish { lock_after_break });
+    }
+
+    fn take_deferred_finish(&mut self) -> Option<DeferredFinish> {
+        self.deferred_finish.take()
+    }
+
+    fn has_deferred_finish(&self) -> bool {
+        self.deferred_finish.is_some()
     }
 
     const fn remaining(self) -> Duration {
@@ -698,14 +853,18 @@ struct ActiveBreakUpdate {
     finished: bool,
 }
 
-fn queue_overlay_runtime_events(poller: &mut ActivityPoller, update: ActiveBreakUpdate) {
+fn queue_overlay_runtime_events(
+    poller: &mut ActivityPoller,
+    update: ActiveBreakUpdate,
+    queue_break_finished: bool,
+) {
     poller.queue_event(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL));
 
     if update.lock_after_break_requested {
         poller.queue_event(RuntimeEvent::LockAfterCurrentBreak);
     }
 
-    if update.finished {
+    if update.finished && queue_break_finished {
         poller.queue_event(RuntimeEvent::BreakFinished);
     }
 }
@@ -917,12 +1076,14 @@ where
             |message| match message {
                 HelperMessage::ActivitySample {
                     idle_ms,
+                    session_locked,
                     lock_after_break_requested,
                     force_exit_requested,
                     force_exit_reason,
                     overlay_state,
                 } => Ok(HelperActivitySample {
                     activity: ActivitySample::new(Duration::from_millis(idle_ms)),
+                    session_locked,
                     lock_after_break_requested,
                     force_exit_requested,
                     force_exit_reason,
@@ -1141,6 +1302,7 @@ impl HelperCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HelperActivitySample {
     activity: ActivitySample,
+    session_locked: bool,
     lock_after_break_requested: bool,
     force_exit_requested: bool,
     force_exit_reason: Option<String>,
@@ -1156,6 +1318,8 @@ enum HelperMessage {
     ActivitySample {
         #[serde(rename = "idleMs")]
         idle_ms: u64,
+        #[serde(rename = "sessionLocked", default)]
+        session_locked: bool,
         #[serde(rename = "lockAfterBreakRequested")]
         lock_after_break_requested: bool,
         #[serde(rename = "forceExitRequested", default)]
@@ -1447,7 +1611,7 @@ mod tests {
 
     #[test]
     fn handshake_writes_hello_and_accepts_ready() -> Result<(), Box<dyn std::error::Error>> {
-        let input = Cursor::new(br#"{"type":"ready","version":8}"#.to_vec());
+        let input = Cursor::new(br#"{"type":"ready","version":9}"#.to_vec());
         let mut output = Vec::new();
 
         {
@@ -1543,7 +1707,7 @@ mod tests {
 
     #[test]
     fn handshake_rejects_incompatible_version() {
-        let input = Cursor::new(br#"{"type":"ready","version":9}"#.to_vec());
+        let input = Cursor::new(br#"{"type":"ready","version":10}"#.to_vec());
         let mut output = Vec::new();
         let mut session = HelperSession::new(input, &mut output);
 
@@ -1807,6 +1971,7 @@ mod tests {
             session.receive()?,
             HelperMessage::ActivitySample {
                 idle_ms: 1_000,
+                session_locked: false,
                 lock_after_break_requested: false,
                 force_exit_requested: false,
                 force_exit_reason: None,
@@ -1827,10 +1992,32 @@ mod tests {
             session.receive()?,
             HelperMessage::ActivitySample {
                 idle_ms: 1_000,
+                session_locked: false,
                 lock_after_break_requested: false,
                 force_exit_requested: true,
                 force_exit_reason: Some(String::from("button")),
                 overlay_state: Some(String::from("inactive")),
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn activity_sample_session_lock_field_is_decoded() -> Result<(), Box<dyn std::error::Error>> {
+        let input = Cursor::new(
+            br#"{"type":"activitySample","idleMs":1000,"sessionLocked":true,"lockAfterBreakRequested":false}"#.to_vec(),
+        );
+        let mut session = HelperSession::new(input, Vec::new());
+
+        assert_eq!(
+            session.receive()?,
+            HelperMessage::ActivitySample {
+                idle_ms: 1_000,
+                session_locked: true,
+                lock_after_break_requested: false,
+                force_exit_requested: false,
+                force_exit_reason: None,
+                overlay_state: None,
             }
         );
         Ok(())
@@ -1843,6 +2030,7 @@ mod tests {
         let update = active_break.apply_sample(
             &HelperActivitySample {
                 activity: ActivitySample::new(Duration::from_secs(2)),
+                session_locked: false,
                 lock_after_break_requested: true,
                 force_exit_requested: false,
                 force_exit_reason: None,
@@ -1940,6 +2128,87 @@ mod tests {
     }
 
     #[test]
+    fn finished_overlay_sample_while_locked_defers_helper_finish()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let input = Cursor::new(
+            br#"{"type":"activitySample","idleMs":1000,"sessionLocked":true,"lockAfterBreakRequested":false}"#.to_vec(),
+        );
+        let mut output = Vec::new();
+        let mut core = MacOSHelperCore::new(
+            HelperSession::new(input, &mut output),
+            MacOSLock::PlatformDefault,
+            BreakDiagnostics::disabled(),
+        );
+        core.active_break = Some(ActiveBreak::new(OVERLAY_TICK_INTERVAL, true));
+
+        core.sample_overlay_once()?;
+
+        assert_eq!(
+            core.active_break.as_ref().and_then(|active_break| {
+                active_break
+                    .deferred_finish
+                    .map(|deferred| deferred.lock_after_break)
+            }),
+            Some(true)
+        );
+        assert_eq!(
+            core.next_event(),
+            Some(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL))
+        );
+        assert_eq!(core.next_event(), None);
+        drop(core);
+
+        assert_eq!(daemon_messages(&output)?, vec![DaemonMessage::PollActivity]);
+        Ok(())
+    }
+
+    #[test]
+    fn deferred_locked_finish_completes_after_unlock_without_relocking()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let input = Cursor::new(
+            br#"{"type":"activitySample","idleMs":1000,"sessionLocked":true,"lockAfterBreakRequested":false}
+{"type":"activitySample","idleMs":1000,"sessionLocked":false,"lockAfterBreakRequested":false}
+{"type":"commandComplete","command":"finishBreak"}"#
+                .to_vec(),
+        );
+        let mut output = Vec::new();
+        let mut core = MacOSHelperCore::new(
+            HelperSession::new(input, &mut output),
+            MacOSLock::PlatformDefault,
+            BreakDiagnostics::disabled(),
+        );
+        core.active_break = Some(ActiveBreak::new(OVERLAY_TICK_INTERVAL, true));
+
+        core.sample_overlay_once()?;
+        assert!(core.active_break.is_some());
+        assert_eq!(
+            core.next_event(),
+            Some(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL))
+        );
+        assert_eq!(core.next_event(), None);
+
+        core.sample_overlay_once()?;
+        assert_eq!(core.active_break, None);
+        assert_eq!(
+            core.next_event(),
+            Some(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL))
+        );
+        assert_eq!(core.next_event(), Some(RuntimeEvent::BreakFinished));
+        assert_eq!(core.next_event(), None);
+        drop(core);
+
+        assert_eq!(
+            daemon_messages(&output)?,
+            vec![
+                DaemonMessage::PollActivity,
+                DaemonMessage::PollActivity,
+                DaemonMessage::FinishBreak { lock_after: false },
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn force_exit_activity_sample_finishes_backend_break() -> Result<(), Box<dyn std::error::Error>>
     {
         let input = Cursor::new(
@@ -1993,7 +2262,11 @@ mod tests {
         let trigger = ForceClearTrigger::prepare(path.clone())?;
         append_force_clear(&path)?;
 
-        let input = Cursor::new(br#"{"type":"commandComplete","command":"clearBreak"}"#.to_vec());
+        let input = Cursor::new(
+            br#"{"type":"activitySample","idleMs":1000,"sessionLocked":false,"lockAfterBreakRequested":false}
+{"type":"commandComplete","command":"clearBreak"}"#
+                .to_vec(),
+        );
         let mut output = Vec::new();
         let mut core = MacOSHelperCore::new(
             HelperSession::new(input, &mut output),
@@ -2012,7 +2285,94 @@ mod tests {
         assert_eq!(core.next_event(), None);
         drop(core);
 
-        assert_eq!(daemon_messages(&output)?, vec![DaemonMessage::ClearBreak]);
+        assert_eq!(
+            daemon_messages(&output)?,
+            vec![DaemonMessage::PollActivity, DaemonMessage::ClearBreak]
+        );
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn force_clear_file_trigger_sends_clear_without_active_backend_break()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let path = unique_force_clear_path("inactive");
+        let trigger = ForceClearTrigger::prepare(path.clone())?;
+        append_force_clear(&path)?;
+
+        let input = Cursor::new(
+            br#"{"type":"activitySample","idleMs":1000,"sessionLocked":false,"lockAfterBreakRequested":false}
+{"type":"commandComplete","command":"clearBreak"}"#
+                .to_vec(),
+        );
+        let mut output = Vec::new();
+        let mut core = MacOSHelperCore::new(
+            HelperSession::new(input, &mut output),
+            MacOSLock::PlatformDefault,
+            BreakDiagnostics {
+                enabled: true,
+                force_clear: Some(trigger),
+            },
+        );
+
+        core.sample_activity_once()?;
+
+        assert_eq!(core.active_break, None);
+        drop(core);
+
+        assert_eq!(
+            daemon_messages(&output)?,
+            vec![DaemonMessage::PollActivity, DaemonMessage::ClearBreak]
+        );
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn force_clear_file_trigger_while_locked_waits_for_unlock()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let path = unique_force_clear_path("locked");
+        let trigger = ForceClearTrigger::prepare(path.clone())?;
+        append_force_clear(&path)?;
+
+        let input = Cursor::new(
+            br#"{"type":"activitySample","idleMs":1000,"sessionLocked":true,"lockAfterBreakRequested":false}
+{"type":"activitySample","idleMs":1000,"sessionLocked":false,"lockAfterBreakRequested":false}
+{"type":"commandComplete","command":"clearBreak"}"#
+                .to_vec(),
+        );
+        let mut output = Vec::new();
+        let mut core = MacOSHelperCore::new(
+            HelperSession::new(input, &mut output),
+            MacOSLock::PlatformDefault,
+            BreakDiagnostics {
+                enabled: true,
+                force_clear: Some(trigger),
+            },
+        );
+        core.active_break = Some(ActiveBreak::new(Duration::from_secs(5), true));
+
+        core.sample_overlay_once()?;
+        assert!(core.active_break.is_some());
+        assert_eq!(
+            core.pending_force_clear_reason.as_deref(),
+            Some("shared force-clear file trigger")
+        );
+
+        core.sample_overlay_once()?;
+        assert_eq!(core.active_break, None);
+        assert_eq!(core.next_event(), Some(RuntimeEvent::BreakFinished));
+        assert_eq!(core.next_event(), None);
+        drop(core);
+
+        assert_eq!(
+            daemon_messages(&output)?,
+            vec![
+                DaemonMessage::PollActivity,
+                DaemonMessage::PollActivity,
+                DaemonMessage::ClearBreak,
+            ]
+        );
         std::fs::remove_file(path)?;
         Ok(())
     }
@@ -2029,6 +2389,7 @@ mod tests {
                 lock_after_break_requested: true,
                 finished: true,
             },
+            true,
         );
 
         assert_eq!(
