@@ -337,6 +337,19 @@
   a reader thread so a wedged helper is killed (the OS then removes the tap)
   instead of blocking the backend forever. Manual macOS verification of the
   locked-lid zero-finish path, watchdogs, and wedge path is pending.
+- Completed `macos-break-diagnostics`: temporary diagnostics can now be enabled
+  with Nix `services.rusteyes.breakDiagnostics.enable`, which injects
+  `RUSTEYES_BREAK_DIAGNOSTICS=1` and a machine-global
+  `/tmp/rusteyes-force-clear` trigger. Rust logs macOS break-tail samples,
+  helper command send/ack, force-clear requests, and configured lock commands;
+  the Swift helper logs overlay show/update/clear, watchdogs, activity samples,
+  finish/clear commands, and helper-native lock start/return. Helper protocol
+  version 8 activity samples carry optional force-exit and overlay-state fields.
+  Diagnostics also show a temporary `Force exit` overlay button and create the
+  shared force-clear file as a world-writable regular file so another macOS user
+  can append to it to clear a stuck active break. Helper-native autolock now
+  starts asynchronously after `finishBreak` is acknowledged so lock execution
+  cannot block overlay cleanup acknowledgement.
 - Completed `log-stream-routing`: the logger now splits tracing output by level
   across two `fmt` layers — INFO/DEBUG/TRACE to stdout (launchd `StandardOutPath`
   / journald) and WARN/ERROR to stderr — so the error log stays a clean "something

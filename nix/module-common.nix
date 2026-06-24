@@ -27,6 +27,10 @@ let
     // optionalAttrs (cfg.syncSharedSecretFile != null) {
       RUSTEYES_SYNC_SHARED_SECRET_FILE = cfg.syncSharedSecretFile;
     }
+    // optionalAttrs cfg.breakDiagnostics.enable {
+      RUSTEYES_BREAK_DIAGNOSTICS = "1";
+      RUSTEYES_FORCE_CLEAR_PATH = "/tmp/rusteyes-force-clear";
+    }
     // cfg.extraEnvironment;
 in
 {
@@ -97,6 +101,10 @@ in
       '';
       description = "Additional environment variables for the RustEyes service.";
     };
+
+    breakDiagnostics.enable = mkEnableOption ''
+      temporary break-overlay diagnostics and a machine-global force-clear
+      trigger at /tmp/rusteyes-force-clear'';
 
     launchAgent.enable = mkEnableOption ''
       a macOS LaunchAgent that runs RustEyes at login and injects the service

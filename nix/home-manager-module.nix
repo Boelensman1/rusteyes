@@ -37,6 +37,10 @@ in
             message = "services.rusteyes.extraEnvironment is only supported on Darwin when services.rusteyes.launchAgent.enable is true.";
           }
           {
+            assertion = !pkgs.stdenv.isDarwin || cfg.launchAgent.enable || !cfg.breakDiagnostics.enable;
+            message = "services.rusteyes.breakDiagnostics.enable is only supported on Darwin when services.rusteyes.launchAgent.enable is true.";
+          }
+          {
             assertion =
               !(
                 pkgs.stdenv.isDarwin
