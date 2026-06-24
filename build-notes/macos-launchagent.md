@@ -37,6 +37,10 @@
 - Added a hard assertion that fails when `launchAgent.enable` is true and
   `settings.startup.open_at_login` is also true, to prevent the app from being
   launched twice at login (LaunchAgent `RunAtLoad` plus the app's Login Item).
+- Follow-up fix: the packaged Darwin `bin/rusteyes` wrapper now best-effort
+  registers the Nix-store `RustEyes.app` with Launch Services before execing
+  the app binary, so LaunchAgent startup no longer depends on Home Manager app
+  links such as `~/Applications/Home Manager Apps`.
 
 ## Decisions
 
@@ -57,8 +61,9 @@
   hardcoded under `~/Library/Logs` (the macOS convention) rather than exposed as
   options to keep the module surface small; users can still tail those files.
 - `lib.getExe cfg.package` resolves on Darwin to the `bin/rusteyes` wrapper that
-  execs the bundled app executable, so the bundled helper is still discovered
-  relative to the executable — no `PATH`/`HELPER_PATH_ENV` plumbing is needed.
+  registers and execs the bundled app executable, so the bundled helper is still
+  discovered relative to the executable — no `PATH`/`HELPER_PATH_ENV` plumbing
+  is needed.
 - `pathEnvironment` (which references the Linux-only `pkgs.systemd`) is not used
   in the Darwin branch.
 - The double-launch guard is a hard assertion (chosen over a soft warning) so a

@@ -281,7 +281,9 @@
   and a `bin/rusteyes` wrapper; the raw Rust package remains available as
   `packages.<system>.rusteyes`; Darwin Home Manager installs the app and writes
   generated config to `~/.config/rusteyes/config.yaml` without creating a
-  LaunchAgent.
+  LaunchAgent. A follow-up fix now signs the packaged executable/helper with
+  explicit app identifiers and makes the wrapper best-effort register the
+  Nix-store app bundle with Launch Services before execing it.
 - Completed `macos-launchagent`: the Darwin Home Manager module gained an opt-in
   `launchAgent.enable` option that manages a `launchd.agents.rusteyes`
   LaunchAgent running the app at login with `common.serviceEnvironment`
@@ -520,6 +522,12 @@
 - `codesign -dv` reports ad-hoc signatures for the Nix-built app executable
   and bundled helper. The Nix build signs Mach-O files with `darwin.sigtool`;
   it does not sign the `.app` directory itself.
+- `codesign -dv` reports explicit identifiers for the Nix-built app executable
+  (`dev.rusteyes.RustEyes`) and bundled helper
+  (`dev.rusteyes.RustEyes.helper`) after the LaunchAgent notification identity
+  fix.
+- Inspecting the Nix-built `bin/rusteyes` wrapper confirms it best-effort runs
+  `lsregister -f` on the packaged `RustEyes.app` before execing the app binary.
 - Home Manager module eval confirms Darwin installs RustEyes, writes generated
   `xdg.configFile."rusteyes/config.yaml"`, and does not create a systemd user
   service.

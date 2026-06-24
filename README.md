@@ -135,7 +135,12 @@ the Linux systemd user service does). Enabling it unlocks `configFile`,
 `syncSharedSecretFile`, `logLevel`, and `extraEnvironment` on Darwin — this is
 how the sync shared secret reaches the app on macOS. The LaunchAgent runs the
 app at login itself, so `settings.startup.open_at_login` must not also be true
-(the build fails otherwise to avoid launching the app twice).
+(the build fails otherwise to avoid launching the app twice). The LaunchAgent
+starts the packaged `bin/rusteyes` wrapper directly; the wrapper registers the
+Nix-store `RustEyes.app` with Launch Services before starting the app, so this
+mode does not require `~/Applications/Home Manager Apps` or other per-user app
+links. If notifications were previously denied, re-enable RustEyes in macOS
+Notification settings after switching to the fixed package.
 
 ## Common Commands
 

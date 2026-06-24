@@ -15,10 +15,13 @@
   `swiftpm2nix` dependency metadata is needed because the helper package has no
   SwiftPM dependencies.
 - The Nix app bundle installs `RustEyes.app` under `$out/Applications` and a
-  `bin/rusteyes` wrapper that execs the bundled app executable.
+  `bin/rusteyes` wrapper that best-effort registers the bundle with Launch
+  Services before execing the bundled app executable.
 - Nix signs the app's Mach-O executable and helper with ad-hoc signatures using
-  `darwin.sigtool`; the bundle directory itself is not signed because Nix's
-  sigtool signs binaries, not `.app` directories.
+  `darwin.sigtool`; the main executable is signed with identifier
+  `dev.rusteyes.RustEyes`, and the helper with
+  `dev.rusteyes.RustEyes.helper`. The bundle directory itself is not signed
+  because Nix's sigtool signs binaries, not `.app` directories.
 - Darwin Home Manager is install/config only by default. It installs the
   selected package and writes generated settings to
   `~/.config/rusteyes/config.yaml`.
@@ -34,7 +37,7 @@
 ## Behavior
 
 - `nix run .` on Darwin starts the executable inside the packaged
-  `RustEyes.app` bundle.
+  `RustEyes.app` bundle after registering that bundle with Launch Services.
 - Home Manager on Linux keeps installing the graphical-session systemd user
   service.
 - Home Manager on Darwin installs/configures RustEyes but does not create
@@ -52,6 +55,7 @@
 - `plutil -lint /nix/store/...-rusteyes-0.1.0/Applications/RustEyes.app/Contents/Info.plist`
 - `codesign -dv /nix/store/...-rusteyes-0.1.0/Applications/RustEyes.app/Contents/MacOS/rusteyes`
 - `codesign -dv /nix/store/...-rusteyes-0.1.0/Applications/RustEyes.app/Contents/Resources/rusteyes-macos-helper`
+- `sed -n '1,80p' /nix/store/...-rusteyes-0.1.0/bin/rusteyes`
 - Home Manager module evals for Linux systemd service behavior, Darwin
   install/config behavior, and Darwin unsupported-option assertions.
 - `nix flake show --json`

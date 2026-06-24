@@ -24,6 +24,7 @@
 
       rustVersion = "1.96.0";
       packageVersion = "0.1.0";
+      macosBundleIdentifier = "dev.rusteyes.RustEyes";
       overlays = [
         rust-overlay.overlays.default
       ];
@@ -136,10 +137,14 @@
                 "$contents/Resources/rusteyes-macos-helper"
 
               export CODESIGN_ALLOCATE="${pkgs.cctools}/bin/${pkgs.cctools.targetPrefix}codesign_allocate"
-              codesign --force --sign - "$contents/MacOS/rusteyes"
-              codesign --force --sign - "$contents/Resources/rusteyes-macos-helper"
+              codesign --force --sign - --identifier ${macosBundleIdentifier} \
+                "$contents/MacOS/rusteyes"
+              codesign --force --sign - --identifier ${macosBundleIdentifier}.helper \
+                "$contents/Resources/rusteyes-macos-helper"
 
-              makeWrapper "$contents/MacOS/rusteyes" "$out/bin/rusteyes"
+              lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+              makeWrapper "$contents/MacOS/rusteyes" "$out/bin/rusteyes" \
+                --run "\"$lsregister\" -f \"$app\" >/dev/null 2>&1 || true"
 
               runHook postInstall
             '';
