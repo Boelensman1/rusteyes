@@ -14,7 +14,7 @@ const HOME: &str = "HOME";
 const CONFIG_DIR: &str = "rusteyes";
 const CONFIG_FILE: &str = "config.yaml";
 
-pub(crate) const DEFAULT_BREAK_AFTER_ACTIVE: Duration = Duration::from_mins(20);
+pub(crate) const DEFAULT_BREAK_AFTER_ACTIVE: Duration = Duration::from_mins(10);
 pub(crate) const DEFAULT_SHORT_BREAK_INTERVAL: usize = 1;
 pub(crate) const DEFAULT_SHORT_BREAK_DURATION: Duration = Duration::from_secs(20);
 pub(crate) const DEFAULT_LONG_BREAK_INTERVAL: usize = 2;
