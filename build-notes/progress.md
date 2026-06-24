@@ -332,6 +332,15 @@
   bounded by a 5s `recv_timeout` via a reader thread so a wedged helper is killed
   (the OS then removes the tap) instead of blocking the backend forever. Manual
   macOS verification of the watchdogs and the wedge path is pending.
+- Completed `log-stream-routing`: the logger now splits tracing output by level
+  across two `fmt` layers — INFO/DEBUG/TRACE to stdout (launchd `StandardOutPath`
+  / journald) and WARN/ERROR to stderr — so the error log stays a clean "something
+  is wrong" record instead of receiving every event. ANSI colors are now gated on
+  `is_terminal()`, so log files and sockets are plain text while dev terminal runs
+  keep colors. The fd-dup writer from `service-log-delivery` was generalized to a
+  single `StdStream { Stdout, Stderr }` that dups fd 1 or fd 2, preserving the
+  macOS reentrant-lock workaround. No dependency, nix, or plist changes; redeploy
+  of the rebuilt binary under launchd to confirm live delivery is pending.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
