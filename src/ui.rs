@@ -187,6 +187,13 @@ mod app {
         include_bytes!("../package/icons/rusteyes-tray.rgba");
     const APP_NAME: &str = "RustEyes";
     const TOOLTIP: &str = "RustEyes";
+    // Sound played the first time the pre-break notification appears. The name
+    // vocabularies differ per platform: Linux uses the freedesktop XDG sound
+    // naming spec, macOS expects a system sound from /System/Library/Sounds.
+    #[cfg(not(target_os = "macos"))]
+    const PRE_BREAK_NOTIFICATION_SOUND: &str = "message";
+    #[cfg(target_os = "macos")]
+    const PRE_BREAK_NOTIFICATION_SOUND: &str = "Ping";
     const ACTIVE_TIME_MENU_ID: &str = "active-time";
     pub(crate) fn run<F>(config: UiConfig, start_runtime: F) -> Result<(), UiError>
     where
@@ -521,6 +528,7 @@ mod app {
 
         *handle = Some(
             build_notification(&notification, Timeout::Never)
+                .sound_name(PRE_BREAK_NOTIFICATION_SOUND)
                 .show()
                 .map_err(|error| UiError::notification(error.to_string()))?,
         );

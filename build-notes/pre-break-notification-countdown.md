@@ -24,8 +24,26 @@
 - Short active intervals keep the half-interval lead: a 10-second interval
   shows `5s`, and a 20-second interval shows `10s` and `5s`.
 - Generic desktop notifications are unchanged.
+- The first appearance of the pre-break notification plays a sound so the
+  upcoming break is noticeable without looking at the screen. The 5-second
+  countdown updates stay silent (the sound is set only on the initial `.show()`,
+  not on the in-place `.update()` path).
 - If a user manually dismisses a countdown notification, a later countdown
   update may show it again because dismissal callbacks are not tracked.
+
+## Notification sound
+
+- Implemented via `notify-rust`'s `Notification::sound_name`, set only in the
+  first-show branch of `show_pre_break_notification` in `src/ui.rs`; the shared
+  `build_notification` helper is untouched so other notifications stay silent.
+- The name vocabularies differ per platform, so `PRE_BREAK_NOTIFICATION_SOUND`
+  is `cfg`-conditional: Linux/XDG uses `"message"` (freedesktop sound naming
+  spec), macOS uses `"Ping"` (a `/System/Library/Sounds` system sound).
+- The sound is played by the desktop's notification server (XDG `SoundName`
+  hint on Linux, `NSUserNotification`/`UN` sound on macOS), so minimal or
+  headless setups that ignore sound hints will not play it.
+- macOS audible verification is pending a macOS session (same as the
+  break-finished beep).
 
 ## Commands
 

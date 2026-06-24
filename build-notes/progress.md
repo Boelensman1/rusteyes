@@ -262,7 +262,9 @@
 - Completed `pre-break-notification-countdown`: pre-break desktop
   notifications now update in place at countdown boundaries, preserve the
   half-interval notice lead for short schedules, and are explicitly cleared
-  when the break starts.
+  when the break starts. The first appearance also plays a sound via
+  `notify-rust`'s `sound_name` (platform-conditional: `message` on Linux/XDG,
+  `Ping` on macOS); countdown updates stay silent.
 - Completed `idle-activity-grace`: normal activity samples now use an internal
   10 second idle threshold so slow ongoing input still counts as active, while
   local and synced active-time signals share one wall-clock budget so synced
@@ -463,6 +465,8 @@
 - `cargo test pre_break_notification --lib` passes after adding countdown
   update and clear behavior.
 - `make check` passes after adding pre-break notification countdown updates.
+- `make check` (275 tests) passes after adding a sound to the first pre-break
+  notification.
 - `make check` passes after adding idle activity grace and capped synced
   active-time accumulation.
 - `make check` passes after removing stale dead-code allowances.
