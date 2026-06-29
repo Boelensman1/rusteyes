@@ -300,14 +300,15 @@ impl X11ActivityBackend {
         &mut self,
         message: &str,
         remaining: Duration,
+        lock_after: bool,
     ) -> Result<(), X11ActivityError> {
         if let Some(active_break) = &mut self.active_break {
             active_break
-                .replace(&self.activity.connection, message, remaining)
+                .replace(&self.activity.connection, message, remaining, lock_after)
                 .map_err(|error| X11ActivityError::overlay(&error))
         } else {
             if let Some(pending_break) = &mut self.pending_break {
-                pending_break.replace(message, remaining);
+                pending_break.replace(message, remaining, lock_after);
             }
             Ok(())
         }
@@ -316,8 +317,12 @@ impl X11ActivityBackend {
     fn handle_command(&mut self, command: BackendCommand) {
         match command {
             BackendCommand::StartBreak(scheduled_break) => self.start_break(&scheduled_break),
-            BackendCommand::ReplaceActiveBreak { message, remaining } => {
-                if let Err(error) = self.replace_active_break(&message, remaining) {
+            BackendCommand::ReplaceActiveBreak {
+                message,
+                remaining,
+                lock_after,
+            } => {
+                if let Err(error) = self.replace_active_break(&message, remaining, lock_after) {
                     self.queue_backend_error(&error);
                 }
             }
@@ -379,9 +384,10 @@ impl PendingBreakStart {
         self.scheduled_break.autolock = true;
     }
 
-    fn replace(&mut self, message: &str, remaining: Duration) {
-        self.scheduled_break.message = message.to_owned();
+    fn replace(&mut self, message: &str, remaining: Duration, lock_after: bool) {
+        message.clone_into(&mut self.scheduled_break.message);
         self.scheduled_break.duration = remaining;
+        self.scheduled_break.autolock = lock_after;
     }
 }
 
@@ -403,10 +409,12 @@ impl ActiveBreak {
         connection: &RustConnection,
         message: &str,
         remaining: Duration,
+        lock_after: bool,
     ) -> Result<(), X11OverlayError> {
         self.timer = BreakTimer::new(remaining);
         self.overlay.update_message(connection, message)?;
-        self.overlay.update_remaining(connection, remaining)
+        self.overlay.update_remaining(connection, remaining)?;
+        self.overlay.set_lock_after_break(connection, lock_after)
     }
 
     fn advance(

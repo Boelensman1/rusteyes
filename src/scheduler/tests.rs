@@ -1,6 +1,6 @@
 use super::{
     BreakOrigin, BreakRule, BreakSchedule, BreakScheduler, DEFAULT_BREAK_MESSAGE, ScheduledBreak,
-    UpcomingScheduledBreak,
+    SchedulerPosition, UpcomingScheduledBreak,
 };
 use crate::config::{BreakTypeConfig, Breaks, Config, ConfigError, DEFAULT_BREAK_AFTER_ACTIVE};
 use std::collections::BTreeMap;
@@ -397,6 +397,79 @@ fn reset_active_time_preserves_pending_and_disabled_state() {
     scheduler.reset_active_time();
     assert!(scheduler.is_disabled());
     assert_eq!(scheduler.advance_active(Duration::from_secs(10)), None);
+}
+
+#[test]
+fn synced_position_advances_slot_without_rewinding() {
+    let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20), ("long", 2, 300)]));
+
+    assert!(scheduler.merge_synced_position(SchedulerPosition {
+        slot: 2,
+        active_elapsed: Duration::from_secs(3),
+    }));
+    assert_eq!(
+        scheduler.position(),
+        SchedulerPosition {
+            slot: 2,
+            active_elapsed: Duration::from_secs(3),
+        }
+    );
+
+    assert!(!scheduler.merge_synced_position(SchedulerPosition {
+        slot: 1,
+        active_elapsed: Duration::from_secs(9),
+    }));
+    assert_eq!(
+        scheduler.position(),
+        SchedulerPosition {
+            slot: 2,
+            active_elapsed: Duration::from_secs(3),
+        }
+    );
+}
+
+#[test]
+fn synced_position_same_slot_keeps_greater_active_elapsed() {
+    let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20)]));
+
+    assert!(scheduler.merge_synced_position(SchedulerPosition {
+        slot: 0,
+        active_elapsed: Duration::from_secs(4),
+    }));
+    assert!(!scheduler.merge_synced_position(SchedulerPosition {
+        slot: 0,
+        active_elapsed: Duration::from_secs(2),
+    }));
+    assert_eq!(scheduler.active_elapsed(), Duration::from_secs(4));
+}
+
+#[test]
+fn synced_scheduled_break_advances_completed_slot() {
+    let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20), ("long", 2, 300)]));
+
+    let synced =
+        started_break(scheduler.start_synced_break("long", BreakOrigin::Scheduled { slot: 2 }));
+    assert_eq!(synced.name, "long");
+    assert_eq!(synced.origin, BreakOrigin::Scheduled { slot: 2 });
+
+    assert!(scheduler.finish_break());
+    let next = started_break(scheduler.advance_active(Duration::from_secs(10)));
+    assert_eq!(next.name, "short");
+    assert_eq!(next.origin, BreakOrigin::Scheduled { slot: 3 });
+}
+
+#[test]
+fn stale_synced_scheduled_break_is_ignored() {
+    let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20), ("long", 2, 300)]));
+
+    let first = started_break(scheduler.advance_active(Duration::from_secs(10)));
+    assert_eq!(first.origin, BreakOrigin::Scheduled { slot: 1 });
+    assert!(scheduler.finish_break());
+
+    assert_eq!(
+        scheduler.start_synced_break("short", BreakOrigin::Scheduled { slot: 1 }),
+        None
+    );
 }
 
 #[test]

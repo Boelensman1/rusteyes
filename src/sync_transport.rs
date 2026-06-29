@@ -160,7 +160,6 @@ impl SyncTransport {
         active.broadcast_event(event)
     }
 
-    #[cfg(test)]
     pub(crate) fn send_event(
         &self,
         peer_id: PeerId,
@@ -283,7 +282,6 @@ impl ActiveSyncTransport {
             .map_err(|_| SyncTransportError::WorkerStopped)?
     }
 
-    #[cfg(test)]
     fn send_event(&self, peer_id: PeerId, event: SyncEvent) -> Result<bool, SyncTransportError> {
         let (reply_sender, reply_receiver) = flume::bounded(1);
         self.command_sender

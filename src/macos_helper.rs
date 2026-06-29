@@ -305,8 +305,12 @@ where
     fn handle_command(&mut self, command: BackendCommand) {
         match command {
             BackendCommand::StartBreak(scheduled_break) => self.start_break(scheduled_break),
-            BackendCommand::ReplaceActiveBreak { message, remaining } => {
-                self.replace_active_break(message, remaining);
+            BackendCommand::ReplaceActiveBreak {
+                message,
+                remaining,
+                lock_after,
+            } => {
+                self.replace_active_break(message, remaining, lock_after);
             }
             BackendCommand::FinishBreak { lock_after } => self.finish_break(lock_after),
             BackendCommand::RequestLockAfterCurrentBreak => self.request_lock_after_current_break(),
@@ -314,9 +318,9 @@ where
         }
     }
 
-    fn replace_active_break(&mut self, message: String, remaining: Duration) {
+    fn replace_active_break(&mut self, message: String, remaining: Duration, lock_after: bool) {
         let Some(lock_after_break) = self.active_break.as_mut().map(|active_break| {
-            active_break.replace_remaining(remaining);
+            active_break.replace(remaining, lock_after);
             active_break.lock_after_break()
         }) else {
             return;
@@ -410,8 +414,9 @@ impl ActiveBreak {
         self.lock_after_break = true;
     }
 
-    fn replace_remaining(&mut self, remaining: Duration) {
+    fn replace(&mut self, remaining: Duration, lock_after_break: bool) {
         self.timer = BreakTimer::new(remaining);
+        self.lock_after_break = lock_after_break;
         self.deferred_finish = None;
     }
 

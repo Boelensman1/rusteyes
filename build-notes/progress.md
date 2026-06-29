@@ -363,6 +363,13 @@
   status command became `UiCommand::UpdateStatus(StatusDisplay)`, with the
   countdown driven off the existing 1s wall-clock tick. Manual tray verification
   is pending like the other tray-UI steps.
+- Completed `break-counter-sync`: sync protocol version 4 now carries break
+  origins and directed scheduler snapshots so peers converge on the same
+  scheduled slot counter. Scheduled inbound break starts advance the receiver's
+  slot, manual starts remain counter-neutral, newly authenticated peers receive
+  the sender's slot/active-time state, and peers connecting mid-break join the
+  remaining break immediately from the peer's message/timestamp/lock state.
+  Expired active-break snapshots advance the counter without showing an overlay.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -559,6 +566,7 @@
   macOS packaging.
 - `nix flake show --json` exposes the macOS packaging outputs.
 - `make check` passes after adding macOS packaging.
+- `make check` passes after adding break counter sync and mid-break peer joins.
 - On unsupported targets, `make run` prints
   `rusteyes: no backend is available for <platform> yet` and exits non-zero.
 - Manual X11 overlay, input-blocking, overlay UI, and trace-output verification

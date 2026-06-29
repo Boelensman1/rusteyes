@@ -47,6 +47,15 @@ impl BreakSchedule {
             .find(|rule| rule.name == name)
             .map(|rule| rule.to_break(BreakOrigin::Manual))
     }
+
+    fn break_for_origin(&self, name: &str, origin: BreakOrigin) -> Option<ScheduledBreak> {
+        match origin {
+            BreakOrigin::Manual => self.manual_break(name),
+            BreakOrigin::Scheduled { slot } => self
+                .due_break(slot)
+                .filter(|scheduled_break| scheduled_break.name == name),
+        }
+    }
 }
 
 impl TryFrom<Breaks> for BreakSchedule {
@@ -156,6 +165,13 @@ impl BreakScheduler {
         self.active_elapsed
     }
 
+    pub(crate) const fn position(&self) -> SchedulerPosition {
+        SchedulerPosition {
+            slot: self.slot,
+            active_elapsed: self.active_elapsed,
+        }
+    }
+
     pub(crate) fn upcoming_scheduled_break(&self) -> Option<UpcomingScheduledBreak> {
         if self.state != SchedulerState::Ready(SchedulerMode::Active) {
             return None;
@@ -219,6 +235,45 @@ impl BreakScheduler {
         Some(scheduled_break)
     }
 
+    pub(crate) fn start_synced_break(
+        &mut self,
+        name: &str,
+        origin: BreakOrigin,
+    ) -> Option<ScheduledBreak> {
+        let scheduled_break = self.schedule.break_for_origin(name, origin)?;
+        self.begin_synced_break(origin)?;
+        Some(scheduled_break)
+    }
+
+    pub(crate) fn replacement_synced_break(
+        &mut self,
+        name: &str,
+        origin: BreakOrigin,
+    ) -> Option<ScheduledBreak> {
+        let scheduled_break = self.schedule.break_for_origin(name, origin)?;
+        self.adopt_synced_origin(origin)?;
+        Some(scheduled_break)
+    }
+
+    pub(crate) fn merge_synced_position(&mut self, position: SchedulerPosition) -> bool {
+        if position.slot < self.slot {
+            return false;
+        }
+
+        if position.slot > self.slot {
+            self.slot = position.slot;
+            self.active_elapsed = position.active_elapsed;
+            return true;
+        }
+
+        if position.active_elapsed > self.active_elapsed {
+            self.active_elapsed = position.active_elapsed;
+            return true;
+        }
+
+        false
+    }
+
     pub(crate) fn finish_break(&mut self) -> bool {
         let previous = std::mem::replace(
             &mut self.state,
@@ -257,6 +312,39 @@ impl BreakScheduler {
             SchedulerState::Ready(mode) => *mode = SchedulerMode::Active,
             SchedulerState::Pending { resume, .. } => *resume = SchedulerMode::Active,
         }
+    }
+
+    fn begin_synced_break(&mut self, origin: BreakOrigin) -> Option<()> {
+        let resume = match self.state {
+            SchedulerState::Ready(mode) => mode,
+            SchedulerState::Pending { .. } => return None,
+        };
+
+        if let BreakOrigin::Scheduled { slot } = origin
+            && slot <= self.slot
+        {
+            return None;
+        }
+
+        self.adopt_synced_origin(origin)?;
+        self.active_elapsed = Duration::ZERO;
+        self.state = SchedulerState::Pending { resume };
+        Some(())
+    }
+
+    fn adopt_synced_origin(&mut self, origin: BreakOrigin) -> Option<()> {
+        match origin {
+            BreakOrigin::Manual => {}
+            BreakOrigin::Scheduled { slot } => {
+                if slot < self.slot {
+                    return None;
+                }
+                self.slot = slot;
+                self.active_elapsed = Duration::ZERO;
+            }
+        }
+
+        Some(())
     }
 
     #[cfg(test)]
@@ -303,6 +391,12 @@ pub(crate) enum BreakOrigin {
 pub(crate) struct UpcomingScheduledBreak {
     pub(crate) scheduled_break: ScheduledBreak,
     pub(crate) starts_after: Duration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SchedulerPosition {
+    pub(crate) slot: usize,
+    pub(crate) active_elapsed: Duration,
 }
 
 #[cfg(test)]

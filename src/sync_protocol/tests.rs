@@ -1,7 +1,8 @@
 use super::{
-    AuthenticatedSyncMessage, PeerId, SyncCompatibilityFingerprint, SyncEvent, SyncFramePayload,
-    SyncMessage, SyncProtocolError, TransportControlFrame, authenticate_message,
-    decode_authenticated, encode_authenticated, encode_hex,
+    AuthenticatedSyncMessage, PeerId, SyncActiveBreak, SyncBreakOrigin,
+    SyncCompatibilityFingerprint, SyncEvent, SyncFramePayload, SyncMessage, SyncProtocolError,
+    TransportControlFrame, authenticate_message, decode_authenticated, encode_authenticated,
+    encode_hex,
 };
 use crate::config::{BreakTypeConfig, Config, LockConfig, SharedSecret, StartupConfig};
 use serde_json::{Value, json};
@@ -35,6 +36,12 @@ fn authenticates_all_sync_event_variants() -> Result<(), Box<dyn Error>> {
             name: String::from("short"),
             message: String::from("Rest your eyes"),
             started_at_ms: 1_700_000_000_000,
+            origin: SyncBreakOrigin::Scheduled { slot: 1 },
+        },
+        SyncEvent::SchedulerState {
+            slot: 1,
+            active_elapsed: Duration::from_millis(500),
+            active_break: None,
         },
         SyncEvent::DisableFor {
             duration: Duration::from_secs(30),
@@ -101,7 +108,7 @@ fn wire_json_uses_expected_version_sender_sequence_event_and_mac() -> Result<(),
     let encoded = encode_authenticated(&message, &shared_secret())?;
     let value = serde_json::from_str::<Value>(&encoded)?;
 
-    assert_eq!(value["version"], json!(3));
+    assert_eq!(value["version"], json!(4));
     assert_eq!(value["sender"], json!(PEER_ID));
     assert_eq!(value["sequence"], json!(42));
     assert_eq!(value["event"]["type"], json!("activeTimeElapsed"));
@@ -124,6 +131,7 @@ fn wire_json_carries_break_message_and_started_at() -> Result<(), Box<dyn Error>
             name: String::from("short"),
             message: String::from("Rest your eyes"),
             started_at_ms: 1_700_000_000_000,
+            origin: SyncBreakOrigin::Scheduled { slot: 1 },
         },
     );
     let encoded = encode_authenticated(&message, &shared_secret())?;
@@ -133,6 +141,49 @@ fn wire_json_carries_break_message_and_started_at() -> Result<(), Box<dyn Error>
     assert_eq!(value["event"]["name"], json!("short"));
     assert_eq!(value["event"]["message"], json!("Rest your eyes"));
     assert_eq!(value["event"]["startedAtMs"], json!(1_700_000_000_000_u64));
+    assert_eq!(value["event"]["origin"]["type"], json!("scheduled"));
+    assert_eq!(value["event"]["origin"]["slot"], json!(1));
+
+    assert_eq!(decode_authenticated(&encoded, &shared_secret())?, message);
+
+    Ok(())
+}
+
+#[test]
+fn wire_json_carries_scheduler_state_snapshot() -> Result<(), Box<dyn Error>> {
+    let message = SyncMessage::event(
+        peer_id()?,
+        8,
+        SyncEvent::SchedulerState {
+            slot: 2,
+            active_elapsed: Duration::from_millis(1_500),
+            active_break: Some(SyncActiveBreak {
+                name: String::from("long"),
+                message: String::from("Look away"),
+                started_at_ms: 1_700_000_000_000,
+                origin: SyncBreakOrigin::Scheduled { slot: 2 },
+                lock_after: true,
+            }),
+        },
+    );
+    let encoded = encode_authenticated(&message, &shared_secret())?;
+    let value = serde_json::from_str::<Value>(&encoded)?;
+
+    assert_eq!(value["event"]["type"], json!("schedulerState"));
+    assert_eq!(value["event"]["slot"], json!(2));
+    assert_eq!(value["event"]["activeElapsedMs"], json!(1_500));
+    assert_eq!(value["event"]["activeBreak"]["name"], json!("long"));
+    assert_eq!(value["event"]["activeBreak"]["message"], json!("Look away"));
+    assert_eq!(
+        value["event"]["activeBreak"]["startedAtMs"],
+        json!(1_700_000_000_000_u64)
+    );
+    assert_eq!(
+        value["event"]["activeBreak"]["origin"]["type"],
+        json!("scheduled")
+    );
+    assert_eq!(value["event"]["activeBreak"]["origin"]["slot"], json!(2));
+    assert_eq!(value["event"]["activeBreak"]["lockAfter"], json!(true));
 
     assert_eq!(decode_authenticated(&encoded, &shared_secret())?, message);
 
@@ -145,7 +196,7 @@ fn wire_json_uses_control_field_for_peer_hello() -> Result<(), Box<dyn Error>> {
     let encoded = encode_authenticated(&message, &shared_secret())?;
     let value = serde_json::from_str::<Value>(&encoded)?;
 
-    assert_eq!(value["version"], json!(3));
+    assert_eq!(value["version"], json!(4));
     assert_eq!(value["sender"], json!(PEER_ID));
     assert_eq!(value["sequence"], json!(0));
     assert_eq!(value["control"]["type"], json!("peerHello"));
@@ -309,6 +360,7 @@ fn rejects_tampered_payload() -> Result<(), Box<dyn Error>> {
             name: String::from("short"),
             message: String::from("Rest your eyes"),
             started_at_ms: 1_700_000_000_000,
+            origin: SyncBreakOrigin::Scheduled { slot: 1 },
         },
     );
     let encoded = encode_authenticated(&message, &shared_secret())?;
@@ -376,12 +428,12 @@ fn rejects_invalid_mac_hex() -> Result<(), Box<dyn Error>> {
 #[test]
 fn rejects_unsupported_version_after_authentication() -> Result<(), Box<dyn Error>> {
     let mut message = SyncMessage::event(peer_id()?, 11, SyncEvent::Enable);
-    message.version = 4;
+    message.version = 5;
     let encoded = authenticated_json(&message)?;
 
     assert_eq!(
         decode_authenticated(&encoded, &shared_secret()),
-        Err(SyncProtocolError::UnsupportedVersion { version: 4 })
+        Err(SyncProtocolError::UnsupportedVersion { version: 5 })
     );
 
     Ok(())
@@ -453,6 +505,7 @@ fn rejects_invalid_break_names() -> Result<(), Box<dyn Error>> {
                 name: String::from(name),
                 message: String::from("Rest your eyes"),
                 started_at_ms: 1_700_000_000_000,
+                origin: SyncBreakOrigin::Scheduled { slot: 1 },
             },
         );
 
@@ -468,8 +521,48 @@ fn rejects_invalid_break_names() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn rejects_zero_scheduled_break_slot() -> Result<(), Box<dyn Error>> {
+    let break_started = SyncMessage::event(
+        peer_id()?,
+        16,
+        SyncEvent::BreakStarted {
+            name: String::from("short"),
+            message: String::from("Rest your eyes"),
+            started_at_ms: 1_700_000_000_000,
+            origin: SyncBreakOrigin::Scheduled { slot: 0 },
+        },
+    );
+    assert_eq!(
+        encode_authenticated(&break_started, &shared_secret()),
+        Err(SyncProtocolError::InvalidBreakSlot { slot: 0 })
+    );
+
+    let scheduler_state = SyncMessage::event(
+        peer_id()?,
+        17,
+        SyncEvent::SchedulerState {
+            slot: 1,
+            active_elapsed: Duration::ZERO,
+            active_break: Some(SyncActiveBreak {
+                name: String::from("short"),
+                message: String::from("Rest your eyes"),
+                started_at_ms: 1_700_000_000_000,
+                origin: SyncBreakOrigin::Scheduled { slot: 0 },
+                lock_after: false,
+            }),
+        },
+    );
+    assert_eq!(
+        encode_authenticated(&scheduler_state, &shared_secret()),
+        Err(SyncProtocolError::InvalidBreakSlot { slot: 0 })
+    );
+
+    Ok(())
+}
+
+#[test]
 fn decoded_domain_event_keeps_event_payload_separate() -> Result<(), Box<dyn Error>> {
-    let message = SyncMessage::event(peer_id()?, 16, SyncEvent::Enable);
+    let message = SyncMessage::event(peer_id()?, 18, SyncEvent::Enable);
     let encoded = encode_authenticated(&message, &shared_secret())?;
 
     assert_eq!(

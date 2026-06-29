@@ -6,7 +6,7 @@ use crate::config::{
     BreakTypeConfig, Breaks, Config, ConfigError, LockConfig, StartupConfig, SyncConfig,
 };
 use crate::scheduler::{BreakOrigin, BreakSchedule, ScheduledBreak};
-use crate::sync_protocol::{PeerId, SyncEvent};
+use crate::sync_protocol::{PeerId, SyncActiveBreak, SyncBreakOrigin, SyncEvent};
 use crate::sync_transport::{PeerRejectionReason, SyncTransportError, SyncTransportEvent};
 use crate::ui::{PreBreakNotification, RuntimeUi, StatusDisplay, UiCommand, UiNotification};
 use std::cell::RefCell;
@@ -474,7 +474,7 @@ fn local_scheduled_break_start_is_broadcast_to_sync_peers() {
             SyncEvent::ActiveTimeElapsed {
                 elapsed: Duration::from_secs(10),
             },
-            broadcast_break("short"),
+            broadcast_scheduled_break("short", 1),
         ]
     );
 }
@@ -496,7 +496,10 @@ fn local_manual_break_start_is_broadcast_to_sync_peers() {
         received_commands(&commands),
         vec![BackendCommand::StartBreak(manual_break("long", 300))]
     );
-    assert_eq!(sync_broadcaster.events(), vec![broadcast_break("long")]);
+    assert_eq!(
+        sync_broadcaster.events(),
+        vec![broadcast_manual_break("long")]
+    );
 }
 
 #[test]
@@ -553,7 +556,7 @@ fn local_lock_after_current_break_request_is_broadcast_once_to_sync_peers() {
             SyncEvent::ActiveTimeElapsed {
                 elapsed: Duration::from_secs(10),
             },
-            broadcast_break("short"),
+            broadcast_scheduled_break("short", 1),
             SyncEvent::LockAfterCurrentBreak,
         ]
     );
@@ -587,7 +590,7 @@ fn stale_local_lock_after_current_break_request_is_not_broadcast() {
             SyncEvent::ActiveTimeElapsed {
                 elapsed: Duration::from_secs(10),
             },
-            broadcast_break("short"),
+            broadcast_scheduled_break("short", 1),
         ]
     );
 }
@@ -701,9 +704,198 @@ fn remote_break_start_event_starts_configured_break_without_rebroadcast()
 
     assert_eq!(
         received_commands(&commands),
-        vec![BackendCommand::StartBreak(manual_break("short", 20))]
+        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
     );
     assert!(sync_broadcaster.events().is_empty());
+    Ok(())
+}
+
+#[test]
+fn remote_manual_break_start_does_not_advance_scheduler_counter()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs(
+        test_config(),
+        backend,
+        [
+            sync_input(incoming_manual_break(
+                "long",
+                &break_message("long"),
+                TEST_NOW_MS,
+            )?),
+            backend_input(RuntimeEvent::BreakFinished),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(manual_break("long", 300)),
+            BackendCommand::FinishBreak { lock_after: true },
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn remote_scheduled_break_start_advances_scheduler_counter()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs(
+        test_config(),
+        backend,
+        [
+            sync_input(incoming_scheduled_break(
+                "long",
+                &break_message("long"),
+                TEST_NOW_MS,
+                2,
+            )?),
+            backend_input(RuntimeEvent::BreakFinished),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(scheduled_break("long", 2, 300)),
+            BackendCommand::FinishBreak { lock_after: true },
+            BackendCommand::StartBreak(scheduled_break("short", 3, 20)),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn peer_authentication_sends_current_scheduler_state() -> Result<(), Box<dyn std::error::Error>> {
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs_and_sync_broadcaster(
+        test_config(),
+        backend,
+        &sync_broadcaster,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(4))),
+            sync_input(SyncTransportEvent::PeerAuthenticated(peer_id()?)),
+        ],
+    )?;
+
+    assert!(received_commands(&commands).is_empty());
+    assert_eq!(
+        sync_broadcaster.directed_events(),
+        vec![(
+            peer_id()?,
+            SyncEvent::SchedulerState {
+                slot: 0,
+                active_elapsed: Duration::from_secs(4),
+                active_break: None,
+            },
+        )]
+    );
+    Ok(())
+}
+
+#[test]
+fn remote_scheduler_state_catches_up_counter_and_active_elapsed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs(
+        test_config(),
+        backend,
+        [
+            sync_input(remote_sync_event(SyncEvent::SchedulerState {
+                slot: 1,
+                active_elapsed: Duration::from_secs(5),
+                active_break: None,
+            })?),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(scheduled_break("long", 2, 300))]
+    );
+    Ok(())
+}
+
+#[test]
+fn remote_scheduler_state_joins_active_break_with_remaining_time()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs(
+        test_config(),
+        backend,
+        [
+            sync_input(remote_sync_event(SyncEvent::SchedulerState {
+                slot: 2,
+                active_elapsed: Duration::ZERO,
+                active_break: Some(SyncActiveBreak {
+                    name: String::from("long"),
+                    message: String::from("Peer message"),
+                    started_at_ms: TEST_NOW_MS - 30_000,
+                    origin: SyncBreakOrigin::Scheduled { slot: 2 },
+                    lock_after: true,
+                }),
+            })?),
+            backend_input(RuntimeEvent::BreakFinished),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(ScheduledBreak {
+                name: String::from("long"),
+                origin: BreakOrigin::Scheduled { slot: 2 },
+                duration: Duration::from_secs(270),
+                message: String::from("Peer message"),
+                autolock: true,
+            }),
+            BackendCommand::FinishBreak { lock_after: true },
+            BackendCommand::StartBreak(scheduled_break("short", 3, 20)),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn expired_remote_active_break_snapshot_only_advances_counter()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs(
+        test_config(),
+        backend,
+        [
+            sync_input(remote_sync_event(SyncEvent::SchedulerState {
+                slot: 1,
+                active_elapsed: Duration::ZERO,
+                active_break: Some(SyncActiveBreak {
+                    name: String::from("short"),
+                    message: String::from("Peer message"),
+                    started_at_ms: TEST_NOW_MS - 25_000,
+                    origin: SyncBreakOrigin::Scheduled { slot: 1 },
+                    lock_after: false,
+                }),
+            })?),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(scheduled_break("long", 2, 300))]
+    );
     Ok(())
 }
 
@@ -756,6 +948,7 @@ fn synced_earlier_break_replaces_current_break_message_and_remaining()
             BackendCommand::ReplaceActiveBreak {
                 message: String::from("Look away"),
                 remaining: Duration::from_secs(15),
+                lock_after: false,
             },
         ]
     );
@@ -767,7 +960,7 @@ fn synced_earlier_break_replaces_current_break_message_and_remaining()
             SyncEvent::ActiveTimeElapsed {
                 elapsed: Duration::from_secs(10),
             },
-            broadcast_break("short"),
+            broadcast_scheduled_break("short", 1),
         ]
     );
     Ok(())
@@ -824,6 +1017,7 @@ fn synced_break_tie_is_broken_toward_the_lower_peer_id() -> Result<(), Box<dyn s
             BackendCommand::ReplaceActiveBreak {
                 message: String::from("Look away"),
                 remaining: Duration::from_secs(20),
+                lock_after: false,
             },
         ]
     );
@@ -887,7 +1081,7 @@ fn remote_disable_event_clears_pending_break_without_rebroadcast()
             SyncEvent::ActiveTimeElapsed {
                 elapsed: Duration::from_secs(10),
             },
-            broadcast_break("short"),
+            broadcast_scheduled_break("short", 1),
         ]
     );
     Ok(())
@@ -948,7 +1142,7 @@ fn remote_lock_after_current_break_request_applies_without_rebroadcast()
             SyncEvent::ActiveTimeElapsed {
                 elapsed: Duration::from_secs(10),
             },
-            broadcast_break("short"),
+            broadcast_scheduled_break("short", 1),
         ]
     );
     Ok(())
@@ -984,7 +1178,7 @@ fn stale_remote_lock_after_current_break_request_is_ignored()
             SyncEvent::ActiveTimeElapsed {
                 elapsed: Duration::from_secs(10),
             },
-            broadcast_break("short"),
+            broadcast_scheduled_break("short", 1),
         ]
     );
     Ok(())
@@ -1519,7 +1713,10 @@ fn ui_events_use_local_runtime_control_path() {
         received_commands(&commands),
         vec![BackendCommand::StartBreak(manual_break("long", 300))]
     );
-    assert_eq!(sync_broadcaster.events(), vec![broadcast_break("long")]);
+    assert_eq!(
+        sync_broadcaster.events(),
+        vec![broadcast_manual_break("long")]
+    );
 }
 
 #[test]
@@ -1781,11 +1978,16 @@ fn sync_input(event: SyncTransportEvent) -> RuntimeInput {
 #[derive(Default)]
 struct RecordingSyncBroadcaster {
     events: RefCell<Vec<SyncEvent>>,
+    directed_events: RefCell<Vec<(PeerId, SyncEvent)>>,
 }
 
 impl RecordingSyncBroadcaster {
     fn events(&self) -> Vec<SyncEvent> {
         self.events.borrow().clone()
+    }
+
+    fn directed_events(&self) -> Vec<(PeerId, SyncEvent)> {
+        self.directed_events.borrow().clone()
     }
 }
 
@@ -1794,6 +1996,15 @@ impl SyncEventBroadcaster for RecordingSyncBroadcaster {
         self.events.borrow_mut().push(event);
         Ok(1)
     }
+
+    fn send_sync_event(
+        &self,
+        peer_id: PeerId,
+        event: SyncEvent,
+    ) -> Result<bool, SyncTransportError> {
+        self.directed_events.borrow_mut().push((peer_id, event));
+        Ok(true)
+    }
 }
 
 struct NoopSyncBroadcasterForTest;
@@ -1801,6 +2012,14 @@ struct NoopSyncBroadcasterForTest;
 impl SyncEventBroadcaster for NoopSyncBroadcasterForTest {
     fn broadcast_sync_event(&self, _event: SyncEvent) -> Result<usize, SyncTransportError> {
         Ok(0)
+    }
+
+    fn send_sync_event(
+        &self,
+        _peer_id: PeerId,
+        _event: SyncEvent,
+    ) -> Result<bool, SyncTransportError> {
+        Ok(false)
     }
 }
 
@@ -1864,11 +2083,21 @@ fn break_message(name: &str) -> String {
     }
 }
 
-fn broadcast_break(name: &str) -> SyncEvent {
+fn broadcast_scheduled_break(name: &str, slot: usize) -> SyncEvent {
     SyncEvent::BreakStarted {
         name: name.to_owned(),
         message: break_message(name),
         started_at_ms: TEST_NOW_MS,
+        origin: SyncBreakOrigin::Scheduled { slot },
+    }
+}
+
+fn broadcast_manual_break(name: &str) -> SyncEvent {
+    SyncEvent::BreakStarted {
+        name: name.to_owned(),
+        message: break_message(name),
+        started_at_ms: TEST_NOW_MS,
+        origin: SyncBreakOrigin::Manual,
     }
 }
 
@@ -1877,10 +2106,33 @@ fn incoming_break(
     message: &str,
     started_at_ms: u64,
 ) -> Result<SyncTransportEvent, Box<dyn std::error::Error>> {
+    incoming_scheduled_break(name, message, started_at_ms, 1)
+}
+
+fn incoming_scheduled_break(
+    name: &str,
+    message: &str,
+    started_at_ms: u64,
+    slot: usize,
+) -> Result<SyncTransportEvent, Box<dyn std::error::Error>> {
     remote_sync_event(SyncEvent::BreakStarted {
         name: name.to_owned(),
         message: message.to_owned(),
         started_at_ms,
+        origin: SyncBreakOrigin::Scheduled { slot },
+    })
+}
+
+fn incoming_manual_break(
+    name: &str,
+    message: &str,
+    started_at_ms: u64,
+) -> Result<SyncTransportEvent, Box<dyn std::error::Error>> {
+    remote_sync_event(SyncEvent::BreakStarted {
+        name: name.to_owned(),
+        message: message.to_owned(),
+        started_at_ms,
+        origin: SyncBreakOrigin::Manual,
     })
 }
 

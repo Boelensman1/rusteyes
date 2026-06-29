@@ -104,7 +104,6 @@ where
             .and_then(|connection| connection.peer_id)
     }
 
-    #[cfg(test)]
     pub(super) fn endpoint_for_peer(&self, peer_id: PeerId) -> Option<E> {
         self.connections
             .iter()

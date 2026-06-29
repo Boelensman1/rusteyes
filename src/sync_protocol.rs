@@ -7,7 +7,7 @@ use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;
 
-const PROTOCOL_VERSION: u8 = 3;
+const PROTOCOL_VERSION: u8 = 4;
 const PEER_ID_BYTES: usize = 16;
 const MAC_BYTES: usize = 32;
 const COMPATIBILITY_FINGERPRINT_DOMAIN: &[u8] = b"rusteyes-sync-config-compatibility-v1";
@@ -252,6 +252,14 @@ pub(crate) enum SyncEvent {
         message: String,
         #[serde(rename = "startedAtMs")]
         started_at_ms: u64,
+        origin: SyncBreakOrigin,
+    },
+    SchedulerState {
+        slot: usize,
+        #[serde(rename = "activeElapsedMs", with = "duration_millis")]
+        active_elapsed: Duration,
+        #[serde(rename = "activeBreak")]
+        active_break: Option<SyncActiveBreak>,
     },
     DisableFor {
         #[serde(rename = "durationMs", with = "duration_millis")]
@@ -276,14 +284,58 @@ impl SyncEvent {
             Self::BreakStarted { name, .. } if name.trim() != name || name.is_empty() => {
                 Err(SyncProtocolError::InvalidBreakName { name: name.clone() })
             }
+            Self::BreakStarted {
+                origin: SyncBreakOrigin::Scheduled { slot: 0 },
+                ..
+            } => Err(SyncProtocolError::InvalidBreakSlot { slot: 0 }),
+            Self::SchedulerState {
+                active_break: Some(active_break),
+                ..
+            } => active_break.validate(),
             Self::ActiveTimeElapsed { .. }
             | Self::BreakStarted { .. }
+            | Self::SchedulerState { .. }
             | Self::DisableFor { .. }
             | Self::DisableUntilRestart
             | Self::Enable
             | Self::LockAfterCurrentBreak => Ok(()),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SyncActiveBreak {
+    pub(crate) name: String,
+    pub(crate) message: String,
+    #[serde(rename = "startedAtMs")]
+    pub(crate) started_at_ms: u64,
+    pub(crate) origin: SyncBreakOrigin,
+    #[serde(rename = "lockAfter")]
+    pub(crate) lock_after: bool,
+}
+
+impl SyncActiveBreak {
+    fn validate(&self) -> Result<(), SyncProtocolError> {
+        if self.name.trim() != self.name || self.name.is_empty() {
+            return Err(SyncProtocolError::InvalidBreakName {
+                name: self.name.clone(),
+            });
+        }
+
+        if let SyncBreakOrigin::Scheduled { slot: 0 } = self.origin {
+            return Err(SyncProtocolError::InvalidBreakSlot { slot: 0 });
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub(crate) enum SyncBreakOrigin {
+    Manual,
+    Scheduled { slot: usize },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -443,6 +495,9 @@ pub(crate) enum SyncProtocolError {
     InvalidBreakName {
         name: String,
     },
+    InvalidBreakSlot {
+        slot: usize,
+    },
     InvalidHelloSequence {
         sequence: u64,
     },
@@ -484,6 +539,12 @@ impl fmt::Display for SyncProtocolError {
                 formatter,
                 "sync break name {name:?} must not be empty or contain surrounding whitespace"
             ),
+            Self::InvalidBreakSlot { slot } => {
+                write!(
+                    formatter,
+                    "sync scheduled break slot must be greater than zero, got {slot}"
+                )
+            }
             Self::InvalidHelloSequence { sequence } => write!(
                 formatter,
                 "sync peer hello sequence must be 0, got {sequence}"

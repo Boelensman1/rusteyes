@@ -221,6 +221,7 @@ pub(crate) enum BackendCommand {
     ReplaceActiveBreak {
         message: String,
         remaining: Duration,
+        lock_after: bool,
     },
     FinishBreak {
         lock_after: bool,
