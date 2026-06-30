@@ -7,7 +7,7 @@ use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;
 
-const PROTOCOL_VERSION: u8 = 4;
+const PROTOCOL_VERSION: u8 = 5;
 const PEER_ID_BYTES: usize = 16;
 const MAC_BYTES: usize = 32;
 const COMPATIBILITY_FINGERPRINT_DOMAIN: &[u8] = b"rusteyes-sync-config-compatibility-v1";
@@ -261,6 +261,7 @@ pub(crate) enum SyncEvent {
         #[serde(rename = "activeBreak")]
         active_break: Option<SyncActiveBreak>,
     },
+    SchedulerReset,
     DisableFor {
         #[serde(rename = "durationMs", with = "duration_millis")]
         duration: Duration,
@@ -295,6 +296,7 @@ impl SyncEvent {
             Self::ActiveTimeElapsed { .. }
             | Self::BreakStarted { .. }
             | Self::SchedulerState { .. }
+            | Self::SchedulerReset
             | Self::DisableFor { .. }
             | Self::DisableUntilRestart
             | Self::Enable

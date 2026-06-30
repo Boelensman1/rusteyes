@@ -354,6 +354,11 @@ impl<'a> DaemonRuntime<'a> {
                 );
                 self.apply_synced_scheduler_state(peer_id, slot, active_elapsed, active_break)
             }
+            SyncEvent::SchedulerReset => {
+                trace!(peer_id = %peer_id, "applying synced scheduler reset");
+                self.apply_scheduler_reset(SyncPropagation::Suppress);
+                true
+            }
             SyncEvent::DisableFor { duration } => {
                 trace!(peer_id = %peer_id, ?duration, "applying synced timed disable");
                 self.disable_for(duration, SyncPropagation::Suppress)
@@ -466,9 +471,18 @@ impl<'a> DaemonRuntime<'a> {
             return;
         }
 
-        self.scheduler.reset_active_time();
+        self.apply_scheduler_reset(SyncPropagation::Broadcast);
+    }
+
+    fn apply_scheduler_reset(&mut self, propagation: SyncPropagation) {
+        self.idle_reset.mark_triggered();
+        let changed = self.scheduler.reset_position();
         self.clear_pre_break_notice();
         self.update_status_display();
+
+        if changed {
+            self.broadcast_if_needed(propagation, &SyncEvent::SchedulerReset);
+        }
     }
 
     fn start_manual_break(&mut self, name: &str, propagation: SyncPropagation) -> bool {
@@ -980,6 +994,10 @@ impl IdleReset {
     fn reset(&mut self) {
         self.idle_elapsed = Duration::ZERO;
         self.reset_triggered = false;
+    }
+
+    fn mark_triggered(&mut self) {
+        self.reset_triggered = true;
     }
 
     fn advance(&mut self, elapsed: Duration) -> bool {

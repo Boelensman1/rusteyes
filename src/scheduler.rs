@@ -219,8 +219,18 @@ impl BreakScheduler {
         None
     }
 
+    #[cfg(test)]
     pub(crate) fn reset_active_time(&mut self) {
         self.active_elapsed = Duration::ZERO;
+    }
+
+    pub(crate) fn reset_position(&mut self) -> bool {
+        let changed = self.slot != 0 || !self.active_elapsed.is_zero();
+
+        self.slot = 0;
+        self.active_elapsed = Duration::ZERO;
+
+        changed
     }
 
     pub(crate) fn start_manual_break(&mut self, name: &str) -> Option<ScheduledBreak> {

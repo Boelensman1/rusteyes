@@ -370,6 +370,13 @@
   the sender's slot/active-time state, and peers connecting mid-break join the
   remaining break immediately from the peer's message/timestamp/lock state.
   Expired active-break snapshots advance the counter without showing an overlay.
+- Completed `synced-idle-reset`: idle reset now clears both accumulated active
+  time and the completed scheduled slot counter, broadcasts a protocol version 5
+  `SchedulerReset` event to connected peers when the local scheduler position
+  changes, and applies inbound resets without rebroadcasting. Existing synced
+  active-time events still prevent idle reset while another connected peer is
+  active, and disconnected peers keep the existing higher-slot reconnect
+  catch-up behavior.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -567,6 +574,7 @@
 - `nix flake show --json` exposes the macOS packaging outputs.
 - `make check` passes after adding macOS packaging.
 - `make check` passes after adding break counter sync and mid-break peer joins.
+- `make check` passes after adding synced idle reset.
 - On unsupported targets, `make run` prints
   `rusteyes: no backend is available for <platform> yet` and exits non-zero.
 - Manual X11 overlay, input-blocking, overlay UI, and trace-output verification

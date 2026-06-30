@@ -43,6 +43,7 @@ fn authenticates_all_sync_event_variants() -> Result<(), Box<dyn Error>> {
             active_elapsed: Duration::from_millis(500),
             active_break: None,
         },
+        SyncEvent::SchedulerReset,
         SyncEvent::DisableFor {
             duration: Duration::from_secs(30),
         },
@@ -108,7 +109,7 @@ fn wire_json_uses_expected_version_sender_sequence_event_and_mac() -> Result<(),
     let encoded = encode_authenticated(&message, &shared_secret())?;
     let value = serde_json::from_str::<Value>(&encoded)?;
 
-    assert_eq!(value["version"], json!(4));
+    assert_eq!(value["version"], json!(5));
     assert_eq!(value["sender"], json!(PEER_ID));
     assert_eq!(value["sequence"], json!(42));
     assert_eq!(value["event"]["type"], json!("activeTimeElapsed"));
@@ -191,12 +192,24 @@ fn wire_json_carries_scheduler_state_snapshot() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn wire_json_carries_scheduler_reset() -> Result<(), Box<dyn Error>> {
+    let message = SyncMessage::event(peer_id()?, 9, SyncEvent::SchedulerReset);
+    let encoded = encode_authenticated(&message, &shared_secret())?;
+    let value = serde_json::from_str::<Value>(&encoded)?;
+
+    assert_eq!(value["event"]["type"], json!("schedulerReset"));
+    assert_eq!(decode_authenticated(&encoded, &shared_secret())?, message);
+
+    Ok(())
+}
+
+#[test]
 fn wire_json_uses_control_field_for_peer_hello() -> Result<(), Box<dyn Error>> {
     let message = SyncMessage::control(peer_id()?, 0, peer_hello_control());
     let encoded = encode_authenticated(&message, &shared_secret())?;
     let value = serde_json::from_str::<Value>(&encoded)?;
 
-    assert_eq!(value["version"], json!(4));
+    assert_eq!(value["version"], json!(5));
     assert_eq!(value["sender"], json!(PEER_ID));
     assert_eq!(value["sequence"], json!(0));
     assert_eq!(value["control"]["type"], json!("peerHello"));
@@ -428,12 +441,12 @@ fn rejects_invalid_mac_hex() -> Result<(), Box<dyn Error>> {
 #[test]
 fn rejects_unsupported_version_after_authentication() -> Result<(), Box<dyn Error>> {
     let mut message = SyncMessage::event(peer_id()?, 11, SyncEvent::Enable);
-    message.version = 5;
+    message.version = 6;
     let encoded = authenticated_json(&message)?;
 
     assert_eq!(
         decode_authenticated(&encoded, &shared_secret()),
-        Err(SyncProtocolError::UnsupportedVersion { version: 5 })
+        Err(SyncProtocolError::UnsupportedVersion { version: 6 })
     );
 
     Ok(())

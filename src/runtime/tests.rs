@@ -1246,6 +1246,49 @@ fn idle_at_reset_timeout_discards_partial_active_time() -> Result<(), Box<dyn st
 }
 
 #[test]
+fn idle_reset_restarts_break_counter_after_completed_break()
+-> Result<(), Box<dyn std::error::Error>> {
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs_and_sync_broadcaster(
+        test_config_with_reset_after_idle(Some(Duration::from_secs(5))),
+        backend,
+        &sync_broadcaster,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+            backend_input(RuntimeEvent::BreakFinished),
+            backend_input(RuntimeEvent::IdleTimeElapsed(Duration::from_secs(5))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::FinishBreak { lock_after: false },
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+        ]
+    );
+    assert_eq!(
+        sync_broadcaster.events(),
+        vec![
+            SyncEvent::ActiveTimeElapsed {
+                elapsed: Duration::from_secs(10),
+            },
+            broadcast_scheduled_break("short", 1),
+            SyncEvent::SchedulerReset,
+            SyncEvent::ActiveTimeElapsed {
+                elapsed: Duration::from_secs(10),
+            },
+            broadcast_scheduled_break("short", 1),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
 fn disabled_idle_reset_preserves_current_active_time_behavior()
 -> Result<(), Box<dyn std::error::Error>> {
     let (backend, commands) = test_backend();
@@ -1291,7 +1334,7 @@ fn remote_active_time_resets_combined_idle_tracking() -> Result<(), Box<dyn std:
 }
 
 #[test]
-fn idle_reset_is_not_broadcast_to_sync_peers() {
+fn idle_reset_broadcasts_scheduler_reset_to_sync_peers() {
     let sync_broadcaster = RecordingSyncBroadcaster::default();
     let (backend, commands) = test_backend();
 
@@ -1311,10 +1354,51 @@ fn idle_reset_is_not_broadcast_to_sync_peers() {
     assert!(received_commands(&commands).is_empty());
     assert_eq!(
         sync_broadcaster.events(),
-        vec![SyncEvent::ActiveTimeElapsed {
-            elapsed: Duration::from_secs(4),
-        }]
+        vec![
+            SyncEvent::ActiveTimeElapsed {
+                elapsed: Duration::from_secs(4),
+            },
+            SyncEvent::SchedulerReset,
+        ]
     );
+}
+
+#[test]
+fn inbound_scheduler_reset_restarts_counter_without_rebroadcast()
+-> Result<(), Box<dyn std::error::Error>> {
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs_and_sync_broadcaster(
+        test_config_with_reset_after_idle(Some(Duration::from_secs(5))),
+        backend,
+        &sync_broadcaster,
+        [
+            sync_input(remote_sync_event(SyncEvent::SchedulerState {
+                slot: 1,
+                active_elapsed: Duration::ZERO,
+                active_break: None,
+            })?),
+            sync_input(remote_sync_event(SyncEvent::SchedulerReset)?),
+            backend_input(RuntimeEvent::IdleTimeElapsed(Duration::from_secs(5))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+    );
+    assert_eq!(
+        sync_broadcaster.events(),
+        vec![
+            SyncEvent::ActiveTimeElapsed {
+                elapsed: Duration::from_secs(10),
+            },
+            broadcast_scheduled_break("short", 1),
+        ]
+    );
+    Ok(())
 }
 
 #[test]

@@ -384,6 +384,48 @@ fn reset_active_time_preserves_completed_slots() {
 }
 
 #[test]
+fn reset_position_restarts_completed_slots() {
+    let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20), ("long", 2, 300)]));
+
+    let first = started_break(scheduler.advance_active(Duration::from_secs(10)));
+    assert_eq!(first.origin, BreakOrigin::Scheduled { slot: 1 });
+    assert!(scheduler.finish_break());
+
+    assert!(scheduler.reset_position());
+
+    let next = started_break(scheduler.advance_active(Duration::from_secs(10)));
+    assert_eq!(next.name, "short");
+    assert_eq!(next.origin, BreakOrigin::Scheduled { slot: 1 });
+}
+
+#[test]
+fn reset_position_reports_whether_position_changed() {
+    let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20)]));
+
+    assert!(!scheduler.reset_position());
+
+    assert_eq!(scheduler.advance_active(Duration::from_secs(4)), None);
+    assert!(scheduler.reset_position());
+    assert!(!scheduler.reset_position());
+}
+
+#[test]
+fn reset_position_preserves_pending_and_disabled_state() {
+    let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20)]));
+
+    let first = started_break(scheduler.advance_active(Duration::from_secs(10)));
+    assert_eq!(first.origin, BreakOrigin::Scheduled { slot: 1 });
+    assert!(scheduler.reset_position());
+    assert_eq!(scheduler.advance_active(Duration::from_secs(10)), None);
+    assert!(scheduler.finish_break());
+
+    assert!(!scheduler.disable());
+    assert!(!scheduler.reset_position());
+    assert!(scheduler.is_disabled());
+    assert_eq!(scheduler.advance_active(Duration::from_secs(10)), None);
+}
+
+#[test]
 fn reset_active_time_preserves_pending_and_disabled_state() {
     let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20)]));
 
