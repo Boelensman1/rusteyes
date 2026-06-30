@@ -1252,7 +1252,7 @@ fn idle_reset_restarts_break_counter_after_completed_break()
     let (backend, commands) = test_backend();
 
     run_config_with_inputs_and_sync_broadcaster(
-        test_config_with_reset_after_idle(Some(Duration::from_secs(5))),
+        test_config_with_reset_count_after_idle(Some(Duration::from_secs(5))),
         backend,
         &sync_broadcaster,
         [
@@ -1284,6 +1284,42 @@ fn idle_reset_restarts_break_counter_after_completed_break()
             },
             broadcast_scheduled_break("short", 1),
         ]
+    );
+    Ok(())
+}
+
+#[test]
+fn active_time_idle_reset_keeps_break_counter_and_does_not_broadcast_scheduler_reset()
+-> Result<(), Box<dyn std::error::Error>> {
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs_and_sync_broadcaster(
+        test_config_with_reset_after_idle(Some(Duration::from_secs(5))),
+        backend,
+        &sync_broadcaster,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+            backend_input(RuntimeEvent::BreakFinished),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(9))),
+            backend_input(RuntimeEvent::IdleTimeElapsed(Duration::from_secs(5))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(1))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(9))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::FinishBreak { lock_after: false },
+            BackendCommand::StartBreak(scheduled_break("long", 2, 300)),
+        ]
+    );
+    assert!(
+        !sync_broadcaster
+            .events()
+            .contains(&SyncEvent::SchedulerReset)
     );
     Ok(())
 }
@@ -1334,13 +1370,13 @@ fn remote_active_time_resets_combined_idle_tracking() -> Result<(), Box<dyn std:
 }
 
 #[test]
-fn idle_reset_broadcasts_scheduler_reset_to_sync_peers() {
+fn break_count_idle_reset_broadcasts_scheduler_reset_to_sync_peers() {
     let sync_broadcaster = RecordingSyncBroadcaster::default();
     let (backend, commands) = test_backend();
 
     assert_eq!(
         run_config_with_inputs_and_sync_broadcaster(
-            test_config_with_reset_after_idle(Some(Duration::from_secs(5))),
+            test_config_with_reset_count_after_idle(Some(Duration::from_secs(5))),
             backend,
             &sync_broadcaster,
             [
@@ -2114,6 +2150,7 @@ fn test_config() -> Config {
         breaks: Breaks {
             after_active: Duration::from_secs(10),
             reset_after_idle: Some(Duration::from_mins(5)),
+            reset_count_after_idle: Some(Duration::from_hours(1)),
             types: [
                 (
                     String::from("short"),
@@ -2137,6 +2174,12 @@ fn test_config() -> Config {
 fn test_config_with_reset_after_idle(reset_after_idle: Option<Duration>) -> Config {
     let mut config = test_config();
     config.breaks.reset_after_idle = reset_after_idle;
+    config
+}
+
+fn test_config_with_reset_count_after_idle(reset_count_after_idle: Option<Duration>) -> Config {
+    let mut config = test_config();
+    config.breaks.reset_count_after_idle = reset_count_after_idle;
     config
 }
 

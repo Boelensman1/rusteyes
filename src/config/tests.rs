@@ -1,9 +1,9 @@
 use super::{
     BreakTypeConfig, Config, ConfigError, ConfigLoadError, DEFAULT_BREAK_AFTER_ACTIVE,
-    DEFAULT_BREAK_RESET_AFTER_IDLE, DEFAULT_DISABLE_PRESETS, DEFAULT_LONG_BREAK_DURATION,
-    DEFAULT_LONG_BREAK_INTERVAL, DEFAULT_SHORT_BREAK_DURATION, DEFAULT_SHORT_BREAK_INTERVAL,
-    LockConfig, MIN_SYNC_SHARED_SECRET_LENGTH, SharedSecret, StartupConfig, SyncConfig,
-    default_config_yaml, write_default_config,
+    DEFAULT_BREAK_COUNT_RESET_AFTER_IDLE, DEFAULT_BREAK_RESET_AFTER_IDLE, DEFAULT_DISABLE_PRESETS,
+    DEFAULT_LONG_BREAK_DURATION, DEFAULT_LONG_BREAK_INTERVAL, DEFAULT_SHORT_BREAK_DURATION,
+    DEFAULT_SHORT_BREAK_INTERVAL, LockConfig, MIN_SYNC_SHARED_SECRET_LENGTH, SharedSecret,
+    StartupConfig, SyncConfig, default_config_yaml, write_default_config,
 };
 use std::error::Error;
 use std::fs;
@@ -30,6 +30,10 @@ fn default_config_uses_expected_break_settings() {
     assert_eq!(
         config.breaks.reset_after_idle,
         Some(DEFAULT_BREAK_RESET_AFTER_IDLE)
+    );
+    assert_eq!(
+        config.breaks.reset_count_after_idle,
+        Some(DEFAULT_BREAK_COUNT_RESET_AFTER_IDLE)
     );
     assert_eq!(config.breaks.types.len(), 2);
 
@@ -104,6 +108,17 @@ fn rejects_zero_reset_after_idle_duration() {
     assert_eq!(
         config.validate(),
         Err(ConfigError::ZeroBreakResetAfterIdleDuration)
+    );
+}
+
+#[test]
+fn rejects_zero_reset_count_after_idle_duration() {
+    let mut config = Config::default();
+    config.breaks.reset_count_after_idle = Some(Duration::ZERO);
+
+    assert_eq!(
+        config.validate(),
+        Err(ConfigError::ZeroBreakResetCountAfterIdleDuration)
     );
 }
 
@@ -594,6 +609,10 @@ breaks:
         config.breaks.reset_after_idle,
         Some(DEFAULT_BREAK_RESET_AFTER_IDLE)
     );
+    assert_eq!(
+        config.breaks.reset_count_after_idle,
+        Some(DEFAULT_BREAK_COUNT_RESET_AFTER_IDLE)
+    );
     assert_eq!(config.breaks.types, Config::default().breaks.types);
     assert_eq!(config.disable_presets, DEFAULT_DISABLE_PRESETS);
     assert_eq!(config.lock, LockConfig::default());
@@ -633,6 +652,35 @@ breaks:
     )?;
 
     assert_eq!(config.breaks.reset_after_idle, None);
+    Ok(())
+}
+
+#[test]
+fn yaml_accepts_reset_count_after_idle_override() -> Result<(), Box<dyn Error>> {
+    let config = Config::from_yaml_str(
+        r"
+breaks:
+  reset_count_after_idle: '2h'
+",
+    )?;
+
+    assert_eq!(
+        config.breaks.reset_count_after_idle,
+        Some(Duration::from_hours(2))
+    );
+    Ok(())
+}
+
+#[test]
+fn yaml_accepts_null_reset_count_after_idle_as_disabled() -> Result<(), Box<dyn Error>> {
+    let config = Config::from_yaml_str(
+        r"
+breaks:
+  reset_count_after_idle: null
+",
+    )?;
+
+    assert_eq!(config.breaks.reset_count_after_idle, None);
     Ok(())
 }
 
@@ -1000,6 +1048,24 @@ breaks:
         error,
         ConfigLoadError::Invalid {
             error: ConfigError::ZeroBreakResetAfterIdleDuration,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn yaml_rejects_zero_reset_count_after_idle_duration() {
+    let error = expected_config_error(Config::from_yaml_str(
+        r"
+breaks:
+  reset_count_after_idle: '0s'
+",
+    ));
+
+    assert!(matches!(
+        error,
+        ConfigLoadError::Invalid {
+            error: ConfigError::ZeroBreakResetCountAfterIdleDuration,
             ..
         }
     ));

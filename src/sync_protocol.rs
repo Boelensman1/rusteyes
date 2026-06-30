@@ -117,6 +117,7 @@ impl<'de> Deserialize<'de> for SyncCompatibilityFingerprint {
 struct SyncCompatibilityProfile {
     breaks_after_active_ms: u64,
     breaks_reset_after_idle_ms: Option<u64>,
+    breaks_reset_count_after_idle_ms: Option<u64>,
     break_types: BTreeMap<String, SyncCompatibilityBreakType>,
     disable_preset_ms: Vec<u64>,
 }
@@ -139,6 +140,11 @@ impl SyncCompatibilityProfile {
                 .breaks
                 .reset_after_idle
                 .map(|duration| duration_millis_u64(duration, "breaks.resetAfterIdle"))
+                .transpose()?,
+            breaks_reset_count_after_idle_ms: config
+                .breaks
+                .reset_count_after_idle
+                .map(|duration| duration_millis_u64(duration, "breaks.resetCountAfterIdle"))
                 .transpose()?,
             break_types: config
                 .breaks

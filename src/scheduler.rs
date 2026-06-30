@@ -8,6 +8,7 @@ pub(crate) const DEFAULT_BREAK_MESSAGE: &str = "Take a break";
 pub(crate) struct BreakSchedule {
     after_active: Duration,
     reset_after_idle: Option<Duration>,
+    reset_count_after_idle: Option<Duration>,
     rules: Vec<BreakRule>,
 }
 
@@ -19,6 +20,10 @@ impl BreakSchedule {
 
     pub(crate) const fn reset_after_idle(&self) -> Option<Duration> {
         self.reset_after_idle
+    }
+
+    pub(crate) const fn reset_count_after_idle(&self) -> Option<Duration> {
+        self.reset_count_after_idle
     }
 
     fn next_due_break_after(&self, slot: usize) -> Option<ScheduledBreak> {
@@ -67,6 +72,7 @@ impl TryFrom<Breaks> for BreakSchedule {
         let Breaks {
             after_active,
             reset_after_idle,
+            reset_count_after_idle,
             types,
         } = breaks;
         let mut rules = types
@@ -79,6 +85,7 @@ impl TryFrom<Breaks> for BreakSchedule {
         Ok(Self {
             after_active,
             reset_after_idle,
+            reset_count_after_idle,
             rules,
         })
     }
@@ -219,7 +226,6 @@ impl BreakScheduler {
         None
     }
 
-    #[cfg(test)]
     pub(crate) fn reset_active_time(&mut self) {
         self.active_elapsed = Duration::ZERO;
     }

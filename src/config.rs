@@ -20,6 +20,7 @@ pub(crate) const DEFAULT_SHORT_BREAK_DURATION: Duration = Duration::from_secs(20
 pub(crate) const DEFAULT_LONG_BREAK_INTERVAL: usize = 2;
 pub(crate) const DEFAULT_LONG_BREAK_DURATION: Duration = Duration::from_mins(5);
 pub(crate) const DEFAULT_BREAK_RESET_AFTER_IDLE: Duration = Duration::from_mins(5);
+pub(crate) const DEFAULT_BREAK_COUNT_RESET_AFTER_IDLE: Duration = Duration::from_hours(1);
 pub(crate) const DEFAULT_DISABLE_PRESETS: [Duration; 4] = [
     Duration::from_mins(30),
     Duration::from_hours(1),
@@ -277,6 +278,7 @@ impl std::error::Error for ConfigLoadError {
 pub(crate) struct Breaks {
     pub(crate) after_active: Duration,
     pub(crate) reset_after_idle: Option<Duration>,
+    pub(crate) reset_count_after_idle: Option<Duration>,
     pub(crate) types: BTreeMap<String, BreakTypeConfig>,
 }
 
@@ -291,6 +293,13 @@ impl Breaks {
             .is_some_and(|duration| duration.is_zero())
         {
             return Err(ConfigError::ZeroBreakResetAfterIdleDuration);
+        }
+
+        if self
+            .reset_count_after_idle
+            .is_some_and(|duration| duration.is_zero())
+        {
+            return Err(ConfigError::ZeroBreakResetCountAfterIdleDuration);
         }
 
         if self.types.is_empty() {
@@ -345,6 +354,7 @@ impl Default for Breaks {
         Self {
             after_active: DEFAULT_BREAK_AFTER_ACTIVE,
             reset_after_idle: Some(DEFAULT_BREAK_RESET_AFTER_IDLE),
+            reset_count_after_idle: Some(DEFAULT_BREAK_COUNT_RESET_AFTER_IDLE),
             types,
         }
     }
@@ -468,6 +478,7 @@ enum ConfigPathMode {
 pub(crate) enum ConfigError {
     ZeroBreakAfterActiveDuration,
     ZeroBreakResetAfterIdleDuration,
+    ZeroBreakResetCountAfterIdleDuration,
     EmptyBreakTypes,
     InvalidBreakTypeName {
         name: String,
@@ -516,6 +527,9 @@ impl fmt::Display for ConfigError {
             }
             Self::ZeroBreakResetAfterIdleDuration => {
                 formatter.write_str("break idle reset duration must be greater than zero")
+            }
+            Self::ZeroBreakResetCountAfterIdleDuration => {
+                formatter.write_str("break count idle reset duration must be greater than zero")
             }
             Self::EmptyBreakTypes => formatter.write_str("at least one break type must be defined"),
             Self::InvalidBreakTypeName { name } => {
@@ -634,6 +648,8 @@ struct PartialBreaks {
     after_active: Option<ConfigDuration>,
     #[serde(default)]
     reset_after_idle: NullableConfigDuration,
+    #[serde(default)]
+    reset_count_after_idle: NullableConfigDuration,
     types: Option<BTreeMap<String, YamlBreakTypeConfig>>,
 }
 
@@ -648,6 +664,14 @@ impl PartialBreaks {
             NullableConfigDuration::Null => breaks.reset_after_idle = None,
             NullableConfigDuration::Value(reset_after_idle) => {
                 breaks.reset_after_idle = Some(reset_after_idle.into_duration());
+            }
+        }
+
+        match self.reset_count_after_idle {
+            NullableConfigDuration::Unset => {}
+            NullableConfigDuration::Null => breaks.reset_count_after_idle = None,
+            NullableConfigDuration::Value(reset_count_after_idle) => {
+                breaks.reset_count_after_idle = Some(reset_count_after_idle.into_duration());
             }
         }
 
@@ -967,6 +991,7 @@ impl<'a> SerializableConfig<'a> {
 struct SerializableBreaks<'a> {
     after_active: SerializableDuration,
     reset_after_idle: Option<SerializableDuration>,
+    reset_count_after_idle: Option<SerializableDuration>,
     types: BTreeMap<&'a str, SerializableBreakType<'a>>,
 }
 
@@ -975,6 +1000,7 @@ impl<'a> SerializableBreaks<'a> {
         Self {
             after_active: SerializableDuration(breaks.after_active),
             reset_after_idle: breaks.reset_after_idle.map(SerializableDuration),
+            reset_count_after_idle: breaks.reset_count_after_idle.map(SerializableDuration),
             types: breaks
                 .types
                 .iter()

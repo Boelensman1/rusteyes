@@ -9,9 +9,13 @@
 
 ## Decisions
 
-- Reuse the existing `breaks.reset_after_idle` threshold and config shape.
+- Split break-count reset from the existing active-time reset threshold.
+- Keep `breaks.reset_after_idle` as the active-time reset knob, defaulting to
+  `5m`.
+- Add `breaks.reset_count_after_idle` as the break-count reset knob, defaulting
+  to `1h` and disabled with `null`.
 - Authenticated remote active-time events still reset local idle tracking, so an
-  active connected peer prevents idle reset from firing.
+  active connected peer prevents both idle reset timers from firing.
 - Add a `SchedulerReset` sync event and bump the sync protocol to version 5.
 - Broadcast the reset only when the local scheduler position actually changed.
 - Do not add reset epochs; disconnected peers still use the existing
@@ -19,13 +23,14 @@
 
 ## Behavior
 
-- Idle reset now clears both accumulated active time and the local completed
-  scheduled slot counter.
+- Active-time idle reset still clears only accumulated active time.
+- Break-count idle reset clears both accumulated active time and the local
+  completed scheduled slot counter.
 - Inbound `SchedulerReset` applies the same scheduler-position reset without
   rebroadcasting.
-- Inbound resets mark idle reset as already handled until the next local or
-  synced active-time event, preventing echo resets while the machine remains
-  idle.
+- Inbound resets mark both idle reset timers as already handled until the next
+  local or synced active-time event, preventing echo resets while the machine
+  remains idle.
 - Scheduler reset preserves disabled and pending scheduler state and does not
   clear an active break overlay.
 
@@ -34,8 +39,10 @@
 - Scheduler tests cover slot restart, change reporting, and preserving pending
   and disabled state.
 - Runtime tests cover local reset broadcast, post-reset short-break scheduling,
-  inbound reset without rebroadcast, and remote active time preventing idle
-  reset.
+  active-time reset preserving the completed slot counter, inbound reset without
+  rebroadcast, and remote active time preventing idle reset.
+- Config tests cover `reset_count_after_idle` defaults, overrides, `null`, and
+  zero-duration validation.
 - Protocol tests cover the version 5 wire shape and `schedulerReset` event.
 
 ## Commands

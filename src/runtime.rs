@@ -176,7 +176,8 @@ struct DaemonRuntime<'a> {
     ui: RuntimeUi,
     disable_mode: DisableMode,
     combined_activity: CombinedActivity,
-    idle_reset: IdleReset,
+    active_time_idle_reset: IdleReset,
+    break_count_idle_reset: IdleReset,
     current_break: Option<CurrentBreakState>,
     pre_break_notice: Option<PreBreakNoticeState>,
     notified_rejected_peers: BTreeSet<PeerId>,
@@ -194,7 +195,8 @@ impl<'a> DaemonRuntime<'a> {
         clock: Clock,
     ) -> Self {
         let backend_event_receiver = backend.clone_event_receiver();
-        let idle_reset = IdleReset::new(schedule.reset_after_idle());
+        let active_time_idle_reset = IdleReset::new(schedule.reset_after_idle());
+        let break_count_idle_reset = IdleReset::new(schedule.reset_count_after_idle());
 
         Self {
             scheduler: BreakScheduler::new(schedule),
@@ -205,7 +207,8 @@ impl<'a> DaemonRuntime<'a> {
             ui,
             disable_mode: DisableMode::Enabled,
             combined_activity: CombinedActivity::default(),
-            idle_reset,
+            active_time_idle_reset,
+            break_count_idle_reset,
             current_break: None,
             pre_break_notice: None,
             notified_rejected_peers: BTreeSet::new(),
@@ -440,7 +443,7 @@ impl<'a> DaemonRuntime<'a> {
     }
 
     fn observe_active(&mut self, elapsed: Duration, propagation: SyncPropagation) -> bool {
-        self.idle_reset.reset();
+        self.reset_idle_tracking();
         self.broadcast_if_needed(propagation, &SyncEvent::ActiveTimeElapsed { elapsed });
 
         let elapsed = self.combined_activity.active_elapsed(elapsed);
@@ -467,15 +470,21 @@ impl<'a> DaemonRuntime<'a> {
     }
 
     fn advance_idle(&mut self, elapsed: Duration) {
-        if !self.idle_reset.advance(elapsed) {
-            return;
-        }
+        let reset_count = self.break_count_idle_reset.advance(elapsed);
+        let reset_active_time = self.active_time_idle_reset.advance(elapsed);
 
-        self.apply_scheduler_reset(SyncPropagation::Broadcast);
+        if reset_count {
+            self.apply_scheduler_reset(SyncPropagation::Broadcast);
+        } else if reset_active_time {
+            self.scheduler.reset_active_time();
+            self.clear_pre_break_notice();
+            self.update_status_display();
+        }
     }
 
     fn apply_scheduler_reset(&mut self, propagation: SyncPropagation) {
-        self.idle_reset.mark_triggered();
+        self.active_time_idle_reset.mark_triggered();
+        self.break_count_idle_reset.mark_triggered();
         let changed = self.scheduler.reset_position();
         self.clear_pre_break_notice();
         self.update_status_display();
@@ -483,6 +492,11 @@ impl<'a> DaemonRuntime<'a> {
         if changed {
             self.broadcast_if_needed(propagation, &SyncEvent::SchedulerReset);
         }
+    }
+
+    fn reset_idle_tracking(&mut self) {
+        self.active_time_idle_reset.reset();
+        self.break_count_idle_reset.reset();
     }
 
     fn start_manual_break(&mut self, name: &str, propagation: SyncPropagation) -> bool {

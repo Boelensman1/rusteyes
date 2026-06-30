@@ -777,6 +777,7 @@ mod tests {
             &Breaks {
                 after_active: Duration::from_mins(20),
                 reset_after_idle: None,
+                reset_count_after_idle: None,
                 types,
             },
             &[],

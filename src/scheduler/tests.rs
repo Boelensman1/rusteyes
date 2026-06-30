@@ -634,6 +634,7 @@ fn custom_breaks(after_active_secs: u64, types: &[(&str, usize, u64)]) -> Breaks
     Breaks {
         after_active: Duration::from_secs(after_active_secs),
         reset_after_idle: Some(Duration::from_mins(5)),
+        reset_count_after_idle: Some(Duration::from_hours(1)),
         types: types
             .iter()
             .map(|(name, interval, duration_secs)| {

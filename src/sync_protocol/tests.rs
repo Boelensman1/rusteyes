@@ -294,6 +294,14 @@ fn compatibility_fingerprint_changes_for_synced_behavior() -> Result<(), Box<dyn
         "idle reset should affect compatibility"
     );
 
+    let mut changed_count_reset = base.clone();
+    changed_count_reset.breaks.reset_count_after_idle = None;
+    assert_ne!(
+        fingerprint_for(&base)?,
+        fingerprint_for(&changed_count_reset)?,
+        "break count idle reset should affect compatibility"
+    );
+
     let mut changed_break = base.clone();
     changed_break.breaks.types.insert(
         String::from("short"),
@@ -618,6 +626,7 @@ fn compatibility_config() -> Config {
         breaks: crate::config::Breaks {
             after_active: Duration::from_secs(10),
             reset_after_idle: Some(Duration::from_mins(5)),
+            reset_count_after_idle: Some(Duration::from_hours(1)),
             types: [(
                 String::from("short"),
                 BreakTypeConfig {
