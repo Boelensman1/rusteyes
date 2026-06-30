@@ -12,9 +12,9 @@
 - Treat normal activity samples as active while OS idle time is at most 10
   seconds.
 - Keep the 10 second normal activity threshold internal for now.
-- Keep break-overlay countdown behavior unchanged; overlay polling still uses
-  the overlay tick interval so break time advances only while the user is idle
-  during the overlay.
+- Later refinement removed the break-overlay idle check; normal activity still
+  uses the 10 second grace threshold, but break overlays now count down by
+  wall-clock overlay ticks.
 - Keep the sync protocol unchanged. Runtime now interprets synced active-time
   events as remote activity signals sharing local wall-clock budget instead of
   unconditional extra scheduler time.

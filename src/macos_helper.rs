@@ -1,4 +1,4 @@
-use crate::activity::{ActivityPoller, ActivitySample, BreakTimer, break_elapsed_for_sample};
+use crate::activity::{ActivityPoller, ActivitySample, BreakTimer};
 use crate::backend::{
     BackendActor, BackendActorSpawnError, BackendCommand, BackendCommandReceiver,
     BackendEventSender, BackendWait, RuntimeEvent, wait_for_command_or_timeout,
@@ -179,19 +179,18 @@ where
             return Ok(());
         }
 
-        let break_elapsed = break_elapsed_for_sample(sample.activity, OVERLAY_TICK_INTERVAL);
         trace!(
             idle_for = ?sample.activity.idle_for(),
-            state = ?sample.activity.state_for(OVERLAY_TICK_INTERVAL),
-            ?break_elapsed,
-            break_time_advanced = !break_elapsed.is_zero(),
-            "sampled macOS activity during break overlay"
+            session_locked = sample.session_locked,
+            lock_after_break_requested = sample.lock_after_break_requested,
+            break_elapsed = ?OVERLAY_TICK_INTERVAL,
+            "sampled macOS break overlay tick"
         );
 
         if let Some(update) = self
             .active_break
             .as_mut()
-            .map(|active_break| active_break.apply_sample(sample, break_elapsed))
+            .map(|active_break| active_break.apply_sample(sample, OVERLAY_TICK_INTERVAL))
         {
             if update.finished {
                 if sample.session_locked {
@@ -1587,10 +1586,10 @@ mod tests {
     }
 
     #[test]
-    fn finished_overlay_sample_finishes_helper_without_zero_update()
+    fn active_overlay_sample_finishes_helper_without_zero_update()
     -> Result<(), Box<dyn std::error::Error>> {
         let input = Cursor::new(
-            br#"{"type":"activitySample","idleMs":1000,"sessionLocked":false,"lockAfterBreakRequested":false}
+            br#"{"type":"activitySample","idleMs":0,"sessionLocked":false,"lockAfterBreakRequested":false}
 {"type":"commandComplete","command":"finishBreak"}"#
                 .to_vec(),
         );

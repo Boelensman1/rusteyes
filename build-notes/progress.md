@@ -59,7 +59,7 @@
   `override_redirect` overlay windows over connected monitor geometries, render
   the first configured break message, keep overlays raised/redrawn during the
   break, suppress active-time polling while the break is visible, count down
-  break duration only on idle overlay samples, and clear the overlays when the
+  break duration on wall-clock overlay ticks, and clear the overlays when the
   runtime finishes or clears the break.
 - Completed `x11-input-blocking`: X11 break overlays now acquire active core
   pointer and keyboard grabs while visible, keep pointer movement unconstrained,
@@ -120,8 +120,8 @@
   activity trace output as X11.
 - Completed `macos-overlay`: macOS break commands now create helper-owned black
   AppKit overlay windows on every `NSScreen`, render the first configured break
-  message, suppress active-time events while visible, advance break duration
-  only on idle helper samples through the shared break timer, and clear
+  message, suppress active-time events while visible, advance break duration on
+  wall-clock overlay ticks through the shared break timer, and clear
   overlays on finish, clear, shutdown, or helper EOF.
 - Completed `macos-input-blocking`: macOS break startup now creates a
   helper-owned Quartz session event tap before showing overlay windows, drops

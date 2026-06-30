@@ -7,9 +7,9 @@
 - The helper renders the first configured break message centered in white, with
   `Take a break` as a protocol fallback if no usable message is present.
 - The Rust macOS backend tracks the active break, suppresses active-time events
-  while the overlay is visible, polls helper activity every 500 ms, advances
-  break time only on idle samples, and queues `BreakFinished` when the break
-  duration has elapsed.
+  while the overlay is visible, polls helper activity every 500 ms for
+  locked-session and overlay-control state, advances break time on each overlay
+  tick, and queues `BreakFinished` when the break duration has elapsed.
 - `finishBreak`, `clearBreak`, EOF, and `shutdown` clear helper overlay
   windows.
 - AppKit is initialized lazily on the first overlay command so normal daemon

@@ -9,8 +9,8 @@
 
 - X11 overlays now draw the configured break message, the remaining break time,
   and a centered `Lock after break` control on each monitor.
-- Remaining time is rendered from the backend break timer and still counts down
-  only while overlay samples are idle.
+- Remaining time is rendered from the backend break timer and counts down on
+  each overlay tick.
 - Clicking the lock control queues a runtime event that applies only to the
   currently active break.
 - Runtime now tracks whether the current break should lock afterward as

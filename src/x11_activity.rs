@@ -1,4 +1,4 @@
-use crate::activity::{ActivityPoller, ActivitySample, BreakTimer, break_elapsed_for_sample};
+use crate::activity::{ActivityPoller, ActivitySample, BreakTimer};
 use crate::backend::{
     BackendActor, BackendActorSpawnError, BackendCommand, BackendCommandReceiver,
     BackendEventSender, BackendWait, RuntimeEvent, wait_for_command_or_timeout,
@@ -106,18 +106,13 @@ impl X11ActivityBackend {
     }
 
     fn sample_overlay_once(&mut self) -> Result<(), X11ActivityError> {
-        let sample = self.activity.sample()?;
-        let break_elapsed = break_elapsed_for_sample(sample, OVERLAY_TICK_INTERVAL);
         trace!(
-            idle_for = ?sample.idle_for(),
-            state = ?sample.state_for(OVERLAY_TICK_INTERVAL),
-            ?break_elapsed,
-            break_time_advanced = !break_elapsed.is_zero(),
-            "sampled X11 activity during break overlay"
+            break_elapsed = ?OVERLAY_TICK_INTERVAL,
+            "sampled X11 break overlay tick"
         );
         let advance = match &mut self.active_break {
             Some(active_break) => active_break
-                .advance(&self.activity.connection, break_elapsed)
+                .advance(&self.activity.connection, OVERLAY_TICK_INTERVAL)
                 .map_err(|error| X11ActivityError::overlay(&error))?,
             None => BreakAdvance::default(),
         };

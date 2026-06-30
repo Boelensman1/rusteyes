@@ -21,7 +21,7 @@
   - Backend-agnostic idle duration and active/idle classification for each
     regular activity sample.
   - Queued runtime events, including wall-clock and active-time events.
-  - X11 overlay-period samples and whether idle break time advanced.
+  - X11 overlay-period break ticks.
 - Shared regular activity sample diagnostics now live in the crate-internal
   activity module so X11 and macOS emit the same `sampled activity` trace event.
 - The binary logger writes tracing events through fresh `/dev/stderr` handles

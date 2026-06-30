@@ -1,6 +1,5 @@
 use super::{
     ActivityPoller, ActivitySample, ActivityState, BreakTimer, NORMAL_ACTIVITY_IDLE_THRESHOLD,
-    break_elapsed_for_sample,
 };
 use crate::backend::RuntimeEvent;
 use std::time::Duration;
@@ -82,25 +81,6 @@ fn idle_sample_queues_wall_clock_before_idle_time() {
         Some(RuntimeEvent::IdleTimeElapsed(poll_interval))
     );
     assert_eq!(poller.next_event(), None);
-}
-
-#[test]
-fn active_overlay_sample_does_not_count_down_break_time() {
-    let poll_interval = Duration::from_millis(500);
-    let elapsed = break_elapsed_for_sample(ActivitySample::new(Duration::ZERO), poll_interval);
-
-    assert_eq!(elapsed, Duration::ZERO);
-}
-
-#[test]
-fn idle_overlay_sample_counts_down_break_time() {
-    let poll_interval = Duration::from_millis(500);
-    let elapsed = break_elapsed_for_sample(
-        ActivitySample::new(Duration::from_millis(501)),
-        poll_interval,
-    );
-
-    assert_eq!(elapsed, poll_interval);
 }
 
 #[test]

@@ -115,15 +115,5 @@ impl BreakTimer {
     }
 }
 
-pub(crate) fn break_elapsed_for_sample(
-    sample: ActivitySample,
-    poll_interval: Duration,
-) -> Duration {
-    match sample.state_for(poll_interval) {
-        ActivityState::Active => Duration::ZERO,
-        ActivityState::Idle => poll_interval,
-    }
-}
-
 #[cfg(test)]
 mod tests;
