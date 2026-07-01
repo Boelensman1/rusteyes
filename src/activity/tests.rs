@@ -1,8 +1,8 @@
 use super::{
-    ActivityPoller, ActivitySample, ActivityState, BreakTimer, NORMAL_ACTIVITY_IDLE_THRESHOLD,
+    ActivityPoller, ActivitySample, ActivityState, BreakDeadline, NORMAL_ACTIVITY_IDLE_THRESHOLD,
 };
 use crate::backend::RuntimeEvent;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[test]
 fn zero_idle_time_is_active() {
@@ -84,34 +84,46 @@ fn idle_sample_queues_wall_clock_before_idle_time() {
 }
 
 #[test]
-fn break_timer_advances_without_finishing() {
-    let mut timer = BreakTimer::new(Duration::from_secs(1));
+fn break_deadline_reports_remaining_time_before_deadline() {
+    let started_at = Instant::now();
+    let deadline = BreakDeadline::starting_at(started_at, Duration::from_secs(1));
 
-    assert!(!timer.advance(Duration::from_millis(500)));
-    assert_eq!(timer.remaining(), Duration::from_millis(500));
+    assert_eq!(
+        deadline.remaining_at(started_at + Duration::from_millis(400)),
+        Duration::from_millis(600)
+    );
+    assert!(!deadline.is_finished_at(started_at + Duration::from_millis(400)));
 }
 
 #[test]
-fn break_timer_finishes_on_exact_remaining_elapsed() {
-    let mut timer = BreakTimer::new(Duration::from_secs(1));
+fn break_deadline_finishes_at_exact_deadline() {
+    let started_at = Instant::now();
+    let deadline = BreakDeadline::starting_at(started_at, Duration::from_secs(1));
 
-    assert!(timer.advance(Duration::from_secs(1)));
-    assert_eq!(timer.remaining(), Duration::ZERO);
+    assert_eq!(
+        deadline.remaining_at(started_at + Duration::from_secs(1)),
+        Duration::ZERO
+    );
+    assert!(deadline.is_finished_at(started_at + Duration::from_secs(1)));
 }
 
 #[test]
-fn break_timer_finishes_when_elapsed_overshoots_remaining() {
-    let mut timer = BreakTimer::new(Duration::from_secs(1));
+fn break_deadline_finishes_after_overshooting_deadline() {
+    let started_at = Instant::now();
+    let deadline = BreakDeadline::starting_at(started_at, Duration::from_secs(1));
 
-    assert!(timer.advance(Duration::from_secs(2)));
-    assert_eq!(timer.remaining(), Duration::ZERO);
+    assert_eq!(
+        deadline.remaining_at(started_at + Duration::from_secs(2)),
+        Duration::ZERO
+    );
+    assert!(deadline.is_finished_at(started_at + Duration::from_secs(2)));
 }
 
 #[test]
-fn break_timer_does_not_finish_again_after_reaching_zero() {
-    let mut timer = BreakTimer::new(Duration::from_secs(1));
+fn break_deadline_finishes_immediately_when_duration_overflows_instant() {
+    let started_at = Instant::now();
+    let deadline = BreakDeadline::starting_at(started_at, Duration::MAX);
 
-    assert!(timer.advance(Duration::from_secs(1)));
-    assert!(!timer.advance(Duration::from_secs(1)));
-    assert_eq!(timer.remaining(), Duration::ZERO);
+    assert_eq!(deadline.remaining_at(started_at), Duration::ZERO);
+    assert!(deadline.is_finished_at(started_at));
 }

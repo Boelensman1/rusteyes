@@ -8,12 +8,16 @@
   `Take a break` as a protocol fallback if no usable message is present.
 - The Rust macOS backend tracks the active break, suppresses active-time events
   while the overlay is visible, polls helper activity every 500 ms for
-  locked-session and overlay-control state, advances break time on each overlay
-  tick, and queues `BreakFinished` when the break duration has elapsed.
+  locked-session and overlay-control state, computes remaining break time from a
+  monotonic deadline, and queues `BreakFinished` when the break duration has
+  elapsed.
 - `finishBreak`, `clearBreak`, EOF, and `shutdown` clear helper overlay
   windows.
 - AppKit is initialized lazily on the first overlay command so normal daemon
   startup does not emit AppKit diagnostics.
+- Follow-up fix made the 500 ms overlay poll a target UI/state cadence rather
+  than the countdown source of truth, preventing early or delayed backend
+  wakeups from changing visible break length.
 
 ## Decisions
 
@@ -29,6 +33,8 @@
 
 - `make macos-helper-build` passed.
 - `make check` passed.
+- `make check` passed after switching visible-break countdowns to monotonic
+  deadlines.
 - A helper protocol smoke test for `hello`, `startBreak`, `clearBreak`, and
   `shutdown` returned only `ready` and `shutdownComplete` on stdout.
 - A bounded `timeout 3s make run` stayed alive until terminated by `timeout`

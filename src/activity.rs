@@ -1,6 +1,6 @@
 use crate::backend::RuntimeEvent;
 use std::collections::VecDeque;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::trace;
 
 const NORMAL_ACTIVITY_IDLE_THRESHOLD: Duration = Duration::from_secs(10);
@@ -85,33 +85,23 @@ pub(crate) enum ActivityState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct BreakTimer {
-    remaining: Duration,
+pub(crate) struct BreakDeadline {
+    ends_at: Instant,
 }
 
-impl BreakTimer {
-    pub(crate) const fn new(duration: Duration) -> Self {
+impl BreakDeadline {
+    pub(crate) fn starting_at(started_at: Instant, duration: Duration) -> Self {
         Self {
-            remaining: duration,
+            ends_at: started_at.checked_add(duration).unwrap_or(started_at),
         }
     }
 
-    pub(crate) fn advance(&mut self, elapsed: Duration) -> bool {
-        if self.remaining.is_zero() {
-            return false;
-        }
-
-        if elapsed >= self.remaining {
-            self.remaining = Duration::ZERO;
-            true
-        } else {
-            self.remaining -= elapsed;
-            false
-        }
+    pub(crate) fn remaining_at(self, now: Instant) -> Duration {
+        self.ends_at.saturating_duration_since(now)
     }
 
-    pub(crate) const fn remaining(self) -> Duration {
-        self.remaining
+    pub(crate) fn is_finished_at(self, now: Instant) -> bool {
+        self.remaining_at(now).is_zero()
     }
 }
 

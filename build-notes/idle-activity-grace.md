@@ -14,7 +14,7 @@
 - Keep the 10 second normal activity threshold internal for now.
 - Later refinement removed the break-overlay idle check; normal activity still
   uses the 10 second grace threshold, but break overlays now count down by
-  wall-clock overlay ticks.
+  monotonic wall-clock deadlines.
 - Keep the sync protocol unchanged. Runtime now interprets synced active-time
   events as remote activity signals sharing local wall-clock budget instead of
   unconditional extra scheduler time.

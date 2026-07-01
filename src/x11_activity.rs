@@ -1,4 +1,4 @@
-use crate::activity::{ActivityPoller, ActivitySample, BreakTimer};
+use crate::activity::{ActivityPoller, ActivitySample, BreakDeadline};
 use crate::backend::{
     BackendActor, BackendActorSpawnError, BackendCommand, BackendCommandReceiver,
     BackendEventSender, BackendWait, RuntimeEvent, wait_for_command_or_timeout,
@@ -9,7 +9,7 @@ use crate::scheduler::ScheduledBreak;
 use crate::x11_overlay::{X11Overlay, X11OverlayError, X11Screen};
 use std::fmt;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{error, trace};
 use x11rb::connection::Connection;
 use x11rb::protocol::screensaver::ConnectionExt;
@@ -81,7 +81,9 @@ impl X11ActivityBackend {
     }
 
     fn next_sample_delay(&self) -> Duration {
-        if self.active_break.is_some() || self.pending_break.is_some() {
+        if let Some(active_break) = &self.active_break {
+            active_break.next_sample_delay_at(Instant::now())
+        } else if self.pending_break.is_some() {
             OVERLAY_TICK_INTERVAL
         } else {
             self.poller.poll_interval()
@@ -106,19 +108,22 @@ impl X11ActivityBackend {
     }
 
     fn sample_overlay_once(&mut self) -> Result<(), X11ActivityError> {
+        let Some(active_break) = &mut self.active_break else {
+            return Ok(());
+        };
+        let now = Instant::now();
+        let advance = active_break
+            .advance(&self.activity.connection, now)
+            .map_err(|error| X11ActivityError::overlay(&error))?;
+
         trace!(
-            break_elapsed = ?OVERLAY_TICK_INTERVAL,
+            break_elapsed = ?advance.elapsed,
+            remaining = ?advance.remaining,
             "sampled X11 break overlay tick"
         );
-        let advance = match &mut self.active_break {
-            Some(active_break) => active_break
-                .advance(&self.activity.connection, OVERLAY_TICK_INTERVAL)
-                .map_err(|error| X11ActivityError::overlay(&error))?,
-            None => BreakAdvance::default(),
-        };
 
         self.poller
-            .queue_event(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL));
+            .queue_event(RuntimeEvent::WallClockElapsed(advance.elapsed));
 
         if advance.lock_after_break_requested {
             self.poller.queue_event(RuntimeEvent::LockAfterCurrentBreak);
@@ -388,14 +393,19 @@ impl PendingBreakStart {
 
 struct ActiveBreak {
     overlay: X11Overlay,
-    timer: BreakTimer,
+    deadline: BreakDeadline,
+    last_observed_at: Instant,
+    finish_reported: bool,
 }
 
 impl ActiveBreak {
-    const fn new(overlay: X11Overlay, duration: Duration) -> Self {
+    fn new(overlay: X11Overlay, duration: Duration) -> Self {
+        let started_at = Instant::now();
         Self {
             overlay,
-            timer: BreakTimer::new(duration),
+            deadline: BreakDeadline::starting_at(started_at, duration),
+            last_observed_at: started_at,
+            finish_reported: false,
         }
     }
 
@@ -406,7 +416,10 @@ impl ActiveBreak {
         remaining: Duration,
         lock_after: bool,
     ) -> Result<(), X11OverlayError> {
-        self.timer = BreakTimer::new(remaining);
+        let started_at = Instant::now();
+        self.deadline = BreakDeadline::starting_at(started_at, remaining);
+        self.last_observed_at = started_at;
+        self.finish_reported = false;
         self.overlay.update_message(connection, message)?;
         self.overlay.update_remaining(connection, remaining)?;
         self.overlay.set_lock_after_break(connection, lock_after)
@@ -415,18 +428,44 @@ impl ActiveBreak {
     fn advance(
         &mut self,
         connection: &RustConnection,
-        elapsed: Duration,
+        now: Instant,
     ) -> Result<BreakAdvance, X11OverlayError> {
         let lock_after_break_requested = self.overlay.handle_pending_events(connection)?;
         self.overlay.raise(connection)?;
-        let finished = self.timer.advance(elapsed);
-        self.overlay
-            .update_remaining(connection, self.timer.remaining())?;
+        let elapsed = self.elapsed_since_last_observation(now);
+        let remaining = self.deadline.remaining_at(now);
+        let finished = self.mark_finished_if_due(now);
+        self.overlay.update_remaining(connection, remaining)?;
 
         Ok(BreakAdvance {
+            elapsed,
+            remaining,
             finished,
             lock_after_break_requested,
         })
+    }
+
+    fn elapsed_since_last_observation(&mut self, now: Instant) -> Duration {
+        let elapsed = now.saturating_duration_since(self.last_observed_at);
+        self.last_observed_at = now;
+        elapsed
+    }
+
+    fn mark_finished_if_due(&mut self, now: Instant) -> bool {
+        if self.finish_reported || !self.deadline.is_finished_at(now) {
+            return false;
+        }
+
+        self.finish_reported = true;
+        true
+    }
+
+    fn next_sample_delay_at(&self, now: Instant) -> Duration {
+        if self.finish_reported {
+            return OVERLAY_TICK_INTERVAL;
+        }
+
+        std::cmp::min(OVERLAY_TICK_INTERVAL, self.deadline.remaining_at(now))
     }
 
     fn prepare_lock_handoff(&mut self, connection: &RustConnection) -> Result<(), X11OverlayError> {
@@ -448,6 +487,8 @@ impl ActiveBreak {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct BreakAdvance {
+    elapsed: Duration,
+    remaining: Duration,
     finished: bool,
     lock_after_break_requested: bool,
 }

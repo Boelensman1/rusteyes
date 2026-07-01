@@ -1,4 +1,4 @@
-use crate::activity::{ActivityPoller, ActivitySample, BreakTimer};
+use crate::activity::{ActivityPoller, ActivitySample, BreakDeadline};
 use crate::backend::{
     BackendActor, BackendActorSpawnError, BackendCommand, BackendCommandReceiver,
     BackendEventSender, BackendWait, RuntimeEvent, wait_for_command_or_timeout,
@@ -136,8 +136,8 @@ where
     }
 
     fn next_sample_delay(&self) -> Duration {
-        if self.active_break.is_some() {
-            OVERLAY_TICK_INTERVAL
+        if let Some(active_break) = &self.active_break {
+            active_break.next_sample_delay_at(Instant::now())
         } else {
             self.poller.poll_interval()
         }
@@ -160,38 +160,58 @@ where
 
     fn sample_overlay_once(&mut self) -> Result<(), MacOSHelperError> {
         let sample = self.session.poll_activity()?;
+        self.apply_overlay_sample(sample, Instant::now())
+    }
 
+    #[cfg(test)]
+    fn sample_overlay_once_at(&mut self, observed_at: Instant) -> Result<(), MacOSHelperError> {
+        let sample = self.session.poll_activity()?;
+        self.apply_overlay_sample(sample, observed_at)
+    }
+
+    fn apply_overlay_sample(
+        &mut self,
+        sample: HelperActivitySample,
+        observed_at: Instant,
+    ) -> Result<(), MacOSHelperError> {
         if self
             .active_break
             .as_ref()
             .is_some_and(ActiveBreak::has_deferred_finish)
         {
+            let elapsed = self
+                .active_break
+                .as_mut()
+                .map_or(Duration::ZERO, |active_break| {
+                    active_break.observe_elapsed_at(observed_at)
+                });
             if sample.session_locked {
                 self.poller
-                    .queue_event(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL));
+                    .queue_event(RuntimeEvent::WallClockElapsed(elapsed));
                 return Ok(());
             }
 
             self.finish_deferred_active_break()?;
             self.poller
-                .queue_event(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL));
+                .queue_event(RuntimeEvent::WallClockElapsed(elapsed));
             self.poller.queue_event(RuntimeEvent::BreakFinished);
             return Ok(());
         }
 
-        trace!(
-            idle_for = ?sample.activity.idle_for(),
-            session_locked = sample.session_locked,
-            lock_after_break_requested = sample.lock_after_break_requested,
-            break_elapsed = ?OVERLAY_TICK_INTERVAL,
-            "sampled macOS break overlay tick"
-        );
-
         if let Some(update) = self
             .active_break
             .as_mut()
-            .map(|active_break| active_break.apply_sample(sample, OVERLAY_TICK_INTERVAL))
+            .map(|active_break| active_break.apply_sample(sample, observed_at))
         {
+            trace!(
+                idle_for = ?sample.activity.idle_for(),
+                session_locked = sample.session_locked,
+                lock_after_break_requested = sample.lock_after_break_requested,
+                break_elapsed = ?update.elapsed,
+                remaining = ?update.remaining,
+                "sampled macOS break overlay tick"
+            );
+
             if update.finished {
                 if sample.session_locked {
                     if let Some(active_break) = self.active_break.as_mut() {
@@ -274,9 +294,13 @@ where
     }
 
     fn request_lock_after_current_break(&mut self) {
+        let observed_at = Instant::now();
         let Some((remaining, lock_after_break)) = self.active_break.as_mut().map(|active_break| {
             active_break.request_lock_after_break();
-            (active_break.remaining(), active_break.lock_after_break())
+            (
+                active_break.remaining_at(observed_at),
+                active_break.lock_after_break(),
+            )
         }) else {
             return;
         };
@@ -367,7 +391,8 @@ impl From<LockConfig> for MacOSLock {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ActiveBreak {
-    timer: BreakTimer,
+    deadline: BreakDeadline,
+    last_observed_at: Instant,
     lock_after_break: bool,
     deferred_finish: Option<DeferredFinish>,
 }
@@ -378,9 +403,14 @@ struct DeferredFinish {
 }
 
 impl ActiveBreak {
-    const fn new(duration: Duration, lock_after_break: bool) -> Self {
+    fn new(duration: Duration, lock_after_break: bool) -> Self {
+        Self::new_at(duration, lock_after_break, Instant::now())
+    }
+
+    fn new_at(duration: Duration, lock_after_break: bool, started_at: Instant) -> Self {
         Self {
-            timer: BreakTimer::new(duration),
+            deadline: BreakDeadline::starting_at(started_at, duration),
+            last_observed_at: started_at,
             lock_after_break,
             deferred_finish: None,
         }
@@ -389,24 +419,29 @@ impl ActiveBreak {
     fn apply_sample(
         &mut self,
         sample: HelperActivitySample,
-        elapsed: Duration,
+        observed_at: Instant,
     ) -> ActiveBreakUpdate {
         if sample.lock_after_break_requested {
             self.request_lock_after_break();
         }
 
-        let finished = self.advance(elapsed);
+        let elapsed = self.observe_elapsed_at(observed_at);
+        let remaining = self.remaining_at(observed_at);
+        let finished = self.deadline.is_finished_at(observed_at);
 
         ActiveBreakUpdate {
-            remaining: self.remaining(),
+            elapsed,
+            remaining,
             lock_after_break: self.lock_after_break(),
             lock_after_break_requested: sample.lock_after_break_requested,
             finished,
         }
     }
 
-    fn advance(&mut self, elapsed: Duration) -> bool {
-        self.timer.advance(elapsed)
+    fn observe_elapsed_at(&mut self, observed_at: Instant) -> Duration {
+        let elapsed = observed_at.saturating_duration_since(self.last_observed_at);
+        self.last_observed_at = observed_at;
+        elapsed
     }
 
     fn request_lock_after_break(&mut self) {
@@ -414,7 +449,9 @@ impl ActiveBreak {
     }
 
     fn replace(&mut self, remaining: Duration, lock_after_break: bool) {
-        self.timer = BreakTimer::new(remaining);
+        let started_at = Instant::now();
+        self.deadline = BreakDeadline::starting_at(started_at, remaining);
+        self.last_observed_at = started_at;
         self.lock_after_break = lock_after_break;
         self.deferred_finish = None;
     }
@@ -431,8 +468,16 @@ impl ActiveBreak {
         self.deferred_finish.is_some()
     }
 
-    const fn remaining(self) -> Duration {
-        self.timer.remaining()
+    fn remaining_at(self, observed_at: Instant) -> Duration {
+        self.deadline.remaining_at(observed_at)
+    }
+
+    fn next_sample_delay_at(self, now: Instant) -> Duration {
+        if self.has_deferred_finish() {
+            return OVERLAY_TICK_INTERVAL;
+        }
+
+        std::cmp::min(OVERLAY_TICK_INTERVAL, self.remaining_at(now))
     }
 
     const fn lock_after_break(self) -> bool {
@@ -442,6 +487,7 @@ impl ActiveBreak {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ActiveBreakUpdate {
+    elapsed: Duration,
     remaining: Duration,
     lock_after_break: bool,
     lock_after_break_requested: bool,
@@ -453,7 +499,7 @@ fn queue_overlay_runtime_events(
     update: ActiveBreakUpdate,
     queue_break_finished: bool,
 ) {
-    poller.queue_event(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL));
+    poller.queue_event(RuntimeEvent::WallClockElapsed(update.elapsed));
 
     if update.lock_after_break_requested {
         poller.queue_event(RuntimeEvent::LockAfterCurrentBreak);
@@ -1563,7 +1609,8 @@ mod tests {
 
     #[test]
     fn active_break_sample_tracks_remaining_time_and_lock_request() {
-        let mut active_break = ActiveBreak::new(Duration::from_secs(2), false);
+        let started_at = Instant::now();
+        let mut active_break = ActiveBreak::new_at(Duration::from_secs(2), false, started_at);
 
         let update = active_break.apply_sample(
             HelperActivitySample {
@@ -1571,18 +1618,88 @@ mod tests {
                 session_locked: false,
                 lock_after_break_requested: true,
             },
-            Duration::from_secs(1),
+            started_at + Duration::from_secs(1),
         );
 
         assert_eq!(
             update,
             ActiveBreakUpdate {
+                elapsed: Duration::from_secs(1),
                 remaining: Duration::from_secs(1),
                 lock_after_break: true,
                 lock_after_break_requested: true,
                 finished: false,
             }
         );
+    }
+
+    #[test]
+    fn active_break_sample_delay_uses_remaining_time_until_deadline() {
+        let started_at = Instant::now();
+        let mut active_break = ActiveBreak::new_at(Duration::from_secs(1), true, started_at);
+
+        assert_eq!(
+            active_break.next_sample_delay_at(started_at + Duration::from_millis(250)),
+            OVERLAY_TICK_INTERVAL
+        );
+        assert_eq!(
+            active_break.next_sample_delay_at(started_at + Duration::from_millis(750)),
+            Duration::from_millis(250)
+        );
+        assert_eq!(
+            active_break.next_sample_delay_at(started_at + Duration::from_secs(1)),
+            Duration::ZERO
+        );
+
+        active_break.defer_finish(true);
+        assert_eq!(
+            active_break.next_sample_delay_at(started_at + Duration::from_secs(2)),
+            OVERLAY_TICK_INTERVAL
+        );
+    }
+
+    #[test]
+    fn early_overlay_sample_uses_deadline_remaining_time() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let input = Cursor::new(
+            br#"{"type":"activitySample","idleMs":0,"sessionLocked":false,"lockAfterBreakRequested":false}
+{"type":"commandComplete","command":"updateBreak"}"#
+                .to_vec(),
+        );
+        let mut output = Vec::new();
+        let mut core = MacOSHelperCore::new(
+            HelperSession::new(input, &mut output),
+            MacOSLock::PlatformDefault,
+        );
+        let started_at = Instant::now();
+        core.active_break = Some(ActiveBreak::new_at(
+            Duration::from_secs(1),
+            false,
+            started_at,
+        ));
+
+        core.sample_overlay_once_at(started_at + Duration::from_millis(250))?;
+
+        assert!(core.active_break.is_some());
+        assert_eq!(
+            core.next_event(),
+            Some(RuntimeEvent::WallClockElapsed(Duration::from_millis(250)))
+        );
+        assert_eq!(core.next_event(), None);
+        drop(core);
+
+        assert_eq!(
+            daemon_messages(&output)?,
+            vec![
+                DaemonMessage::PollActivity,
+                DaemonMessage::UpdateBreak {
+                    remaining_ms: 750,
+                    lock_after: false,
+                    message: None,
+                },
+            ]
+        );
+        Ok(())
     }
 
     #[test]
@@ -1598,9 +1715,14 @@ mod tests {
             HelperSession::new(input, &mut output),
             MacOSLock::PlatformDefault,
         );
-        core.active_break = Some(ActiveBreak::new(OVERLAY_TICK_INTERVAL, false));
+        let started_at = Instant::now();
+        core.active_break = Some(ActiveBreak::new_at(
+            OVERLAY_TICK_INTERVAL,
+            false,
+            started_at,
+        ));
 
-        core.sample_overlay_once()?;
+        core.sample_overlay_once_at(started_at + OVERLAY_TICK_INTERVAL)?;
 
         assert_eq!(core.active_break, None);
         assert_eq!(
@@ -1637,9 +1759,14 @@ mod tests {
             HelperSession::new(input, &mut output),
             MacOSLock::PlatformDefault,
         );
-        core.active_break = Some(ActiveBreak::new(OVERLAY_TICK_INTERVAL, false));
+        let started_at = Instant::now();
+        core.active_break = Some(ActiveBreak::new_at(
+            OVERLAY_TICK_INTERVAL,
+            false,
+            started_at,
+        ));
 
-        core.sample_overlay_once()?;
+        core.sample_overlay_once_at(started_at + OVERLAY_TICK_INTERVAL)?;
 
         assert_eq!(
             core.next_event(),
@@ -1671,9 +1798,10 @@ mod tests {
             HelperSession::new(input, &mut output),
             MacOSLock::PlatformDefault,
         );
-        core.active_break = Some(ActiveBreak::new(OVERLAY_TICK_INTERVAL, true));
+        let started_at = Instant::now();
+        core.active_break = Some(ActiveBreak::new_at(OVERLAY_TICK_INTERVAL, true, started_at));
 
-        core.sample_overlay_once()?;
+        core.sample_overlay_once_at(started_at + OVERLAY_TICK_INTERVAL)?;
 
         assert_eq!(
             core.active_break.as_ref().and_then(|active_break| {
@@ -1708,9 +1836,10 @@ mod tests {
             HelperSession::new(input, &mut output),
             MacOSLock::PlatformDefault,
         );
-        core.active_break = Some(ActiveBreak::new(OVERLAY_TICK_INTERVAL, true));
+        let started_at = Instant::now();
+        core.active_break = Some(ActiveBreak::new_at(OVERLAY_TICK_INTERVAL, true, started_at));
 
-        core.sample_overlay_once()?;
+        core.sample_overlay_once_at(started_at + OVERLAY_TICK_INTERVAL)?;
         assert!(core.active_break.is_some());
         assert_eq!(
             core.next_event(),
@@ -1718,7 +1847,7 @@ mod tests {
         );
         assert_eq!(core.next_event(), None);
 
-        core.sample_overlay_once()?;
+        core.sample_overlay_once_at(started_at + OVERLAY_TICK_INTERVAL * 2)?;
         assert_eq!(core.active_break, None);
         assert_eq!(
             core.next_event(),
@@ -1746,6 +1875,7 @@ mod tests {
         queue_overlay_runtime_events(
             &mut poller,
             ActiveBreakUpdate {
+                elapsed: OVERLAY_TICK_INTERVAL,
                 remaining: Duration::ZERO,
                 lock_after_break: true,
                 lock_after_break_requested: true,
