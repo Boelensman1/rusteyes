@@ -6,7 +6,9 @@ use crate::config::{
     BreakTypeConfig, Breaks, Config, ConfigError, LockConfig, StartupConfig, SyncConfig,
 };
 use crate::scheduler::{BreakOrigin, BreakSchedule, ScheduledBreak};
-use crate::sync_protocol::{PeerId, SyncActiveBreak, SyncBreakOrigin, SyncEvent};
+use crate::sync_protocol::{
+    PeerId, SyncActiveBreak, SyncBreakOrigin, SyncEvent, SyncSchedulerPosition,
+};
 use crate::sync_transport::{PeerRejectionReason, SyncTransportError, SyncTransportEvent};
 use crate::ui::{PreBreakNotification, RuntimeUi, StatusDisplay, UiCommand, UiNotification};
 use std::cell::RefCell;
@@ -503,6 +505,49 @@ fn local_manual_break_start_is_broadcast_to_sync_peers() {
 }
 
 #[test]
+fn local_manual_long_break_satisfies_long_cadence() {
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = ScriptedBackend::new([
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
+        RuntimeEvent::BreakFinished,
+        RuntimeEvent::StartManualBreak(String::from("long")),
+        RuntimeEvent::BreakFinished,
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
+        RuntimeEvent::Shutdown,
+    ])
+    .into_parts();
+
+    assert_eq!(
+        run_config_with_sync_broadcaster(test_config(), backend, &sync_broadcaster),
+        Ok(())
+    );
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::FinishBreak { lock_after: false },
+            BackendCommand::StartBreak(manual_break("long", 300)),
+            BackendCommand::FinishBreak { lock_after: true },
+            BackendCommand::StartBreak(scheduled_break("short", 2, 20)),
+        ]
+    );
+    assert_eq!(
+        sync_broadcaster.events(),
+        vec![
+            SyncEvent::ActiveTimeElapsed {
+                elapsed: Duration::from_secs(10),
+            },
+            broadcast_scheduled_break("short", 1),
+            broadcast_manual_break_at("long", 1),
+            SyncEvent::ActiveTimeElapsed {
+                elapsed: Duration::from_secs(10),
+            },
+            broadcast_scheduled_break_with_slots("short", 2, 2, 1),
+        ]
+    );
+}
+
+#[test]
 fn local_disable_events_are_broadcast_to_sync_peers() {
     let sync_broadcaster = RecordingSyncBroadcaster::default();
     let (backend, commands) = ScriptedBackend::new([
@@ -711,8 +756,7 @@ fn remote_break_start_event_starts_configured_break_without_rebroadcast()
 }
 
 #[test]
-fn remote_manual_break_start_does_not_advance_scheduler_counter()
--> Result<(), Box<dyn std::error::Error>> {
+fn remote_manual_break_start_uses_manual_origin() -> Result<(), Box<dyn std::error::Error>> {
     let (backend, commands) = test_backend();
 
     run_config_with_inputs(
@@ -735,6 +779,56 @@ fn remote_manual_break_start_does_not_advance_scheduler_counter()
             BackendCommand::StartBreak(manual_break("long", 300)),
             BackendCommand::FinishBreak { lock_after: true },
             BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn remote_manual_long_break_satisfies_long_cadence_without_rebroadcast()
+-> Result<(), Box<dyn std::error::Error>> {
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs_and_sync_broadcaster(
+        test_config(),
+        backend,
+        &sync_broadcaster,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+            backend_input(RuntimeEvent::BreakFinished),
+            sync_input(incoming_manual_break_at(
+                "long",
+                &break_message("long"),
+                TEST_NOW_MS,
+                1,
+            )?),
+            backend_input(RuntimeEvent::BreakFinished),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::FinishBreak { lock_after: false },
+            BackendCommand::StartBreak(manual_break("long", 300)),
+            BackendCommand::FinishBreak { lock_after: true },
+            BackendCommand::StartBreak(scheduled_break("short", 2, 20)),
+        ]
+    );
+    assert_eq!(
+        sync_broadcaster.events(),
+        vec![
+            SyncEvent::ActiveTimeElapsed {
+                elapsed: Duration::from_secs(10),
+            },
+            broadcast_scheduled_break("short", 1),
+            SyncEvent::ActiveTimeElapsed {
+                elapsed: Duration::from_secs(10),
+            },
+            broadcast_scheduled_break_with_slots("short", 2, 2, 1),
         ]
     );
     Ok(())
@@ -794,6 +888,7 @@ fn peer_authentication_sends_current_scheduler_state() -> Result<(), Box<dyn std
             SyncEvent::SchedulerState {
                 slot: 0,
                 active_elapsed: Duration::from_secs(4),
+                last_satisfied_slots: test_last_satisfied_slots(0, 0),
                 active_break: None,
             },
         )]
@@ -813,6 +908,7 @@ fn remote_scheduler_state_catches_up_counter_and_active_elapsed()
             sync_input(remote_sync_event(SyncEvent::SchedulerState {
                 slot: 1,
                 active_elapsed: Duration::from_secs(5),
+                last_satisfied_slots: test_last_satisfied_slots(1, 0),
                 active_break: None,
             })?),
             backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
@@ -838,6 +934,7 @@ fn remote_scheduler_state_joins_active_break_with_remaining_time()
             sync_input(remote_sync_event(SyncEvent::SchedulerState {
                 slot: 2,
                 active_elapsed: Duration::ZERO,
+                last_satisfied_slots: test_last_satisfied_slots(2, 2),
                 active_break: Some(SyncActiveBreak {
                     name: String::from("long"),
                     message: String::from("Peer message"),
@@ -880,6 +977,7 @@ fn expired_remote_active_break_snapshot_only_advances_counter()
             sync_input(remote_sync_event(SyncEvent::SchedulerState {
                 slot: 1,
                 active_elapsed: Duration::ZERO,
+                last_satisfied_slots: test_last_satisfied_slots(1, 0),
                 active_break: Some(SyncActiveBreak {
                     name: String::from("short"),
                     message: String::from("Peer message"),
@@ -1413,6 +1511,7 @@ fn inbound_scheduler_reset_restarts_counter_without_rebroadcast()
             sync_input(remote_sync_event(SyncEvent::SchedulerState {
                 slot: 1,
                 active_elapsed: Duration::ZERO,
+                last_satisfied_slots: test_last_satisfied_slots(1, 0),
                 active_break: None,
             })?),
             sync_input(remote_sync_event(SyncEvent::SchedulerReset)?),
@@ -2211,20 +2310,37 @@ fn break_message(name: &str) -> String {
 }
 
 fn broadcast_scheduled_break(name: &str, slot: usize) -> SyncEvent {
+    let long_slot = if name == "long" { slot } else { 0 };
+
+    broadcast_scheduled_break_with_slots(name, slot, slot, long_slot)
+}
+
+fn broadcast_scheduled_break_with_slots(
+    name: &str,
+    slot: usize,
+    short_slot: usize,
+    long_slot: usize,
+) -> SyncEvent {
     SyncEvent::BreakStarted {
         name: name.to_owned(),
         message: break_message(name),
         started_at_ms: TEST_NOW_MS,
         origin: SyncBreakOrigin::Scheduled { slot },
+        position: sync_position(slot, Duration::ZERO, short_slot, long_slot),
     }
 }
 
 fn broadcast_manual_break(name: &str) -> SyncEvent {
+    broadcast_manual_break_at(name, 0)
+}
+
+fn broadcast_manual_break_at(name: &str, slot: usize) -> SyncEvent {
     SyncEvent::BreakStarted {
         name: name.to_owned(),
         message: break_message(name),
         started_at_ms: TEST_NOW_MS,
         origin: SyncBreakOrigin::Manual,
+        position: manual_sync_position(name, slot),
     }
 }
 
@@ -2247,6 +2363,7 @@ fn incoming_scheduled_break(
         message: message.to_owned(),
         started_at_ms,
         origin: SyncBreakOrigin::Scheduled { slot },
+        position: scheduled_sync_position(name, slot),
     })
 }
 
@@ -2255,12 +2372,59 @@ fn incoming_manual_break(
     message: &str,
     started_at_ms: u64,
 ) -> Result<SyncTransportEvent, Box<dyn std::error::Error>> {
+    incoming_manual_break_at(name, message, started_at_ms, 0)
+}
+
+fn incoming_manual_break_at(
+    name: &str,
+    message: &str,
+    started_at_ms: u64,
+    slot: usize,
+) -> Result<SyncTransportEvent, Box<dyn std::error::Error>> {
     remote_sync_event(SyncEvent::BreakStarted {
         name: name.to_owned(),
         message: message.to_owned(),
         started_at_ms,
         origin: SyncBreakOrigin::Manual,
+        position: manual_sync_position(name, slot),
     })
+}
+
+fn scheduled_sync_position(name: &str, slot: usize) -> SyncSchedulerPosition {
+    let long_slot = if name == "long" { slot } else { 0 };
+
+    sync_position(slot, Duration::ZERO, slot, long_slot)
+}
+
+fn manual_sync_position(name: &str, slot: usize) -> SyncSchedulerPosition {
+    let (short_slot, long_slot) = match name {
+        "long" => (slot, slot),
+        _ => (slot, 0),
+    };
+
+    sync_position(slot, Duration::ZERO, short_slot, long_slot)
+}
+
+fn sync_position(
+    slot: usize,
+    active_elapsed: Duration,
+    short_slot: usize,
+    long_slot: usize,
+) -> SyncSchedulerPosition {
+    SyncSchedulerPosition {
+        slot,
+        active_elapsed,
+        last_satisfied_slots: test_last_satisfied_slots(short_slot, long_slot),
+    }
+}
+
+fn test_last_satisfied_slots(short_slot: usize, long_slot: usize) -> BTreeMap<String, usize> {
+    [
+        (String::from("short"), short_slot),
+        (String::from("long"), long_slot),
+    ]
+    .into_iter()
+    .collect()
 }
 
 fn scheduled_break(name: &str, slot: usize, duration_secs: u64) -> ScheduledBreak {

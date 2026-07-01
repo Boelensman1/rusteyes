@@ -20,8 +20,9 @@
 - Remote active-time increments are ignored while local scheduling is disabled
   or while a break is pending, matching existing scheduler behavior.
 - Local or synced break starts reset accumulated active time.
-- Manual breaks also reset accumulated active time without advancing scheduled
-  break slots.
+- Manual breaks also reset accumulated active time. Later
+  `manual-break-cadence-reset` made them satisfy the selected break cadence,
+  plus more frequent cadences, at the current slot.
 
 ## Changes
 

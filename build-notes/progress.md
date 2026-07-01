@@ -366,10 +366,10 @@
 - Completed `break-counter-sync`: sync protocol version 4 now carries break
   origins and directed scheduler snapshots so peers converge on the same
   scheduled slot counter. Scheduled inbound break starts advance the receiver's
-  slot, manual starts remain counter-neutral, newly authenticated peers receive
-  the sender's slot/active-time state, and peers connecting mid-break join the
-  remaining break immediately from the peer's message/timestamp/lock state.
-  Expired active-break snapshots advance the counter without showing an overlay.
+  slot, newly authenticated peers receive the sender's slot/active-time state,
+  and peers connecting mid-break join the remaining break immediately from the
+  peer's message/timestamp/lock state. Expired active-break snapshots advance
+  the counter without showing an overlay.
 - Completed `synced-idle-reset`: `breaks.reset_after_idle` keeps its active-time
   reset behavior and 5 minute default, while new optional
   `breaks.reset_count_after_idle` resets both accumulated active time and the
@@ -379,6 +379,12 @@
   rebroadcasting. Existing synced active-time events still prevent idle reset
   while another connected peer is active, and disconnected peers keep the
   existing higher-slot reconnect catch-up behavior.
+- Completed `manual-break-cadence-reset`: the scheduler now tracks per-break
+  last-satisfied slots. A manual break satisfies its configured cadence plus
+  more frequent break cadences at the current slot, while preserving less
+  frequent cadences such as an even-longer break. Sync protocol version 6
+  carries scheduler position snapshots on break starts and per-break satisfied
+  slots in scheduler state so local, remote, and reconnect behavior converge.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -579,6 +585,7 @@
 - `make check` passes after adding synced idle reset.
 - `make check` passes after splitting active-time and break-count idle reset
   thresholds.
+- `make check` passes after adding manual break cadence resets.
 - On unsupported targets, `make run` prints
   `rusteyes: no backend is available for <platform> yet` and exits non-zero.
 - Manual X11 overlay, input-blocking, overlay UI, and trace-output verification

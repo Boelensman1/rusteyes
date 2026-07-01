@@ -1,8 +1,8 @@
 use super::{
     AuthenticatedSyncMessage, PeerId, SyncActiveBreak, SyncBreakOrigin,
     SyncCompatibilityFingerprint, SyncEvent, SyncFramePayload, SyncMessage, SyncProtocolError,
-    TransportControlFrame, authenticate_message, decode_authenticated, encode_authenticated,
-    encode_hex,
+    SyncSchedulerPosition, TransportControlFrame, authenticate_message, decode_authenticated,
+    encode_authenticated, encode_hex,
 };
 use crate::config::{BreakTypeConfig, Config, LockConfig, SharedSecret, StartupConfig};
 use serde_json::{Value, json};
@@ -37,10 +37,12 @@ fn authenticates_all_sync_event_variants() -> Result<(), Box<dyn Error>> {
             message: String::from("Rest your eyes"),
             started_at_ms: 1_700_000_000_000,
             origin: SyncBreakOrigin::Scheduled { slot: 1 },
+            position: sync_position(1, Duration::ZERO, &[("short", 1)]),
         },
         SyncEvent::SchedulerState {
             slot: 1,
             active_elapsed: Duration::from_millis(500),
+            last_satisfied_slots: last_satisfied_slots(&[("short", 1)]),
             active_break: None,
         },
         SyncEvent::SchedulerReset,
@@ -109,7 +111,7 @@ fn wire_json_uses_expected_version_sender_sequence_event_and_mac() -> Result<(),
     let encoded = encode_authenticated(&message, &shared_secret())?;
     let value = serde_json::from_str::<Value>(&encoded)?;
 
-    assert_eq!(value["version"], json!(5));
+    assert_eq!(value["version"], json!(6));
     assert_eq!(value["sender"], json!(PEER_ID));
     assert_eq!(value["sequence"], json!(42));
     assert_eq!(value["event"]["type"], json!("activeTimeElapsed"));
@@ -133,6 +135,7 @@ fn wire_json_carries_break_message_and_started_at() -> Result<(), Box<dyn Error>
             message: String::from("Rest your eyes"),
             started_at_ms: 1_700_000_000_000,
             origin: SyncBreakOrigin::Scheduled { slot: 1 },
+            position: sync_position(1, Duration::ZERO, &[("short", 1)]),
         },
     );
     let encoded = encode_authenticated(&message, &shared_secret())?;
@@ -144,6 +147,12 @@ fn wire_json_carries_break_message_and_started_at() -> Result<(), Box<dyn Error>
     assert_eq!(value["event"]["startedAtMs"], json!(1_700_000_000_000_u64));
     assert_eq!(value["event"]["origin"]["type"], json!("scheduled"));
     assert_eq!(value["event"]["origin"]["slot"], json!(1));
+    assert_eq!(value["event"]["position"]["slot"], json!(1));
+    assert_eq!(value["event"]["position"]["activeElapsedMs"], json!(0));
+    assert_eq!(
+        value["event"]["position"]["lastSatisfiedSlots"]["short"],
+        json!(1)
+    );
 
     assert_eq!(decode_authenticated(&encoded, &shared_secret())?, message);
 
@@ -158,6 +167,7 @@ fn wire_json_carries_scheduler_state_snapshot() -> Result<(), Box<dyn Error>> {
         SyncEvent::SchedulerState {
             slot: 2,
             active_elapsed: Duration::from_millis(1_500),
+            last_satisfied_slots: last_satisfied_slots(&[("short", 1), ("long", 2)]),
             active_break: Some(SyncActiveBreak {
                 name: String::from("long"),
                 message: String::from("Look away"),
@@ -173,6 +183,8 @@ fn wire_json_carries_scheduler_state_snapshot() -> Result<(), Box<dyn Error>> {
     assert_eq!(value["event"]["type"], json!("schedulerState"));
     assert_eq!(value["event"]["slot"], json!(2));
     assert_eq!(value["event"]["activeElapsedMs"], json!(1_500));
+    assert_eq!(value["event"]["lastSatisfiedSlots"]["short"], json!(1));
+    assert_eq!(value["event"]["lastSatisfiedSlots"]["long"], json!(2));
     assert_eq!(value["event"]["activeBreak"]["name"], json!("long"));
     assert_eq!(value["event"]["activeBreak"]["message"], json!("Look away"));
     assert_eq!(
@@ -209,7 +221,7 @@ fn wire_json_uses_control_field_for_peer_hello() -> Result<(), Box<dyn Error>> {
     let encoded = encode_authenticated(&message, &shared_secret())?;
     let value = serde_json::from_str::<Value>(&encoded)?;
 
-    assert_eq!(value["version"], json!(5));
+    assert_eq!(value["version"], json!(6));
     assert_eq!(value["sender"], json!(PEER_ID));
     assert_eq!(value["sequence"], json!(0));
     assert_eq!(value["control"]["type"], json!("peerHello"));
@@ -382,6 +394,7 @@ fn rejects_tampered_payload() -> Result<(), Box<dyn Error>> {
             message: String::from("Rest your eyes"),
             started_at_ms: 1_700_000_000_000,
             origin: SyncBreakOrigin::Scheduled { slot: 1 },
+            position: sync_position(1, Duration::ZERO, &[("short", 1)]),
         },
     );
     let encoded = encode_authenticated(&message, &shared_secret())?;
@@ -449,12 +462,12 @@ fn rejects_invalid_mac_hex() -> Result<(), Box<dyn Error>> {
 #[test]
 fn rejects_unsupported_version_after_authentication() -> Result<(), Box<dyn Error>> {
     let mut message = SyncMessage::event(peer_id()?, 11, SyncEvent::Enable);
-    message.version = 6;
+    message.version = 7;
     let encoded = authenticated_json(&message)?;
 
     assert_eq!(
         decode_authenticated(&encoded, &shared_secret()),
-        Err(SyncProtocolError::UnsupportedVersion { version: 6 })
+        Err(SyncProtocolError::UnsupportedVersion { version: 7 })
     );
 
     Ok(())
@@ -527,6 +540,7 @@ fn rejects_invalid_break_names() -> Result<(), Box<dyn Error>> {
                 message: String::from("Rest your eyes"),
                 started_at_ms: 1_700_000_000_000,
                 origin: SyncBreakOrigin::Scheduled { slot: 1 },
+                position: sync_position(1, Duration::ZERO, &[("short", 1)]),
             },
         );
 
@@ -551,6 +565,7 @@ fn rejects_zero_scheduled_break_slot() -> Result<(), Box<dyn Error>> {
             message: String::from("Rest your eyes"),
             started_at_ms: 1_700_000_000_000,
             origin: SyncBreakOrigin::Scheduled { slot: 0 },
+            position: sync_position(0, Duration::ZERO, &[("short", 0)]),
         },
     );
     assert_eq!(
@@ -564,6 +579,7 @@ fn rejects_zero_scheduled_break_slot() -> Result<(), Box<dyn Error>> {
         SyncEvent::SchedulerState {
             slot: 1,
             active_elapsed: Duration::ZERO,
+            last_satisfied_slots: last_satisfied_slots(&[("short", 1)]),
             active_break: Some(SyncActiveBreak {
                 name: String::from("short"),
                 message: String::from("Rest your eyes"),
@@ -582,8 +598,50 @@ fn rejects_zero_scheduled_break_slot() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn rejects_invalid_scheduler_position() -> Result<(), Box<dyn Error>> {
+    let invalid_name = SyncMessage::event(
+        peer_id()?,
+        18,
+        SyncEvent::SchedulerState {
+            slot: 1,
+            active_elapsed: Duration::ZERO,
+            last_satisfied_slots: last_satisfied_slots(&[(" short", 1)]),
+            active_break: None,
+        },
+    );
+    assert_eq!(
+        encode_authenticated(&invalid_name, &shared_secret()),
+        Err(SyncProtocolError::InvalidBreakName {
+            name: String::from(" short"),
+        })
+    );
+
+    let invalid_slot = SyncMessage::event(
+        peer_id()?,
+        19,
+        SyncEvent::BreakStarted {
+            name: String::from("short"),
+            message: String::from("Rest your eyes"),
+            started_at_ms: 1_700_000_000_000,
+            origin: SyncBreakOrigin::Manual,
+            position: sync_position(1, Duration::ZERO, &[("short", 2)]),
+        },
+    );
+    assert_eq!(
+        encode_authenticated(&invalid_slot, &shared_secret()),
+        Err(SyncProtocolError::InvalidSatisfiedSlot {
+            name: String::from("short"),
+            slot: 1,
+            last_satisfied_slot: 2,
+        })
+    );
+
+    Ok(())
+}
+
+#[test]
 fn decoded_domain_event_keeps_event_payload_separate() -> Result<(), Box<dyn Error>> {
-    let message = SyncMessage::event(peer_id()?, 18, SyncEvent::Enable);
+    let message = SyncMessage::event(peer_id()?, 20, SyncEvent::Enable);
     let encoded = encode_authenticated(&message, &shared_secret())?;
 
     assert_eq!(
@@ -615,6 +673,25 @@ fn peer_hello_control() -> TransportControlFrame {
 
 fn compatibility_fingerprint() -> SyncCompatibilityFingerprint {
     SyncCompatibilityFingerprint::for_test([0x11; 32])
+}
+
+fn sync_position(
+    slot: usize,
+    active_elapsed: Duration,
+    last_satisfied: &[(&str, usize)],
+) -> SyncSchedulerPosition {
+    SyncSchedulerPosition {
+        slot,
+        active_elapsed,
+        last_satisfied_slots: last_satisfied_slots(last_satisfied),
+    }
+}
+
+fn last_satisfied_slots(slots: &[(&str, usize)]) -> BTreeMap<String, usize> {
+    slots
+        .iter()
+        .map(|(name, slot)| ((*name).to_owned(), *slot))
+        .collect()
 }
 
 fn fingerprint_for(config: &Config) -> Result<SyncCompatibilityFingerprint, SyncProtocolError> {

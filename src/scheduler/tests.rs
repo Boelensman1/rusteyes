@@ -292,6 +292,56 @@ fn manual_break_resets_active_accumulation_without_advancing_slots() {
 }
 
 #[test]
+fn manual_break_satisfies_its_own_cadence() {
+    let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20), ("long", 2, 300)]));
+
+    let first = started_break(scheduler.advance_active(Duration::from_secs(10)));
+    assert_eq!(first.origin, BreakOrigin::Scheduled { slot: 1 });
+    assert!(scheduler.finish_break());
+
+    let manual = started_break(scheduler.start_manual_break("long"));
+    assert_eq!(manual.origin, BreakOrigin::Manual);
+    assert!(scheduler.finish_break());
+
+    let next = started_break(scheduler.advance_active(Duration::from_secs(10)));
+    assert_eq!(next.name, "short");
+    assert_eq!(next.origin, BreakOrigin::Scheduled { slot: 2 });
+    assert!(scheduler.finish_break());
+
+    let delayed_long = started_break(scheduler.advance_active(Duration::from_secs(10)));
+    assert_eq!(delayed_long.name, "long");
+    assert_eq!(delayed_long.origin, BreakOrigin::Scheduled { slot: 3 });
+}
+
+#[test]
+fn manual_break_does_not_satisfy_less_frequent_breaks() {
+    let mut scheduler = scheduler(custom_breaks(
+        10,
+        &[("short", 1, 20), ("long", 2, 300), ("very-long", 4, 600)],
+    ));
+
+    for expected_slot in 1..=3 {
+        let scheduled_break = started_break(scheduler.advance_active(Duration::from_secs(10)));
+        assert_eq!(
+            scheduled_break.origin,
+            BreakOrigin::Scheduled {
+                slot: expected_slot
+            }
+        );
+        assert!(scheduler.finish_break());
+    }
+
+    let manual = started_break(scheduler.start_manual_break("long"));
+    assert_eq!(manual.name, "long");
+    assert_eq!(manual.origin, BreakOrigin::Manual);
+    assert!(scheduler.finish_break());
+
+    let next = started_break(scheduler.advance_active(Duration::from_secs(10)));
+    assert_eq!(next.name, "very-long");
+    assert_eq!(next.origin, BreakOrigin::Scheduled { slot: 4 });
+}
+
+#[test]
 fn upcoming_scheduled_break_reports_remaining_active_time() {
     let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20), ("long", 2, 300)]));
 
@@ -448,25 +498,21 @@ fn synced_position_advances_slot_without_rewinding() {
     assert!(scheduler.merge_synced_position(SchedulerPosition {
         slot: 2,
         active_elapsed: Duration::from_secs(3),
+        last_satisfied_slots: satisfied_slots(&[("short", 1), ("long", 2)]),
     }));
     assert_eq!(
         scheduler.position(),
-        SchedulerPosition {
-            slot: 2,
-            active_elapsed: Duration::from_secs(3),
-        }
+        position(2, Duration::from_secs(3), &[("short", 1), ("long", 2)])
     );
 
     assert!(!scheduler.merge_synced_position(SchedulerPosition {
         slot: 1,
         active_elapsed: Duration::from_secs(9),
+        last_satisfied_slots: satisfied_slots(&[("short", 1), ("long", 0)]),
     }));
     assert_eq!(
         scheduler.position(),
-        SchedulerPosition {
-            slot: 2,
-            active_elapsed: Duration::from_secs(3),
-        }
+        position(2, Duration::from_secs(3), &[("short", 1), ("long", 2)])
     );
 }
 
@@ -477,12 +523,35 @@ fn synced_position_same_slot_keeps_greater_active_elapsed() {
     assert!(scheduler.merge_synced_position(SchedulerPosition {
         slot: 0,
         active_elapsed: Duration::from_secs(4),
+        last_satisfied_slots: satisfied_slots(&[("short", 0)]),
     }));
     assert!(!scheduler.merge_synced_position(SchedulerPosition {
         slot: 0,
         active_elapsed: Duration::from_secs(2),
+        last_satisfied_slots: satisfied_slots(&[("short", 0)]),
     }));
     assert_eq!(scheduler.active_elapsed(), Duration::from_secs(4));
+}
+
+#[test]
+fn synced_position_merges_satisfied_slots_without_rewinding_active_position() {
+    let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20), ("long", 2, 300)]));
+
+    assert!(scheduler.merge_synced_position(position(
+        2,
+        Duration::from_secs(3),
+        &[("short", 1), ("long", 0)],
+    )));
+    assert!(scheduler.merge_synced_position(position(
+        1,
+        Duration::ZERO,
+        &[("short", 1), ("long", 1)],
+    )));
+
+    assert_eq!(
+        scheduler.position(),
+        position(2, Duration::from_secs(3), &[("short", 1), ("long", 1)])
+    );
 }
 
 #[test]
@@ -628,6 +697,21 @@ fn upcoming_break(action: Option<UpcomingScheduledBreak>) -> UpcomingScheduledBr
         Some(upcoming_break) => upcoming_break,
         None => panic!("expected upcoming break"),
     }
+}
+
+fn position(slot: usize, active_elapsed: Duration, slots: &[(&str, usize)]) -> SchedulerPosition {
+    SchedulerPosition {
+        slot,
+        active_elapsed,
+        last_satisfied_slots: satisfied_slots(slots),
+    }
+}
+
+fn satisfied_slots(slots: &[(&str, usize)]) -> BTreeMap<String, usize> {
+    slots
+        .iter()
+        .map(|(name, slot)| ((*name).to_owned(), *slot))
+        .collect()
 }
 
 fn custom_breaks(after_active_secs: u64, types: &[(&str, usize, u64)]) -> Breaks {

@@ -7,6 +7,7 @@ use crate::scheduler::{
 };
 use crate::sync_protocol::{
     PeerId, SyncActiveBreak, SyncBreakOrigin, SyncCompatibilityFingerprint, SyncEvent,
+    SyncSchedulerPosition,
 };
 use crate::sync_transport::{
     PeerRejectionReason, SyncTransport, SyncTransportError, SyncTransportEvent,
@@ -17,7 +18,7 @@ use crate::ui::{
 #[cfg(target_os = "linux")]
 use crate::x11_activity::X11ActivityBackend;
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -136,6 +137,15 @@ enum DisableMode {
 enum SyncPropagation {
     Broadcast,
     Suppress,
+}
+
+struct SyncedBreakStart {
+    name: String,
+    message: String,
+    started_at_ms: u64,
+    origin: SyncBreakOrigin,
+    position: SyncSchedulerPosition,
+    lock_after: Option<bool>,
 }
 
 impl SyncPropagation {
@@ -340,13 +350,25 @@ impl<'a> DaemonRuntime<'a> {
                 message,
                 started_at_ms,
                 origin,
+                position,
             } => {
                 trace!(peer_id = %peer_id, break_name = %name, "applying synced break start");
-                self.apply_synced_break_start(peer_id, &name, message, started_at_ms, origin, None)
+                self.apply_synced_break_start(
+                    peer_id,
+                    SyncedBreakStart {
+                        name,
+                        message,
+                        started_at_ms,
+                        origin,
+                        position,
+                        lock_after: None,
+                    },
+                )
             }
             SyncEvent::SchedulerState {
                 slot,
                 active_elapsed,
+                last_satisfied_slots,
                 active_break,
             } => {
                 trace!(
@@ -355,7 +377,13 @@ impl<'a> DaemonRuntime<'a> {
                     ?active_elapsed,
                     "applying synced scheduler state"
                 );
-                self.apply_synced_scheduler_state(peer_id, slot, active_elapsed, active_break)
+                self.apply_synced_scheduler_state(
+                    peer_id,
+                    slot,
+                    active_elapsed,
+                    last_satisfied_slots,
+                    active_break,
+                )
             }
             SyncEvent::SchedulerReset => {
                 trace!(peer_id = %peer_id, "applying synced scheduler reset");
@@ -430,11 +458,13 @@ impl<'a> DaemonRuntime<'a> {
         let SchedulerPosition {
             slot,
             active_elapsed,
+            last_satisfied_slots,
         } = self.scheduler.position();
 
         SyncEvent::SchedulerState {
             slot,
             active_elapsed,
+            last_satisfied_slots,
             active_break: self
                 .current_break
                 .as_ref()
@@ -531,10 +561,12 @@ impl<'a> DaemonRuntime<'a> {
         message: String,
         started_at_ms: u64,
         lock_after: Option<bool>,
+        position: SchedulerPosition,
     ) -> bool {
         let Some(mut scheduled_break) = self.scheduler.start_synced_break(name, origin) else {
             return true;
         };
+        self.scheduler.merge_synced_position(position);
 
         scheduled_break.message = message;
         if let Some(lock_after) = lock_after {
@@ -573,6 +605,7 @@ impl<'a> DaemonRuntime<'a> {
         let name = scheduled_break.name.clone();
         let message = scheduled_break.message.clone();
         let origin = sync_origin_from_break(&scheduled_break.origin);
+        let position = sync_position_from_scheduler(self.scheduler.position());
         self.clear_pre_break_notice();
         self.current_break = Some(CurrentBreakState::for_break(&state_break, started_at_ms));
 
@@ -584,6 +617,7 @@ impl<'a> DaemonRuntime<'a> {
                     message,
                     started_at_ms,
                     origin,
+                    position,
                 },
             );
             true
@@ -599,29 +633,41 @@ impl<'a> DaemonRuntime<'a> {
         duration.saturating_sub(elapsed)
     }
 
-    /// Applies a break start received from a peer. Scheduled origins advance the
-    /// local slot counter; manual origins keep the counter neutral. If a break
-    /// is already showing, newer scheduled slots replace older scheduled slots,
-    /// while same-slot/manual collisions keep the existing timestamp ordering.
-    fn apply_synced_break_start(
-        &mut self,
-        peer_id: PeerId,
-        name: &str,
-        message: String,
-        started_at_ms: u64,
-        origin: SyncBreakOrigin,
-        lock_after: Option<bool>,
-    ) -> bool {
+    /// Applies a break start received from a peer. The peer's scheduler
+    /// position carries any cadence resets caused by the break start. If a
+    /// break is already showing, newer scheduled slots replace older scheduled
+    /// slots, while same-slot/manual collisions keep the existing timestamp
+    /// ordering.
+    fn apply_synced_break_start(&mut self, peer_id: PeerId, start: SyncedBreakStart) -> bool {
+        let SyncedBreakStart {
+            name,
+            message,
+            started_at_ms,
+            origin,
+            position,
+            lock_after,
+        } = start;
         let Some(origin) = break_origin_from_sync(origin) else {
             return true;
         };
+        if !self.scheduler.has_break(&name) {
+            return true;
+        }
+        let position = scheduler_position_from_sync(position);
 
         let Some(current) = self.current_break.clone() else {
-            return self.start_synced_break(name, origin, message, started_at_ms, lock_after);
+            return self.start_synced_break(
+                &name,
+                origin,
+                message,
+                started_at_ms,
+                lock_after,
+                position,
+            );
         };
 
         if self.synced_break_replaces_current(&current, peer_id, origin, started_at_ms) {
-            let Some(mut scheduled_break) = self.scheduler.replacement_synced_break(name, origin)
+            let Some(mut scheduled_break) = self.scheduler.replacement_synced_break(&name, origin)
             else {
                 return true;
             };
@@ -631,8 +677,12 @@ impl<'a> DaemonRuntime<'a> {
             } else if current.lock_after() {
                 scheduled_break.autolock = true;
             }
+            self.scheduler.merge_synced_position(position);
             self.replace_current_break(&scheduled_break, started_at_ms)
         } else {
+            if self.scheduler.merge_synced_position(position) {
+                self.update_status_display();
+            }
             true
         }
     }
@@ -688,25 +738,35 @@ impl<'a> DaemonRuntime<'a> {
         peer_id: PeerId,
         slot: usize,
         active_elapsed: Duration,
+        last_satisfied_slots: BTreeMap<String, usize>,
         active_break: Option<SyncActiveBreak>,
     ) -> bool {
+        let position = SyncSchedulerPosition {
+            slot,
+            active_elapsed,
+            last_satisfied_slots,
+        };
+
         if let Some(active_break) = active_break
             && !self.apply_synced_break_start(
                 peer_id,
-                &active_break.name,
-                active_break.message,
-                active_break.started_at_ms,
-                active_break.origin,
-                Some(active_break.lock_after),
+                SyncedBreakStart {
+                    name: active_break.name,
+                    message: active_break.message,
+                    started_at_ms: active_break.started_at_ms,
+                    origin: active_break.origin,
+                    position: position.clone(),
+                    lock_after: Some(active_break.lock_after),
+                },
             )
         {
             return false;
         }
 
-        if self.scheduler.merge_synced_position(SchedulerPosition {
-            slot,
-            active_elapsed,
-        }) {
+        if self
+            .scheduler
+            .merge_synced_position(scheduler_position_from_sync(position))
+        {
             self.update_status_display();
         }
 
@@ -963,6 +1023,22 @@ fn break_origin_from_sync(origin: SyncBreakOrigin) -> Option<BreakOrigin> {
         SyncBreakOrigin::Manual => Some(BreakOrigin::Manual),
         SyncBreakOrigin::Scheduled { slot } if slot > 0 => Some(BreakOrigin::Scheduled { slot }),
         SyncBreakOrigin::Scheduled { .. } => None,
+    }
+}
+
+fn sync_position_from_scheduler(position: SchedulerPosition) -> SyncSchedulerPosition {
+    SyncSchedulerPosition {
+        slot: position.slot,
+        active_elapsed: position.active_elapsed,
+        last_satisfied_slots: position.last_satisfied_slots,
+    }
+}
+
+fn scheduler_position_from_sync(position: SyncSchedulerPosition) -> SchedulerPosition {
+    SchedulerPosition {
+        slot: position.slot,
+        active_elapsed: position.active_elapsed,
+        last_satisfied_slots: position.last_satisfied_slots,
     }
 }
 

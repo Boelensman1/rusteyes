@@ -9,15 +9,16 @@ connects during an active break join the remaining break immediately.
 
 - Bumped the sync protocol to version 4. Backward compatibility is intentionally
   out of scope because this is a single-user deployment.
-- `BreakStarted` now carries its origin: manual breaks stay counter-neutral, and
-  scheduled breaks carry their slot so receivers can advance their scheduler.
+- `BreakStarted` now carries its origin. Later
+  `manual-break-cadence-reset` added a scheduler position snapshot so manual
+  break cadence resets converge across peers.
 - Added a directed `SchedulerState` sync event sent to each newly authenticated
   peer. It carries the current slot, active elapsed time, and optional active
   break metadata.
-- Scheduler state only moves forward:
-  - lower remote slots are ignored;
-  - higher remote slots replace local slot and active elapsed;
-  - equal slots keep the greater active elapsed.
+- Scheduler state only moves forward: lower remote slots do not rewind the
+  global slot, higher remote slots replace local slot and active elapsed, equal
+  slots keep the greater active elapsed, and later per-break satisfied slots are
+  merged by maximum value.
 - Active break snapshots include name, message, origin, start timestamp, and the
   effective lock-after state. Receivers compute remaining time from their local
   clock and the peer timestamp.
@@ -34,7 +35,8 @@ connects during an active break join the remaining break immediately.
 - Runtime stores active break metadata in `CurrentBreakState` so snapshots can
   describe the visible break.
 - Synced scheduled break starts use a scheduler path that validates the named
-  break is due at the supplied slot before adopting it.
+  break and adopts the supplied slot. Later per-break cadence state is carried
+  by the synced scheduler position.
 - Joining a mid-break snapshot starts the backend with only the remaining
   duration while preserving the original start timestamp in runtime state.
 - Live break replacement now carries the effective lock-after state alongside
@@ -47,7 +49,7 @@ connects during an active break join the remaining break immediately.
 - Protocol tests cover version 4 wire shape, break origin, scheduler snapshots,
   and invalid scheduled slot validation.
 - Runtime tests cover directed state send on peer auth, counter catch-up,
-  scheduled break counter advancement, manual break counter neutrality,
+  scheduled break counter advancement, manual break cadence reset sync,
   mid-break join, and expired snapshot handling.
 
 ## Commands

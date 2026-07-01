@@ -7,7 +7,7 @@ use std::fmt;
 use std::str::FromStr;
 use std::time::Duration;
 
-const PROTOCOL_VERSION: u8 = 5;
+const PROTOCOL_VERSION: u8 = 6;
 const PEER_ID_BYTES: usize = 16;
 const MAC_BYTES: usize = 32;
 const COMPATIBILITY_FINGERPRINT_DOMAIN: &[u8] = b"rusteyes-sync-config-compatibility-v1";
@@ -259,11 +259,14 @@ pub(crate) enum SyncEvent {
         #[serde(rename = "startedAtMs")]
         started_at_ms: u64,
         origin: SyncBreakOrigin,
+        position: SyncSchedulerPosition,
     },
     SchedulerState {
         slot: usize,
         #[serde(rename = "activeElapsedMs", with = "duration_millis")]
         active_elapsed: Duration,
+        #[serde(rename = "lastSatisfiedSlots")]
+        last_satisfied_slots: BTreeMap<String, usize>,
         #[serde(rename = "activeBreak")]
         active_break: Option<SyncActiveBreak>,
     },
@@ -295,13 +298,23 @@ impl SyncEvent {
                 origin: SyncBreakOrigin::Scheduled { slot: 0 },
                 ..
             } => Err(SyncProtocolError::InvalidBreakSlot { slot: 0 }),
+            Self::BreakStarted { position, .. } => position.validate(),
             Self::SchedulerState {
+                slot,
+                last_satisfied_slots,
                 active_break: Some(active_break),
                 ..
-            } => active_break.validate(),
+            } => {
+                validate_last_satisfied_slots(*slot, last_satisfied_slots)?;
+                active_break.validate()
+            }
+            Self::SchedulerState {
+                slot,
+                last_satisfied_slots,
+                active_break: None,
+                ..
+            } => validate_last_satisfied_slots(*slot, last_satisfied_slots),
             Self::ActiveTimeElapsed { .. }
-            | Self::BreakStarted { .. }
-            | Self::SchedulerState { .. }
             | Self::SchedulerReset
             | Self::DisableFor { .. }
             | Self::DisableUntilRestart
@@ -309,6 +322,43 @@ impl SyncEvent {
             | Self::LockAfterCurrentBreak => Ok(()),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SyncSchedulerPosition {
+    pub(crate) slot: usize,
+    #[serde(rename = "activeElapsedMs", with = "duration_millis")]
+    pub(crate) active_elapsed: Duration,
+    #[serde(rename = "lastSatisfiedSlots")]
+    pub(crate) last_satisfied_slots: BTreeMap<String, usize>,
+}
+
+impl SyncSchedulerPosition {
+    fn validate(&self) -> Result<(), SyncProtocolError> {
+        validate_last_satisfied_slots(self.slot, &self.last_satisfied_slots)
+    }
+}
+
+fn validate_last_satisfied_slots(
+    slot: usize,
+    last_satisfied_slots: &BTreeMap<String, usize>,
+) -> Result<(), SyncProtocolError> {
+    for (name, last_satisfied_slot) in last_satisfied_slots {
+        if name.trim() != name || name.is_empty() {
+            return Err(SyncProtocolError::InvalidBreakName { name: name.clone() });
+        }
+
+        if *last_satisfied_slot > slot {
+            return Err(SyncProtocolError::InvalidSatisfiedSlot {
+                name: name.clone(),
+                slot,
+                last_satisfied_slot: *last_satisfied_slot,
+            });
+        }
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -506,6 +556,11 @@ pub(crate) enum SyncProtocolError {
     InvalidBreakSlot {
         slot: usize,
     },
+    InvalidSatisfiedSlot {
+        name: String,
+        slot: usize,
+        last_satisfied_slot: usize,
+    },
     InvalidHelloSequence {
         sequence: u64,
     },
@@ -553,6 +608,14 @@ impl fmt::Display for SyncProtocolError {
                     "sync scheduled break slot must be greater than zero, got {slot}"
                 )
             }
+            Self::InvalidSatisfiedSlot {
+                name,
+                slot,
+                last_satisfied_slot,
+            } => write!(
+                formatter,
+                "sync break {name:?} last satisfied slot {last_satisfied_slot} must not exceed scheduler slot {slot}"
+            ),
             Self::InvalidHelloSequence { sequence } => write!(
                 formatter,
                 "sync peer hello sequence must be 0, got {sequence}"

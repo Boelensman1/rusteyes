@@ -13,8 +13,9 @@
   manual breaks without giving manual breaks a fake slot.
 - Scheduler can start a configured manual break by name from active or disabled
   state.
-- Manual break starts reset accumulated active time but do not advance scheduled
-  slot progression.
+- Manual break starts reset accumulated active time. Later
+  `manual-break-cadence-reset` made manual starts also satisfy the selected
+  break type's cadence, plus more frequent break types, at the current slot.
 - Manual breaks started while disabled return to disabled scheduling after they
   finish, unless the disable period expires during the break.
 - Runtime starts manual breaks through the existing `StartBreak` command and
