@@ -597,7 +597,10 @@ mod app {
     fn status_menu_text(status: &StatusDisplay) -> String {
         match status {
             StatusDisplay::Active(active_time) => {
-                format!("Active time: {}", humantime::format_duration(*active_time))
+                format!(
+                    "Active time: {}",
+                    humantime::format_duration(Duration::from_secs(active_time.as_secs()))
+                )
             }
             StatusDisplay::DisabledFor(remaining) => {
                 format!("Disabled for {}", humantime::format_duration(*remaining))
@@ -714,6 +717,18 @@ mod app {
             assert_eq!(
                 status_menu_text(&StatusDisplay::DisabledUntilRestart),
                 "Permanently disabled"
+            );
+        }
+
+        #[test]
+        fn active_status_menu_text_floors_to_whole_seconds() {
+            assert_eq!(
+                status_menu_text(&StatusDisplay::Active(Duration::from_nanos(999_999_999))),
+                "Active time: 0s"
+            );
+            assert_eq!(
+                status_menu_text(&StatusDisplay::Active(Duration::from_millis(8_391))),
+                "Active time: 8s"
             );
         }
 

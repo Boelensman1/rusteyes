@@ -36,6 +36,9 @@
   `include_bytes!`; the source PNG is kept under `package/icons`.
 - The macOS app icon is checked in as `package/macos/RustEyes.icns` and copied
   into the local app bundle by `make macos-app-build`.
+- Follow-up refinement: floor the active-time status row to whole seconds
+  before formatting it so fractional `Duration` values do not expose
+  millisecond, microsecond, or nanosecond units in the tray/menu-bar dropdown.
 
 ## Behavior
 
@@ -59,6 +62,8 @@
   instead of the temporary generated placeholder.
 - The macOS app bundle declares `CFBundleIconFile` so Launch Services can use
   the RustEyes app icon.
+- The active-time row is displayed at whole-second precision while the runtime
+  and scheduler keep their precise accumulated duration internally.
 
 ## Commands
 
