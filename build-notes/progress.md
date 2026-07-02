@@ -522,6 +522,8 @@
 - `make check` passes after adding pre-break notification countdown updates.
 - `make check` (275 tests) passes after adding a sound to the first pre-break
   notification.
+- `make check` passes after rounding pre-break notification countdown text to
+  whole seconds.
 - `make check` passes after adding idle activity grace and capped synced
   active-time accumulation.
 - `make check` passes after removing stale dead-code allowances.

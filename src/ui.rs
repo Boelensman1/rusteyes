@@ -572,9 +572,19 @@ mod app {
             body: format!(
                 "{} break starts in {}.",
                 notification.break_name,
-                humantime::format_duration(notification.starts_after)
+                countdown_duration_text(notification.starts_after)
             ),
         }
+    }
+
+    fn countdown_duration_text(duration: Duration) -> String {
+        let secs = if duration.subsec_nanos() == 0 {
+            duration.as_secs()
+        } else {
+            duration.as_secs().saturating_add(1)
+        };
+
+        humantime::format_duration(Duration::from_secs(secs)).to_string()
     }
 
     fn show_notification(notification: &UiNotification) -> Result<(), UiError> {
@@ -730,6 +740,28 @@ mod app {
                 status_menu_text(&StatusDisplay::Active(Duration::from_millis(8_391))),
                 "Active time: 8s"
             );
+        }
+
+        #[test]
+        fn pre_break_notification_text_renders_whole_second_countdown() {
+            assert_eq!(countdown_duration_text(Duration::ZERO), "0s");
+            assert_eq!(countdown_duration_text(Duration::from_secs(25)), "25s");
+            assert_eq!(countdown_duration_text(Duration::from_millis(1)), "1s");
+            assert_eq!(
+                countdown_duration_text(Duration::from_nanos(24_633_210_875)),
+                "25s"
+            );
+        }
+
+        #[test]
+        fn pre_break_notification_body_uses_whole_second_countdown() {
+            let notification = pre_break_ui_notification(&PreBreakNotification {
+                break_name: String::from("short"),
+                starts_after: Duration::from_nanos(24_633_210_875),
+            });
+
+            assert_eq!(notification.summary, "RustEyes break soon");
+            assert_eq!(notification.body, "short break starts in 25s.");
         }
 
         #[test]

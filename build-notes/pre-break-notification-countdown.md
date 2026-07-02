@@ -15,6 +15,9 @@
   testable.
 - Store the active pre-break `notify-rust` notification handle in the UI loop,
   update it in place for later countdown commands, and close it on clear.
+- Follow-up fix: render countdown notification durations at whole-second
+  precision in the UI, rounding fractional values up so desktop notifications
+  do not expose millisecond, microsecond, or nanosecond units.
 
 ## Behavior
 
@@ -23,6 +26,9 @@
   break starts.
 - Short active intervals keep the half-interval lead: a 10-second interval
   shows `5s`, and a 20-second interval shows `10s` and `5s`.
+- Fractional countdown commands keep precise runtime durations internally, but
+  notification text is human-sized; for example `24.633210875s` renders as
+  `25s`.
 - Generic desktop notifications are unchanged.
 - The first appearance of the pre-break notification plays a sound so the
   upcoming break is noticeable without looking at the screen. The 5-second
@@ -50,5 +56,7 @@
 - `cargo test pre_break_notification --lib`
 - `make check`
 - `make -B macos-app-build`
+- `make check` passes after rounding countdown notification text to whole
+  seconds.
 - Checks were skipped when amending the countdown cadence from 10 seconds to 5
   seconds at user request.
