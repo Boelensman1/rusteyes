@@ -29,8 +29,10 @@ let tray_icon = builder.build()...;
 ## Decisions / tradeoffs
 
 - A macOS template image ignores the icon's RGB and masks by its alpha
-  silhouette, so the existing embedded asset (`package/icons/rusteyes-tray.rgba`,
-  64x64) is reused unchanged — no new icon was generated.
+  silhouette, so the embedded asset (`package/icons/rusteyes-tray.rgba`,
+  64x64) stays shared with the Linux tray path. Later asset refresh regenerated
+  that RGBA file from the updated source logo without changing the template
+  rendering behavior.
 - Scope is macOS only. `with_icon_as_template` is a no-op on the Linux/gtk
   backend (the attribute is stored but unused), and we gate it anyway so the
   Linux system tray keeps the full-colour gear (a forced-white icon could be

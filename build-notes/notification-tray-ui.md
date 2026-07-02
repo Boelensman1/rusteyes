@@ -36,6 +36,11 @@
   `include_bytes!`; the source PNG is kept under `package/icons`.
 - The macOS app icon is checked in as `package/macos/RustEyes.icns` and copied
   into the local app bundle by `make macos-app-build`.
+- Follow-up asset refresh: `package/icons/rusteyes.png` was replaced with an
+  updated logo, and the derived tray PNG, embedded raw RGBA bytes, and macOS
+  app ICNS were regenerated from it. The tray assets remove the light source
+  background so the menu-bar/tray icon remains transparent; the app icon keeps
+  the opaque source-logo background.
 - Follow-up refinement: floor the active-time status row to whole seconds
   before formatting it so fractional `Duration` values do not expose
   millisecond, microsecond, or nanosecond units in the tray/menu-bar dropdown.
@@ -62,6 +67,9 @@
   instead of the temporary generated placeholder.
 - The macOS app bundle declares `CFBundleIconFile` so Launch Services can use
   the RustEyes app icon.
+- The checked-in tray PNG is 64x64 RGBA, the embedded `.rgba` file is 16,384
+  bytes, and the checked-in ICNS extracts to 16, 32, 48, 128, 256, 512, and
+  1024 pixel PNG entries.
 - The active-time row is displayed at whole-second precision while the runtime
   and scheduler keep their precise accumulated duration internally.
 
@@ -73,6 +81,9 @@
 - `timeout 3s make run` reached the bundled app path and stopped at the
   existing macOS privacy preflight because Accessibility/Input Monitoring are
   not granted in this environment.
+- `file package/macos/RustEyes.icns`
+- `iconutil -c iconset -o /tmp/RustEyes-regenerated-check.iconset
+  package/macos/RustEyes.icns`
 
 ## Follow-up
 

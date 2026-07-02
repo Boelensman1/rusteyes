@@ -228,7 +228,9 @@
   launches the app bundle from `make run` on macOS so notifications no longer
   trigger the `use_default` application lookup.
   Later follow-up refinement adds a logo-derived Linux/macOS tray icon and a
-  macOS app bundle icon copied into `RustEyes.app`.
+  macOS app bundle icon copied into `RustEyes.app`. Later asset refresh
+  regenerated the transparent tray PNG, embedded `rusteyes-tray.rgba`, and
+  macOS `RustEyes.icns` from the updated `package/icons/rusteyes.png`.
 - Completed `synced-lock-after-break`: local lock-after-current-break requests
   now broadcast authenticated sync events, inbound authenticated lock-after
   requests mark the active local break for locking without rebroadcasting, and
@@ -296,8 +298,8 @@
   NSImage template image via `TrayIconBuilder::with_icon_as_template(true)`
   (gated to `cfg(target_os = "macos")`), so the system tints the existing icon's
   alpha silhouette to match the menu bar (white on dark, black on light) instead
-  of showing the full-colour gear. The embedded `rusteyes-tray.rgba` asset is
-  reused unchanged (templates ignore RGB), and the Linux system tray keeps the
+  of showing the full-colour gear. The embedded `rusteyes-tray.rgba` asset
+  supplies the template silhouette, and the Linux system tray keeps the
   full-colour icon.
 - Completed `break-finished-beep`: finishing a break now plays a short beep to
   signal that work can resume. The X11 backend rings the X server bell via
@@ -586,6 +588,8 @@
 - `make check` passes after splitting active-time and break-count idle reset
   thresholds.
 - `make check` passes after adding manual break cadence resets.
+- `make check` passes after refreshing the logo-derived tray PNG, embedded RGBA
+  asset, and macOS app icon.
 - On unsupported targets, `make run` prints
   `rusteyes: no backend is available for <platform> yet` and exits non-zero.
 - Manual X11 overlay, input-blocking, overlay UI, and trace-output verification
