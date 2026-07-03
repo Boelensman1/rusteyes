@@ -362,9 +362,11 @@
   timed-disabled and `Permanently disabled` until restart — replacing the active
   time line, and a new always-present "Enable" item (greyed while enabled) routes
   through `RuntimeEvent::Enable` to re-enable and broadcast to peers. The single
-  status command became `UiCommand::UpdateStatus(StatusDisplay)`, with the
-  countdown driven off the existing 1s wall-clock tick. Manual tray verification
-  is pending like the other tray-UI steps.
+  status command became `UiCommand::UpdateStatus(StatusDisplay)`. Follow-up fix:
+  finite disables now use absolute wall-clock deadlines so time spent asleep
+  counts after wake, while status updates still render from the existing
+  wall-clock tick. Manual tray verification is pending like the other tray-UI
+  steps.
 - Completed `break-counter-sync`: sync protocol version 4 now carries break
   origins and directed scheduler snapshots so peers converge on the same
   scheduled slot counter. Scheduled inbound break starts advance the receiver's

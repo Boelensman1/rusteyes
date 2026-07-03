@@ -14,6 +14,8 @@ use crate::ui::{PreBreakNotification, RuntimeUi, StatusDisplay, UiCommand, UiNot
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::str::FromStr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -225,18 +227,26 @@ fn disable_clears_pending_backend_break_without_locking() {
 fn disable_clears_lock_after_current_break_request() {
     let mut config = test_config();
     _ = config.breaks.types.remove("long");
-    let (backend, commands) = ScriptedBackend::new([
-        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
-        RuntimeEvent::LockAfterCurrentBreak,
-        RuntimeEvent::Disable(DisableRequest::For(Duration::from_secs(30))),
-        RuntimeEvent::WallClockElapsed(Duration::from_secs(30)),
-        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
-        RuntimeEvent::BreakFinished,
-        RuntimeEvent::Shutdown,
-    ])
-    .into_parts();
+    let (backend, commands) = test_backend();
 
-    assert_eq!(run_config_with_backend(config, backend), Ok(()));
+    assert_eq!(
+        run_config_with_steps(
+            config,
+            backend,
+            [
+                backend_step(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+                backend_step(RuntimeEvent::LockAfterCurrentBreak),
+                backend_step(RuntimeEvent::Disable(DisableRequest::For(
+                    Duration::from_secs(30),
+                ))),
+                advance_clock(Duration::from_secs(30)),
+                backend_step(RuntimeEvent::WallClockElapsed(Duration::from_secs(30))),
+                backend_step(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+                backend_step(RuntimeEvent::BreakFinished),
+            ],
+        ),
+        Ok(())
+    );
     assert_eq!(
         received_commands(&commands),
         vec![
@@ -251,19 +261,55 @@ fn disable_clears_lock_after_current_break_request() {
 
 #[test]
 fn finite_disable_suppresses_active_time_and_reenables_after_elapsed() {
-    let (backend, commands) = ScriptedBackend::new([
-        RuntimeEvent::Disable(DisableRequest::For(Duration::from_secs(30))),
-        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(100)),
-        RuntimeEvent::WallClockElapsed(Duration::from_secs(29)),
-        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
-        RuntimeEvent::WallClockElapsed(Duration::from_secs(1)),
-        RuntimeEvent::WallClockElapsed(Duration::from_secs(10)),
-        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
-        RuntimeEvent::Shutdown,
-    ])
-    .into_parts();
+    let (backend, commands) = test_backend();
 
-    assert_eq!(run_config_with_backend(test_config(), backend), Ok(()));
+    assert_eq!(
+        run_config_with_steps(
+            test_config(),
+            backend,
+            [
+                backend_step(RuntimeEvent::Disable(DisableRequest::For(
+                    Duration::from_secs(30),
+                ))),
+                backend_step(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(100))),
+                advance_clock(Duration::from_secs(29)),
+                backend_step(RuntimeEvent::WallClockElapsed(Duration::from_secs(29))),
+                backend_step(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+                advance_clock(Duration::from_secs(1)),
+                backend_step(RuntimeEvent::WallClockElapsed(Duration::from_secs(1))),
+                backend_step(RuntimeEvent::WallClockElapsed(Duration::from_secs(10))),
+                backend_step(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+            ],
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+    );
+}
+
+#[test]
+fn finite_disable_expires_after_sleep_even_with_small_wake_tick() {
+    let (backend, commands) = test_backend();
+
+    assert_eq!(
+        run_config_with_steps(
+            test_config(),
+            backend,
+            [
+                backend_step(RuntimeEvent::Disable(DisableRequest::For(
+                    Duration::from_mins(30),
+                ))),
+                backend_step(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(100))),
+                advance_clock(Duration::from_mins(31)),
+                backend_step(RuntimeEvent::WallClockElapsed(Duration::from_secs(1))),
+                backend_step(RuntimeEvent::WallClockElapsed(Duration::from_secs(10))),
+                backend_step(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+            ],
+        ),
+        Ok(())
+    );
     assert_eq!(
         received_commands(&commands),
         vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
@@ -331,17 +377,25 @@ fn manual_break_event_works_while_disabled_and_preserves_disable() {
 
 #[test]
 fn timed_disable_can_expire_during_manual_break() {
-    let (backend, commands) = ScriptedBackend::new([
-        RuntimeEvent::Disable(DisableRequest::For(Duration::from_secs(30))),
-        RuntimeEvent::StartManualBreak(String::from("short")),
-        RuntimeEvent::WallClockElapsed(Duration::from_secs(30)),
-        RuntimeEvent::BreakFinished,
-        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
-        RuntimeEvent::Shutdown,
-    ])
-    .into_parts();
+    let (backend, commands) = test_backend();
 
-    assert_eq!(run_config_with_backend(test_config(), backend), Ok(()));
+    assert_eq!(
+        run_config_with_steps(
+            test_config(),
+            backend,
+            [
+                backend_step(RuntimeEvent::Disable(DisableRequest::For(
+                    Duration::from_secs(30),
+                ))),
+                backend_step(RuntimeEvent::StartManualBreak(String::from("short"))),
+                advance_clock(Duration::from_secs(30)),
+                backend_step(RuntimeEvent::WallClockElapsed(Duration::from_secs(30))),
+                backend_step(RuntimeEvent::BreakFinished),
+                backend_step(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+            ],
+        ),
+        Ok(())
+    );
     assert_eq!(
         received_commands(&commands),
         vec![
@@ -570,6 +624,36 @@ fn local_disable_events_are_broadcast_to_sync_peers() {
             },
             SyncEvent::DisableUntilRestart,
         ]
+    );
+}
+
+#[test]
+fn automatic_timed_disable_expiry_is_not_broadcast_to_sync_peers() {
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = test_backend();
+
+    assert_eq!(
+        run_config_with_steps_and_sync_broadcaster_and_ui(
+            test_config(),
+            backend,
+            &sync_broadcaster,
+            RuntimeUi::inactive(),
+            [
+                backend_step(RuntimeEvent::Disable(DisableRequest::For(
+                    Duration::from_secs(30),
+                ))),
+                advance_clock(Duration::from_secs(30)),
+                backend_step(RuntimeEvent::WallClockElapsed(Duration::from_secs(1))),
+            ],
+        ),
+        Ok(())
+    );
+    assert!(received_commands(&commands).is_empty());
+    assert_eq!(
+        sync_broadcaster.events(),
+        vec![SyncEvent::DisableFor {
+            duration: Duration::from_secs(30),
+        }]
     );
 }
 
@@ -1858,17 +1942,20 @@ fn timed_disable_shows_countdown_status_until_reenabled() -> Result<(), Box<dyn 
     let (backend, _commands) = test_backend();
     let (ui, ui_commands) = recording_ui();
 
-    run_config_with_inputs_and_ui(
+    run_config_with_steps_and_ui(
         test_config(),
         backend,
         ui,
         [
-            backend_input(RuntimeEvent::Disable(DisableRequest::For(
+            backend_step(RuntimeEvent::Disable(DisableRequest::For(
                 Duration::from_secs(3),
             ))),
-            backend_input(RuntimeEvent::WallClockElapsed(Duration::from_secs(1))),
-            backend_input(RuntimeEvent::WallClockElapsed(Duration::from_secs(1))),
-            backend_input(RuntimeEvent::WallClockElapsed(Duration::from_secs(1))),
+            advance_clock(Duration::from_secs(1)),
+            backend_step(RuntimeEvent::WallClockElapsed(Duration::from_secs(1))),
+            advance_clock(Duration::from_secs(1)),
+            backend_step(RuntimeEvent::WallClockElapsed(Duration::from_secs(1))),
+            advance_clock(Duration::from_secs(1)),
+            backend_step(RuntimeEvent::WallClockElapsed(Duration::from_secs(1))),
         ],
     )?;
 
@@ -2092,6 +2179,93 @@ fn run_config_with_inputs_sync_broadcaster_ui_and_local_peer(
     }
 
     Ok(())
+}
+
+fn run_config_with_steps_and_sync_broadcaster_and_ui(
+    config: Config,
+    backend: BackendActor,
+    sync_broadcaster: &dyn SyncEventBroadcaster,
+    ui: RuntimeUi,
+    steps: impl IntoIterator<Item = TestRuntimeStep>,
+) -> Result<(), ConfigError> {
+    let schedule = BreakSchedule::try_from(config.breaks)?;
+    let sync_runtime = RuntimeSync::new(None, None, sync_broadcaster);
+    let now_ms = Arc::new(AtomicU64::new(TEST_NOW_MS));
+    let mut daemon = DaemonRuntime::new(
+        schedule,
+        backend,
+        sync_runtime,
+        ui,
+        Clock::Shared(Arc::clone(&now_ms)),
+    );
+
+    for step in steps {
+        match step {
+            TestRuntimeStep::Input(input) => {
+                if !daemon.handle_input(input) {
+                    break;
+                }
+            }
+            TestRuntimeStep::AdvanceClock(duration) => {
+                advance_test_clock(&now_ms, duration);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn run_config_with_steps(
+    config: Config,
+    backend: BackendActor,
+    steps: impl IntoIterator<Item = TestRuntimeStep>,
+) -> Result<(), ConfigError> {
+    run_config_with_steps_and_sync_broadcaster_and_ui(
+        config,
+        backend,
+        &NOOP_SYNC_BROADCASTER_FOR_TEST,
+        RuntimeUi::inactive(),
+        steps,
+    )
+}
+
+fn run_config_with_steps_and_ui(
+    config: Config,
+    backend: BackendActor,
+    ui: RuntimeUi,
+    steps: impl IntoIterator<Item = TestRuntimeStep>,
+) -> Result<(), ConfigError> {
+    run_config_with_steps_and_sync_broadcaster_and_ui(
+        config,
+        backend,
+        &NOOP_SYNC_BROADCASTER_FOR_TEST,
+        ui,
+        steps,
+    )
+}
+
+enum TestRuntimeStep {
+    Input(RuntimeInput),
+    AdvanceClock(Duration),
+}
+
+fn step_input(event: RuntimeInput) -> TestRuntimeStep {
+    TestRuntimeStep::Input(event)
+}
+
+fn backend_step(event: RuntimeEvent) -> TestRuntimeStep {
+    step_input(backend_input(event))
+}
+
+fn advance_clock(duration: Duration) -> TestRuntimeStep {
+    TestRuntimeStep::AdvanceClock(duration)
+}
+
+fn advance_test_clock(now_ms: &AtomicU64, duration: Duration) {
+    let delta_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+    let now = now_ms.load(Ordering::Relaxed);
+
+    now_ms.store(now.saturating_add(delta_ms), Ordering::Relaxed);
 }
 
 struct ScriptedBackend {

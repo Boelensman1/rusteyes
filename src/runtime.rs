@@ -19,6 +19,10 @@ use crate::ui::{
 use crate::x11_activity::X11ActivityBackend;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -129,7 +133,7 @@ fn run_with_event_sources(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DisableMode {
     Enabled,
-    Timed(Duration),
+    Timed { ends_at_ms: u64 },
     UntilRestart,
 }
 
@@ -161,6 +165,8 @@ enum Clock {
     System,
     #[cfg(test)]
     Fixed(u64),
+    #[cfg(test)]
+    Shared(Arc<AtomicU64>),
 }
 
 impl Clock {
@@ -173,8 +179,14 @@ impl Clock {
                 .unwrap_or(0),
             #[cfg(test)]
             Self::Fixed(millis) => *millis,
+            #[cfg(test)]
+            Self::Shared(millis) => millis.load(AtomicOrdering::Relaxed),
         }
     }
+}
+
+fn duration_millis_u64(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 struct DaemonRuntime<'a> {
@@ -828,14 +840,10 @@ impl<'a> DaemonRuntime<'a> {
     fn advance_wall_clock(&mut self, elapsed: Duration) -> bool {
         self.combined_activity.advance_wall_clock(elapsed);
 
-        match self.disable_mode {
-            DisableMode::Timed(remaining) if elapsed >= remaining => {
-                self.enable(SyncPropagation::Suppress);
-            }
-            DisableMode::Timed(remaining) => {
-                self.disable_mode = DisableMode::Timed(remaining.saturating_sub(elapsed));
-            }
-            DisableMode::Enabled | DisableMode::UntilRestart => {}
+        if let DisableMode::Timed { ends_at_ms } = self.disable_mode
+            && self.clock.now_unix_millis() >= ends_at_ms
+        {
+            self.enable(SyncPropagation::Suppress);
         }
 
         self.update_status_display();
@@ -845,7 +853,11 @@ impl<'a> DaemonRuntime<'a> {
     fn disable_for(&mut self, duration: Duration, propagation: SyncPropagation) -> bool {
         // Set the mode before disabling the scheduler so the status line the
         // scheduler refresh emits reflects the new disabled countdown.
-        self.disable_mode = DisableMode::Timed(duration);
+        let ends_at_ms = self
+            .clock
+            .now_unix_millis()
+            .saturating_add(duration_millis_u64(duration));
+        self.disable_mode = DisableMode::Timed { ends_at_ms };
         if !self.disable_scheduler() {
             return false;
         }
@@ -969,7 +981,9 @@ impl<'a> DaemonRuntime<'a> {
     fn update_status_display(&mut self) {
         let status = match self.disable_mode {
             DisableMode::Enabled => StatusDisplay::Active(self.scheduler.active_elapsed()),
-            DisableMode::Timed(remaining) => StatusDisplay::DisabledFor(remaining),
+            DisableMode::Timed { ends_at_ms } => {
+                StatusDisplay::DisabledFor(self.timed_disable_remaining(ends_at_ms))
+            }
             DisableMode::UntilRestart => StatusDisplay::DisabledUntilRestart,
         };
 
@@ -981,6 +995,12 @@ impl<'a> DaemonRuntime<'a> {
         if let Err(error) = self.ui.send_command(UiCommand::UpdateStatus(status)) {
             warn!(%error, "failed to send status UI update");
         }
+    }
+
+    fn timed_disable_remaining(&self, ends_at_ms: u64) -> Duration {
+        let remaining_ms = ends_at_ms.saturating_sub(self.clock.now_unix_millis());
+
+        Duration::from_millis(remaining_ms)
     }
 
     fn notify_peer_rejected(&mut self, peer_id: PeerId, reason: PeerRejectionReason) {

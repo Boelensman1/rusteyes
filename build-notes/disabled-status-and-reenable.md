@@ -27,6 +27,10 @@
 - Drive the countdown from the existing 1s `WallClockElapsed` tick by calling
   `update_status_display` at the end of `advance_wall_clock`; the
   `displayed_status` dedup keeps enabled ticks from spamming the channel.
+- Follow-up fix: timed disables now store an absolute Unix-millisecond deadline
+  instead of a remaining duration, so time spent asleep counts once the runtime
+  wakes and observes the current system clock. Automatic timed expiry still
+  suppresses a sync `Enable` broadcast.
 
 ## Behavior
 
@@ -36,6 +40,8 @@
   is clickable.
 - Clicking Enable (or a timed disable expiring, or a synced enable) returns the
   row to `Active time: …` and greys out the Enable item.
+- If the machine sleeps past a finite disable deadline, the next wall-clock tick
+  re-enables scheduling instead of leaving the original countdown frozen.
 
 ## Tests
 
@@ -47,10 +53,14 @@
   disable/enable status sequence (still no pre-break notification);
   new `timed_disable_shows_countdown_status_until_reenabled` asserts the
   per-second `DisabledFor` countdown and the auto re-enable to `Active(0)`.
+- Follow-up runtime tests cover sleep-style clock jumps with only a small wake
+  tick and verify automatic timed expiry is not rebroadcast to sync peers.
 
 ## Commands
 
-- `make check` passes (fmt-check, clippy `-D warnings`, 278 tests).
+- Follow-up sleep-counting fix: `make test` passes (315 tests).
+- Follow-up sleep-counting fix: `make check` passes (fmt-check, clippy
+  `-D warnings`, 315 tests).
 
 ## Follow-up
 
