@@ -602,6 +602,45 @@ fn local_manual_long_break_satisfies_long_cadence() {
 }
 
 #[test]
+fn local_short_manual_break_before_long_break_is_ignored_and_not_broadcast() {
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = ScriptedBackend::new([
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
+        RuntimeEvent::BreakFinished,
+        RuntimeEvent::StartManualBreak(String::from("short")),
+        RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
+        RuntimeEvent::Shutdown,
+    ])
+    .into_parts();
+
+    assert_eq!(
+        run_config_with_sync_broadcaster(test_config(), backend, &sync_broadcaster),
+        Ok(())
+    );
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::FinishBreak { lock_after: false },
+            BackendCommand::StartBreak(scheduled_break("long", 2, 300)),
+        ]
+    );
+    assert_eq!(
+        sync_broadcaster.events(),
+        vec![
+            SyncEvent::ActiveTimeElapsed {
+                elapsed: Duration::from_secs(10),
+            },
+            broadcast_scheduled_break("short", 1),
+            SyncEvent::ActiveTimeElapsed {
+                elapsed: Duration::from_secs(10),
+            },
+            broadcast_scheduled_break("long", 2),
+        ]
+    );
+}
+
+#[test]
 fn local_disable_events_are_broadcast_to_sync_peers() {
     let sync_broadcaster = RecordingSyncBroadcaster::default();
     let (backend, commands) = ScriptedBackend::new([
@@ -1891,11 +1930,58 @@ fn pre_break_notification_resets_after_break_finishes() -> Result<(), Box<dyn st
             }),
             UiCommand::ClearPreBreakNotification,
             UiCommand::UpdateStatus(StatusDisplay::Active(Duration::ZERO)),
+            UiCommand::UpdateManualBreakAvailability(manual_break_availability(&[
+                ("long", true),
+                ("short", false),
+            ])),
             UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(5))),
             UiCommand::ShowPreBreakNotification(PreBreakNotification {
                 break_name: String::from("long"),
                 starts_after: Duration::from_secs(5),
             }),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn manual_break_availability_updates_when_long_break_is_next()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+    let (ui, ui_commands) = recording_ui();
+
+    run_config_with_inputs_and_ui(
+        test_config(),
+        backend,
+        ui,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+            backend_input(RuntimeEvent::BreakFinished),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+            backend_input(RuntimeEvent::BreakFinished),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::FinishBreak { lock_after: false },
+            BackendCommand::StartBreak(scheduled_break("long", 2, 300)),
+            BackendCommand::FinishBreak { lock_after: true },
+        ]
+    );
+    assert_eq!(
+        received_ui_commands(&ui_commands),
+        vec![
+            UiCommand::UpdateManualBreakAvailability(manual_break_availability(&[
+                ("long", true),
+                ("short", false),
+            ])),
+            UiCommand::UpdateManualBreakAvailability(manual_break_availability(&[
+                ("long", true),
+                ("short", true),
+            ])),
         ]
     );
     Ok(())
@@ -2599,6 +2685,13 @@ fn test_last_satisfied_slots(short_slot: usize, long_slot: usize) -> BTreeMap<St
     ]
     .into_iter()
     .collect()
+}
+
+fn manual_break_availability(items: &[(&str, bool)]) -> BTreeMap<String, bool> {
+    items
+        .iter()
+        .map(|(name, available)| ((*name).to_owned(), *available))
+        .collect()
 }
 
 fn scheduled_break(name: &str, slot: usize, duration_secs: u64) -> ScheduledBreak {

@@ -44,6 +44,9 @@
 - Follow-up refinement: floor the active-time status row to whole seconds
   before formatting it so fractional `Duration` values do not expose
   millisecond, microsecond, or nanosecond units in the tray/menu-bar dropdown.
+- Follow-up refinement: runtime now sends manual-break availability updates so
+  tray/menu-bar controls can disable shorter breaks while a longer scheduled
+  break is next.
 
 ## Behavior
 
@@ -60,6 +63,8 @@
   controls reset scheduler active time.
 - Manual break controls are ordered by scheduled cadence from shortest to
   longest, using each break type's slot interval.
+- Manual break controls whose interval is shorter than the next scheduled break
+  are disabled until that longer break is no longer next.
 - On macOS, pre-break notifications use the RustEyes app bundle identity rather
   than the `use_default` placeholder lookup from the default
   `mac-notification-sys` path.

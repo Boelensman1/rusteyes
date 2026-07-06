@@ -222,7 +222,9 @@
   is menu-bar only. Later follow-up refinement shows accumulated scheduler
   active time in the tray/menu-bar dropdown and resets it with scheduler state.
   Later follow-up refinement orders manual break controls by scheduled cadence
-  from shortest to longest. Later follow-up fix adds a local
+  from shortest to longest. Later follow-up refinement disables shorter manual
+  break controls whenever a longer-interval scheduled break is next. Later
+  follow-up fix adds a local
   `target/macos/RustEyes.app` bundle with bundle id `dev.rusteyes.RustEyes`,
   configures `notify-rust` with that bundle id before runtime startup, and
   launches the app bundle from `make run` on macOS so notifications no longer
@@ -389,6 +391,9 @@
   frequent cadences such as an even-longer break. Sync protocol version 6
   carries scheduler position snapshots on break starts and per-break satisfied
   slots in scheduler state so local, remote, and reconnect behavior converge.
+  Follow-up refinement blocks local manual starts whose interval is shorter
+  than the next scheduled break, preventing a short manual break from evading a
+  due longer break.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.

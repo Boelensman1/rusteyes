@@ -1,5 +1,6 @@
 use crate::backend::{DisableRequest, RuntimeEvent};
 use crate::config::Breaks;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
 
@@ -38,6 +39,7 @@ pub(crate) enum UiCommand {
     ClearPreBreakNotification,
     ShowNotification(UiNotification),
     UpdateStatus(StatusDisplay),
+    UpdateManualBreakAvailability(BTreeMap<String, bool>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -325,6 +327,7 @@ mod app {
         tray_icon: Option<TrayIcon>,
         status_item: Option<MenuItem>,
         enable_item: Option<MenuItem>,
+        start_break_items: BTreeMap<String, MenuItem>,
         pre_break_notification: Option<NotificationHandle>,
         menu_actions: BTreeMap<String, UiMenuAction>,
         initialized: bool,
@@ -343,6 +346,7 @@ mod app {
                 tray_icon: None,
                 status_item: None,
                 enable_item: None,
+                start_break_items: BTreeMap::new(),
                 pre_break_notification: None,
                 menu_actions: BTreeMap::new(),
                 initialized: false,
@@ -362,6 +366,7 @@ mod app {
             let built_tray_icon = build_tray_icon(&self.config, &mut self.menu_actions)?;
             self.status_item = Some(built_tray_icon.status_item);
             self.enable_item = Some(built_tray_icon.enable_item);
+            self.start_break_items = built_tray_icon.start_break_items;
             self.tray_icon = Some(built_tray_icon.tray_icon);
             self.initialized = true;
             Ok(())
@@ -403,6 +408,15 @@ mod app {
                         item.set_enabled(!matches!(status, StatusDisplay::Active(_)));
                     }
                 }
+                UiCommand::UpdateManualBreakAvailability(availability) => {
+                    for (name, available) in availability {
+                        let Some(item) = self.start_break_items.get(&name) else {
+                            warn!(break_name = %name, "ignoring unknown manual break availability");
+                            continue;
+                        };
+                        item.set_enabled(available);
+                    }
+                }
             }
         }
 
@@ -427,6 +441,7 @@ mod app {
         tray_icon: TrayIcon,
         status_item: MenuItem,
         enable_item: MenuItem,
+        start_break_items: BTreeMap<String, MenuItem>,
     }
 
     fn build_tray_icon(
@@ -445,6 +460,7 @@ mod app {
             .map_err(|error| UiError::menu(error.to_string()))?;
         append_separator(&menu)?;
 
+        let mut start_break_items = BTreeMap::new();
         for name in &config.break_names {
             let menu_id = start_break_menu_id(name);
             let item = MenuItem::with_id(
@@ -456,6 +472,7 @@ mod app {
             menu.append(&item)
                 .map_err(|error| UiError::menu(error.to_string()))?;
             actions.insert(menu_id, UiMenuAction::StartBreak(name.clone()));
+            start_break_items.insert(name.clone(), item);
         }
 
         append_separator(&menu)?;
@@ -521,6 +538,7 @@ mod app {
             tray_icon,
             status_item,
             enable_item,
+            start_break_items,
         })
     }
 

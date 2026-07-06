@@ -184,6 +184,36 @@ impl BreakScheduler {
         })
     }
 
+    pub(crate) fn manual_break_availability(&self) -> BTreeMap<String, bool> {
+        let next_interval = self
+            .upcoming_scheduled_break()
+            .and_then(|upcoming| self.schedule.rule(&upcoming.scheduled_break.name))
+            .map(|rule| rule.interval);
+
+        self.schedule
+            .rules
+            .iter()
+            .map(|rule| {
+                let available = next_interval.is_none_or(|interval| rule.interval >= interval);
+                (rule.name.clone(), available)
+            })
+            .collect()
+    }
+
+    fn manual_break_is_available(&self, name: &str) -> bool {
+        let Some(rule) = self.schedule.rule(name) else {
+            return false;
+        };
+        let Some(upcoming) = self.upcoming_scheduled_break() else {
+            return true;
+        };
+        let Some(upcoming_rule) = self.schedule.rule(&upcoming.scheduled_break.name) else {
+            return true;
+        };
+
+        rule.interval >= upcoming_rule.interval
+    }
+
     pub(crate) fn advance_active(&mut self, elapsed: Duration) -> Option<ScheduledBreak> {
         if self.state != SchedulerState::Ready(SchedulerMode::Active) {
             return None;
@@ -231,6 +261,9 @@ impl BreakScheduler {
             SchedulerState::Ready(mode) => mode,
             SchedulerState::Pending { .. } => return None,
         };
+        if !self.manual_break_is_available(name) {
+            return None;
+        }
         let rule = self.schedule.rule(name)?;
         let scheduled_break = rule.to_break(BreakOrigin::Manual);
         let interval = rule.interval;

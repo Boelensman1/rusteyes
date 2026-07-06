@@ -227,6 +227,60 @@ fn manual_break_can_start_while_enabled() {
 }
 
 #[test]
+fn shorter_manual_break_is_unavailable_when_longer_break_is_next() {
+    let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20), ("long", 2, 300)]));
+
+    let first = started_break(scheduler.advance_active(Duration::from_secs(10)));
+    assert_eq!(first.name, "short");
+    assert!(scheduler.finish_break());
+
+    assert_eq!(
+        scheduler.manual_break_availability(),
+        availability(&[("long", true), ("short", false)])
+    );
+    assert_eq!(scheduler.start_manual_break("short"), None);
+
+    let next = started_break(scheduler.advance_active(Duration::from_secs(10)));
+    assert_eq!(next.name, "long");
+    assert_eq!(next.origin, BreakOrigin::Scheduled { slot: 2 });
+}
+
+#[test]
+fn equal_or_longer_manual_breaks_remain_available() {
+    let scheduler = scheduler(custom_breaks(10, &[("short", 1, 20), ("long", 2, 300)]));
+
+    assert_eq!(
+        scheduler.manual_break_availability(),
+        availability(&[("long", true), ("short", true)])
+    );
+}
+
+#[test]
+fn very_long_upcoming_break_blocks_all_shorter_manual_breaks() {
+    let mut scheduler = scheduler(custom_breaks(
+        10,
+        &[("short", 1, 20), ("long", 2, 300), ("very-long", 4, 600)],
+    ));
+
+    for _ in 1..=3 {
+        let scheduled_break = started_break(scheduler.advance_active(Duration::from_secs(10)));
+        assert_ne!(scheduled_break.name, "very-long");
+        assert!(scheduler.finish_break());
+    }
+
+    assert_eq!(
+        scheduler.manual_break_availability(),
+        availability(&[("long", false), ("short", false), ("very-long", true)])
+    );
+    assert_eq!(scheduler.start_manual_break("short"), None);
+    assert_eq!(scheduler.start_manual_break("long"), None);
+
+    let manual = started_break(scheduler.start_manual_break("very-long"));
+    assert_eq!(manual.name, "very-long");
+    assert_eq!(manual.origin, BreakOrigin::Manual);
+}
+
+#[test]
 fn manual_break_can_start_while_disabled_and_resumes_disabled() {
     let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20)]));
 
@@ -320,6 +374,11 @@ fn manual_break_does_not_satisfy_less_frequent_breaks() {
         &[("short", 1, 20), ("long", 2, 300), ("very-long", 4, 600)],
     ));
 
+    let manual = started_break(scheduler.start_manual_break("long"));
+    assert_eq!(manual.name, "long");
+    assert_eq!(manual.origin, BreakOrigin::Manual);
+    assert!(scheduler.finish_break());
+
     for expected_slot in 1..=3 {
         let scheduled_break = started_break(scheduler.advance_active(Duration::from_secs(10)));
         assert_eq!(
@@ -328,13 +387,9 @@ fn manual_break_does_not_satisfy_less_frequent_breaks() {
                 slot: expected_slot
             }
         );
+        assert_ne!(scheduled_break.name, "very-long");
         assert!(scheduler.finish_break());
     }
-
-    let manual = started_break(scheduler.start_manual_break("long"));
-    assert_eq!(manual.name, "long");
-    assert_eq!(manual.origin, BreakOrigin::Manual);
-    assert!(scheduler.finish_break());
 
     let next = started_break(scheduler.advance_active(Duration::from_secs(10)));
     assert_eq!(next.name, "very-long");
@@ -711,6 +766,13 @@ fn satisfied_slots(slots: &[(&str, usize)]) -> BTreeMap<String, usize> {
     slots
         .iter()
         .map(|(name, slot)| ((*name).to_owned(), *slot))
+        .collect()
+}
+
+fn availability(items: &[(&str, bool)]) -> BTreeMap<String, bool> {
+    items
+        .iter()
+        .map(|(name, available)| ((*name).to_owned(), *available))
         .collect()
 }
 

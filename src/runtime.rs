@@ -204,6 +204,7 @@ struct DaemonRuntime<'a> {
     pre_break_notice: Option<PreBreakNoticeState>,
     notified_rejected_peers: BTreeSet<PeerId>,
     displayed_status: StatusDisplay,
+    displayed_manual_break_availability: BTreeMap<String, bool>,
     local_peer_id: Option<PeerId>,
     clock: Clock,
 }
@@ -219,9 +220,11 @@ impl<'a> DaemonRuntime<'a> {
         let backend_event_receiver = backend.clone_event_receiver();
         let active_time_idle_reset = IdleReset::new(schedule.reset_after_idle());
         let break_count_idle_reset = IdleReset::new(schedule.reset_count_after_idle());
+        let scheduler = BreakScheduler::new(schedule);
+        let displayed_manual_break_availability = scheduler.manual_break_availability();
 
         Self {
-            scheduler: BreakScheduler::new(schedule),
+            scheduler,
             backend,
             backend_event_receiver,
             sync_event_receiver: sync_runtime.event_receiver,
@@ -235,6 +238,7 @@ impl<'a> DaemonRuntime<'a> {
             pre_break_notice: None,
             notified_rejected_peers: BTreeSet::new(),
             displayed_status: StatusDisplay::Active(Duration::ZERO),
+            displayed_manual_break_availability,
             local_peer_id: sync_runtime.local_peer_id,
             clock,
         }
@@ -987,13 +991,28 @@ impl<'a> DaemonRuntime<'a> {
             DisableMode::UntilRestart => StatusDisplay::DisabledUntilRestart,
         };
 
-        if self.displayed_status == status {
+        if self.displayed_status != status {
+            self.displayed_status = status.clone();
+            if let Err(error) = self.ui.send_command(UiCommand::UpdateStatus(status)) {
+                warn!(%error, "failed to send status UI update");
+            }
+        }
+
+        self.update_manual_break_availability();
+    }
+
+    fn update_manual_break_availability(&mut self) {
+        let availability = self.scheduler.manual_break_availability();
+        if self.displayed_manual_break_availability == availability {
             return;
         }
 
-        self.displayed_status = status.clone();
-        if let Err(error) = self.ui.send_command(UiCommand::UpdateStatus(status)) {
-            warn!(%error, "failed to send status UI update");
+        self.displayed_manual_break_availability = availability.clone();
+        if let Err(error) = self
+            .ui
+            .send_command(UiCommand::UpdateManualBreakAvailability(availability))
+        {
+            warn!(%error, "failed to send manual break availability UI update");
         }
     }
 
