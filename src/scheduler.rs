@@ -278,13 +278,24 @@ impl BreakScheduler {
         self.schedule.rule(name).is_some()
     }
 
+    #[cfg(test)]
     pub(crate) fn start_synced_break(
         &mut self,
         name: &str,
         origin: BreakOrigin,
     ) -> Option<ScheduledBreak> {
         let scheduled_break = self.break_for_origin(name, origin)?;
-        self.begin_synced_break(name, origin)?;
+        self.begin_synced_break(name, origin, SyncedBreakSlotPolicy::FutureOnly)?;
+        Some(scheduled_break)
+    }
+
+    pub(crate) fn start_active_synced_break(
+        &mut self,
+        name: &str,
+        origin: BreakOrigin,
+    ) -> Option<ScheduledBreak> {
+        let scheduled_break = self.break_for_origin(name, origin)?;
+        self.begin_synced_break(name, origin, SyncedBreakSlotPolicy::CurrentOrFuture)?;
         Some(scheduled_break)
     }
 
@@ -374,14 +385,19 @@ impl BreakScheduler {
         }
     }
 
-    fn begin_synced_break(&mut self, name: &str, origin: BreakOrigin) -> Option<()> {
+    fn begin_synced_break(
+        &mut self,
+        name: &str,
+        origin: BreakOrigin,
+        slot_policy: SyncedBreakSlotPolicy,
+    ) -> Option<()> {
         let resume = match self.state {
             SchedulerState::Ready(mode) => mode,
             SchedulerState::Pending { .. } => return None,
         };
 
         if let BreakOrigin::Scheduled { slot } = origin
-            && slot <= self.slot
+            && slot_policy.rejects(slot, self.slot)
         {
             return None;
         }
@@ -515,6 +531,23 @@ enum SchedulerState {
 enum SchedulerMode {
     Active,
     Disabled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyncedBreakSlotPolicy {
+    #[cfg(test)]
+    FutureOnly,
+    CurrentOrFuture,
+}
+
+impl SyncedBreakSlotPolicy {
+    const fn rejects(self, incoming_slot: usize, current_slot: usize) -> bool {
+        match self {
+            #[cfg(test)]
+            Self::FutureOnly => incoming_slot <= current_slot,
+            Self::CurrentOrFuture => incoming_slot < current_slot,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

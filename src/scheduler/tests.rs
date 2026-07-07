@@ -625,6 +625,28 @@ fn synced_scheduled_break_advances_completed_slot() {
 }
 
 #[test]
+fn active_synced_scheduled_break_can_join_current_slot() {
+    let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20), ("long", 2, 300)]));
+
+    assert!(scheduler.merge_synced_position(position(
+        1,
+        Duration::ZERO,
+        &[("short", 1), ("long", 0)],
+    )));
+
+    let synced = started_break(
+        scheduler.start_active_synced_break("short", BreakOrigin::Scheduled { slot: 1 }),
+    );
+    assert_eq!(synced.name, "short");
+    assert_eq!(synced.origin, BreakOrigin::Scheduled { slot: 1 });
+
+    assert!(scheduler.finish_break());
+    let next = started_break(scheduler.advance_active(Duration::from_secs(10)));
+    assert_eq!(next.name, "long");
+    assert_eq!(next.origin, BreakOrigin::Scheduled { slot: 2 });
+}
+
+#[test]
 fn stale_synced_scheduled_break_is_ignored() {
     let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20), ("long", 2, 300)]));
 

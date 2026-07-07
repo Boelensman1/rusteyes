@@ -309,7 +309,11 @@ impl<'a> DaemonRuntime<'a> {
     fn handle_event(&mut self, event: RuntimeEvent) -> bool {
         match event {
             RuntimeEvent::ActiveTimeElapsed(elapsed) => {
-                return self.observe_active(elapsed, SyncPropagation::Broadcast);
+                return self.observe_active(
+                    elapsed,
+                    SyncPropagation::Broadcast,
+                    SyncPropagation::Broadcast,
+                );
             }
             RuntimeEvent::IdleTimeElapsed(elapsed) => self.advance_idle(elapsed),
             RuntimeEvent::WallClockElapsed(elapsed) => return self.advance_wall_clock(elapsed),
@@ -359,7 +363,11 @@ impl<'a> DaemonRuntime<'a> {
         match event {
             SyncEvent::ActiveTimeElapsed { elapsed } => {
                 trace!(peer_id = %peer_id, ?elapsed, "applying synced active time");
-                self.observe_active(elapsed, SyncPropagation::Suppress)
+                self.observe_active(
+                    elapsed,
+                    SyncPropagation::Suppress,
+                    SyncPropagation::Broadcast,
+                )
             }
             SyncEvent::BreakStarted {
                 name,
@@ -488,16 +496,24 @@ impl<'a> DaemonRuntime<'a> {
         }
     }
 
-    fn observe_active(&mut self, elapsed: Duration, propagation: SyncPropagation) -> bool {
+    fn observe_active(
+        &mut self,
+        elapsed: Duration,
+        active_time_propagation: SyncPropagation,
+        break_start_propagation: SyncPropagation,
+    ) -> bool {
         self.reset_idle_tracking();
-        self.broadcast_if_needed(propagation, &SyncEvent::ActiveTimeElapsed { elapsed });
+        self.broadcast_if_needed(
+            active_time_propagation,
+            &SyncEvent::ActiveTimeElapsed { elapsed },
+        );
 
         let elapsed = self.combined_activity.active_elapsed(elapsed);
         if elapsed.is_zero() {
             return true;
         }
 
-        self.advance_active(elapsed, propagation)
+        self.advance_active(elapsed, break_start_propagation)
     }
 
     fn advance_active(&mut self, elapsed: Duration, propagation: SyncPropagation) -> bool {
@@ -579,7 +595,8 @@ impl<'a> DaemonRuntime<'a> {
         lock_after: Option<bool>,
         position: SchedulerPosition,
     ) -> bool {
-        let Some(mut scheduled_break) = self.scheduler.start_synced_break(name, origin) else {
+        let Some(mut scheduled_break) = self.scheduler.start_active_synced_break(name, origin)
+        else {
             return true;
         };
         self.scheduler.merge_synced_position(position);

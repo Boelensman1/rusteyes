@@ -394,6 +394,12 @@
   Follow-up refinement blocks local manual starts whose interval is shorter
   than the next scheduled break, preventing a short manual break from evading a
   due longer break.
+- Completed `automatic-break-sync`: scheduled breaks triggered by inbound
+  synced active time now broadcast `BreakStarted` without echoing the
+  `ActiveTimeElapsed` event, so automatic breaks converge like manual breaks.
+  Runtime can also join an active synced scheduled break for the current slot
+  when scheduler state has already caught up before the break-start event
+  arrives.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.

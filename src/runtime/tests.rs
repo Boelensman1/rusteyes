@@ -785,6 +785,33 @@ fn remote_active_time_event_starts_expected_configured_break()
 }
 
 #[test]
+fn remote_active_time_triggered_scheduled_break_is_broadcast_without_active_time_echo()
+-> Result<(), Box<dyn std::error::Error>> {
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs_and_sync_broadcaster(
+        test_config(),
+        backend,
+        &sync_broadcaster,
+        [
+            backend_input(RuntimeEvent::WallClockElapsed(Duration::from_secs(10))),
+            sync_input(remote_active_time(Duration::from_secs(10))?),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+    );
+    assert_eq!(
+        sync_broadcaster.events(),
+        vec![broadcast_scheduled_break("short", 1)]
+    );
+    Ok(())
+}
+
+#[test]
 fn local_and_remote_active_time_share_wall_clock_budget() -> Result<(), Box<dyn std::error::Error>>
 {
     let (backend, commands) = test_backend();
@@ -1041,6 +1068,49 @@ fn remote_scheduler_state_catches_up_counter_and_active_elapsed()
     assert_eq!(
         received_commands(&commands),
         vec![BackendCommand::StartBreak(scheduled_break("long", 2, 300))]
+    );
+    Ok(())
+}
+
+#[test]
+fn remote_break_start_for_current_slot_joins_after_scheduler_state()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs(
+        test_config(),
+        backend,
+        [
+            sync_input(remote_sync_event(SyncEvent::SchedulerState {
+                slot: 1,
+                active_elapsed: Duration::ZERO,
+                last_satisfied_slots: test_last_satisfied_slots(1, 0),
+                active_break: None,
+            })?),
+            sync_input(incoming_scheduled_break(
+                "short",
+                "Peer message",
+                TEST_NOW_MS - 5_000,
+                1,
+            )?),
+            backend_input(RuntimeEvent::BreakFinished),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(ScheduledBreak {
+                name: String::from("short"),
+                origin: BreakOrigin::Scheduled { slot: 1 },
+                duration: Duration::from_secs(15),
+                message: String::from("Peer message"),
+                autolock: false,
+            }),
+            BackendCommand::FinishBreak { lock_after: false },
+            BackendCommand::StartBreak(scheduled_break("long", 2, 300)),
+        ]
     );
     Ok(())
 }
