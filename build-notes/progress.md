@@ -400,6 +400,14 @@
   Runtime can also join an active synced scheduled break for the current slot
   when scheduler state has already caught up before the break-start event
   arrives.
+- Completed `sleep-aware-break-deadline`: active-break countdowns now use
+  absolute wall-clock (`SystemTime`) deadlines instead of monotonic `Instant`s,
+  which freeze during system sleep on macOS and Linux. A machine that sleeps
+  through a break's deadline now finishes the break within about a second of
+  waking (or on unlock via the existing deferred-finish path), instead of
+  resuming the frozen countdown. Backwards system-clock jumps are clamped so
+  remaining time never exceeds the break duration; per-tick elapsed reporting
+  stays monotonic.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -605,6 +613,8 @@
 - `make check` passes after adding manual break cadence resets.
 - `make check` passes after refreshing the logo-derived tray PNG, embedded RGBA
   asset, and macOS app icon.
+- `make check` (328 tests) passes after moving break deadlines to the wall
+  clock.
 - On unsupported targets, `make run` prints
   `rusteyes: no backend is available for <platform> yet` and exits non-zero.
 - Manual X11 overlay, input-blocking, overlay UI, and trace-output verification

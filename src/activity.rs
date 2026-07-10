@@ -1,6 +1,6 @@
 use crate::backend::RuntimeEvent;
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tracing::trace;
 
 const NORMAL_ACTIVITY_IDLE_THRESHOLD: Duration = Duration::from_secs(10);
@@ -84,23 +84,48 @@ pub(crate) enum ActivityState {
     Idle,
 }
 
+/// A monotonic and a wall-clock reading taken at the same moment. Break
+/// deadlines follow the wall clock so time spent asleep counts toward the
+/// break, while per-tick elapsed reporting stays monotonic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ObservedTime {
+    pub(crate) monotonic: Instant,
+    pub(crate) wall: SystemTime,
+}
+
+impl ObservedTime {
+    pub(crate) fn now() -> Self {
+        Self {
+            monotonic: Instant::now(),
+            wall: SystemTime::now(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BreakDeadline {
-    ends_at: Instant,
+    ends_at: SystemTime,
+    duration: Duration,
 }
 
 impl BreakDeadline {
-    pub(crate) fn starting_at(started_at: Instant, duration: Duration) -> Self {
+    pub(crate) fn starting_at(started_at: SystemTime, duration: Duration) -> Self {
         Self {
             ends_at: started_at.checked_add(duration).unwrap_or(started_at),
+            duration,
         }
     }
 
-    pub(crate) fn remaining_at(self, now: Instant) -> Duration {
-        self.ends_at.saturating_duration_since(now)
+    pub(crate) fn remaining_at(self, now: SystemTime) -> Duration {
+        // The clamp keeps a backwards system-clock jump from inflating the
+        // countdown past the break's full duration.
+        self.ends_at
+            .duration_since(now)
+            .unwrap_or(Duration::ZERO)
+            .min(self.duration)
     }
 
-    pub(crate) fn is_finished_at(self, now: Instant) -> bool {
+    pub(crate) fn is_finished_at(self, now: SystemTime) -> bool {
         self.remaining_at(now).is_zero()
     }
 }
