@@ -29,7 +29,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{trace, warn};
 
 const DEFAULT_PRE_BREAK_NOTICE_LEAD: Duration = Duration::from_secs(30);
-const PRE_BREAK_NOTICE_UPDATE_INTERVAL: u64 = 5;
+const FINAL_PRE_BREAK_NOTICE_LEAD: Duration = Duration::from_secs(5);
 
 #[cfg(target_os = "linux")]
 pub(crate) fn run() -> Result<(), crate::Error> {
@@ -1326,14 +1326,7 @@ impl NotifiedBreak {
 }
 
 fn next_pre_break_notice_update(starts_after: Duration) -> Option<Duration> {
-    let starts_after_secs = starts_after.as_secs();
-    let next_update_secs = if starts_after_secs.is_multiple_of(PRE_BREAK_NOTICE_UPDATE_INTERVAL) {
-        starts_after_secs.saturating_sub(PRE_BREAK_NOTICE_UPDATE_INTERVAL)
-    } else {
-        (starts_after_secs / PRE_BREAK_NOTICE_UPDATE_INTERVAL) * PRE_BREAK_NOTICE_UPDATE_INTERVAL
-    };
-
-    (next_update_secs > 0).then(|| Duration::from_secs(next_update_secs))
+    (starts_after > FINAL_PRE_BREAK_NOTICE_LEAD).then_some(FINAL_PRE_BREAK_NOTICE_LEAD)
 }
 
 #[cfg(test)]

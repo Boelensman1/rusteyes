@@ -10,7 +10,8 @@
 - Preserve the existing pre-break notice lead of
   `min(30s, breaks.after_active / 2)`.
 - Use the actual remaining time for the first notification in the notice
-  window, then update only when lower 5-second boundaries are crossed.
+  window, then update at most once more when the countdown reaches or crosses
+  the final 5-second warning.
 - Keep countdown state in the runtime so UI commands remain deterministic and
   testable.
 - Store the active pre-break `notify-rust` notification handle in the UI loop,
@@ -21,9 +22,8 @@
 
 ## Behavior
 
-- A normal 60-second active interval shows `30s`, `25s`, `20s`, `15s`, `10s`,
-  and `5s` countdown notifications before clearing the notification as the
-  break starts.
+- A normal 60-second active interval shows `30s` and `5s` countdown
+  notifications before clearing the notification as the break starts.
 - Short active intervals keep the half-interval lead: a 10-second interval
   shows `5s`, and a 20-second interval shows `10s` and `5s`.
 - Fractional countdown commands keep precise runtime durations internally, but
@@ -44,7 +44,7 @@
   `build_notification` helper is untouched so other notifications stay silent.
 - The name vocabularies differ per platform, so `PRE_BREAK_NOTIFICATION_SOUND`
   is `cfg`-conditional: Linux/XDG uses `"message"` (freedesktop sound naming
-  spec), macOS uses `"Ping"` (a `/System/Library/Sounds` system sound).
+  spec), macOS uses `"Glass"` (a `/System/Library/Sounds` system sound).
 - The sound is played by the desktop's notification server (XDG `SoundName`
   hint on Linux, `NSUserNotification`/`UN` sound on macOS), so minimal or
   headless setups that ignore sound hints will not play it.
@@ -60,3 +60,8 @@
   seconds.
 - Checks were skipped when amending the countdown cadence from 10 seconds to 5
   seconds at user request.
+- `nix develop --command cargo test pre_break_notification --lib` passes after
+  limiting countdown notifications to the initial and final warnings and
+  changing the macOS sound to `Glass`.
+- `make check` passes after limiting countdown notifications to the initial and
+  final warnings and changing the macOS sound to `Glass`.

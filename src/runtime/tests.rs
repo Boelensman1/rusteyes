@@ -1763,7 +1763,7 @@ fn pre_break_notification_fires_once_when_notice_window_is_reached()
 }
 
 #[test]
-fn pre_break_notification_updates_on_countdown_boundaries() -> Result<(), Box<dyn std::error::Error>>
+fn pre_break_notification_updates_once_for_final_warning() -> Result<(), Box<dyn std::error::Error>>
 {
     let (backend, commands) = test_backend();
     let (ui, ui_commands) = recording_ui();
@@ -1798,25 +1798,9 @@ fn pre_break_notification_updates_on_countdown_boundaries() -> Result<(), Box<dy
                 starts_after: Duration::from_secs(30),
             }),
             UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(35))),
-            UiCommand::ShowPreBreakNotification(PreBreakNotification {
-                break_name: String::from("short"),
-                starts_after: Duration::from_secs(25),
-            }),
             UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(40))),
-            UiCommand::ShowPreBreakNotification(PreBreakNotification {
-                break_name: String::from("short"),
-                starts_after: Duration::from_secs(20),
-            }),
             UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(45))),
-            UiCommand::ShowPreBreakNotification(PreBreakNotification {
-                break_name: String::from("short"),
-                starts_after: Duration::from_secs(15),
-            }),
             UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(50))),
-            UiCommand::ShowPreBreakNotification(PreBreakNotification {
-                break_name: String::from("short"),
-                starts_after: Duration::from_secs(10),
-            }),
             UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(55))),
             UiCommand::ShowPreBreakNotification(PreBreakNotification {
                 break_name: String::from("short"),

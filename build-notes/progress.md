@@ -264,11 +264,11 @@
   priority, and ad-hoc sign the generated local app bundle before
   LaunchServices registration.
 - Completed `pre-break-notification-countdown`: pre-break desktop
-  notifications now update in place at countdown boundaries, preserve the
-  half-interval notice lead for short schedules, and are explicitly cleared
-  when the break starts. The first appearance also plays a sound via
-  `notify-rust`'s `sound_name` (platform-conditional: `message` on Linux/XDG,
-  `Ping` on macOS); countdown updates stay silent.
+  notifications now update in place at most once for the final 5-second
+  warning, preserve the half-interval notice lead for short schedules, and are
+  explicitly cleared when the break starts. The first appearance also plays a
+  sound via `notify-rust`'s `sound_name` (platform-conditional: `message` on
+  Linux/XDG, `Glass` on macOS); countdown updates stay silent.
 - Completed `idle-activity-grace`: normal activity samples now use an internal
   10 second idle threshold so slow ongoing input still counts as active, while
   local and synced active-time signals share one wall-clock budget so synced
@@ -545,6 +545,11 @@
   notification.
 - `make check` passes after rounding pre-break notification countdown text to
   whole seconds.
+- `nix develop --command cargo test pre_break_notification --lib` passes after
+  limiting pre-break countdown notifications to the initial and final warnings.
+- `make check` passes after limiting pre-break countdown notifications to the
+  initial and final warnings and changing the macOS notification sound to
+  `Glass`.
 - `make check` passes after adding idle activity grace and capped synced
   active-time accumulation.
 - `make check` passes after removing stale dead-code allowances.

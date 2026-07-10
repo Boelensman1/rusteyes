@@ -204,7 +204,7 @@ mod app {
     #[cfg(not(target_os = "macos"))]
     const PRE_BREAK_NOTIFICATION_SOUND: &str = "message";
     #[cfg(target_os = "macos")]
-    const PRE_BREAK_NOTIFICATION_SOUND: &str = "Ping";
+    const PRE_BREAK_NOTIFICATION_SOUND: &str = "Glass";
     const STATUS_MENU_ID: &str = "status";
     pub(crate) fn run<F>(config: UiConfig, start_runtime: F) -> Result<(), UiError>
     where
