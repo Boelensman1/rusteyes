@@ -8,6 +8,10 @@ fn wall_start() -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000)
 }
 
+fn drain_events(poller: &mut ActivityPoller) -> Vec<RuntimeEvent> {
+    std::iter::from_fn(|| poller.next_event()).collect()
+}
+
 #[test]
 fn zero_idle_time_is_active() {
     let sample = ActivitySample::new(Duration::ZERO);
@@ -85,6 +89,128 @@ fn idle_sample_queues_wall_clock_before_idle_time() {
         Some(RuntimeEvent::IdleTimeElapsed(poll_interval))
     );
     assert_eq!(poller.next_event(), None);
+}
+
+#[test]
+fn on_time_samples_do_not_queue_unobserved_idle_time() {
+    let poll_interval = Duration::from_secs(1);
+    let mut poller = ActivityPoller::new(poll_interval);
+    let started_at = wall_start();
+
+    assert_eq!(
+        poller.queue_sample_at(ActivitySample::new(Duration::from_secs(2)), started_at),
+        ActivityState::Active
+    );
+    assert_eq!(
+        drain_events(&mut poller),
+        vec![
+            RuntimeEvent::WallClockElapsed(poll_interval),
+            RuntimeEvent::ActiveTimeElapsed(poll_interval),
+        ]
+    );
+
+    assert_eq!(
+        poller.queue_sample_at(
+            ActivitySample::new(Duration::from_secs(2)),
+            started_at + poll_interval,
+        ),
+        ActivityState::Active
+    );
+    assert_eq!(
+        drain_events(&mut poller),
+        vec![
+            RuntimeEvent::WallClockElapsed(poll_interval),
+            RuntimeEvent::ActiveTimeElapsed(poll_interval),
+        ]
+    );
+}
+
+#[test]
+fn idle_sample_after_wall_clock_gap_queues_unobserved_idle_time() {
+    let poll_interval = Duration::from_secs(1);
+    let mut poller = ActivityPoller::new(poll_interval);
+    let started_at = wall_start();
+    let unobserved_idle = Duration::from_hours(1);
+
+    assert_eq!(
+        poller.queue_sample_at(ActivitySample::new(Duration::from_secs(2)), started_at),
+        ActivityState::Active
+    );
+    drain_events(&mut poller);
+
+    assert_eq!(
+        poller.queue_sample_at(
+            ActivitySample::new(NORMAL_ACTIVITY_IDLE_THRESHOLD + Duration::from_secs(1)),
+            started_at + poll_interval + unobserved_idle,
+        ),
+        ActivityState::Idle
+    );
+    assert_eq!(
+        drain_events(&mut poller),
+        vec![
+            RuntimeEvent::WallClockElapsed(poll_interval),
+            RuntimeEvent::IdleTimeElapsed(unobserved_idle),
+            RuntimeEvent::IdleTimeElapsed(poll_interval),
+        ]
+    );
+}
+
+#[test]
+fn active_sample_after_wall_clock_gap_queues_unobserved_idle_before_active_time() {
+    let poll_interval = Duration::from_secs(1);
+    let mut poller = ActivityPoller::new(poll_interval);
+    let started_at = wall_start();
+    let unobserved_idle = Duration::from_hours(1);
+
+    assert_eq!(
+        poller.queue_sample_at(ActivitySample::new(Duration::from_secs(2)), started_at),
+        ActivityState::Active
+    );
+    drain_events(&mut poller);
+
+    assert_eq!(
+        poller.queue_sample_at(
+            ActivitySample::new(Duration::from_secs(2)),
+            started_at + poll_interval + unobserved_idle,
+        ),
+        ActivityState::Active
+    );
+    assert_eq!(
+        drain_events(&mut poller),
+        vec![
+            RuntimeEvent::WallClockElapsed(poll_interval),
+            RuntimeEvent::IdleTimeElapsed(unobserved_idle),
+            RuntimeEvent::ActiveTimeElapsed(poll_interval),
+        ]
+    );
+}
+
+#[test]
+fn backwards_wall_clock_movement_does_not_queue_unobserved_idle_time() {
+    let poll_interval = Duration::from_secs(1);
+    let mut poller = ActivityPoller::new(poll_interval);
+    let started_at = wall_start();
+
+    assert_eq!(
+        poller.queue_sample_at(ActivitySample::new(Duration::from_secs(2)), started_at),
+        ActivityState::Active
+    );
+    drain_events(&mut poller);
+
+    assert_eq!(
+        poller.queue_sample_at(
+            ActivitySample::new(Duration::from_secs(2)),
+            started_at - Duration::from_hours(1),
+        ),
+        ActivityState::Active
+    );
+    assert_eq!(
+        drain_events(&mut poller),
+        vec![
+            RuntimeEvent::WallClockElapsed(poll_interval),
+            RuntimeEvent::ActiveTimeElapsed(poll_interval),
+        ]
+    );
 }
 
 #[test]

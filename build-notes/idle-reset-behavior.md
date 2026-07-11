@@ -12,11 +12,16 @@
 - Keep sync protocol unchanged: local idle reset is not broadcast.
 - Treat authenticated remote active-time events as combined activity so one
   active synced peer prevents another idle peer from resetting.
+- Follow-up fix: count wall-clock gaps between activity samples as idle time
+  for reset purposes, so system sleep can satisfy the idle reset threshold.
 
 ## Behavior
 
 - Normal activity polling emits idle-duration runtime events in addition to
   wall-clock events.
+- If the next activity sample arrives after more than one poll interval of
+  wall-clock time, the unobserved gap minus the current poll interval is emitted
+  as idle time before the current active/idle sample event.
 - Runtime tracks continuous idle time since the last local or synced active-time
   event.
 - When idle time reaches `breaks.reset_after_idle`, runtime resets scheduler
@@ -25,6 +30,8 @@
 - Scheduler reset preserves completed break slots, pending breaks, and disabled
   state.
 - Overlay break polling remains unchanged and does not emit idle reset events.
+- Active-time scheduling still counts observed active samples only; sleep does
+  not add active time toward starting a break.
 
 ## Cleanup
 
@@ -37,6 +44,7 @@
   not on `PATH`; use the Make/Nix fallback.
 - `make check`
 - `make check` after removing stale dead-code allowances
+- `make test` after making idle reset sleep-aware
 
 ## Follow-up
 

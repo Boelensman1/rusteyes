@@ -1537,6 +1537,26 @@ fn idle_at_reset_timeout_discards_partial_active_time() -> Result<(), Box<dyn st
 }
 
 #[test]
+fn post_sleep_idle_gap_resets_partial_active_time_before_active_sample()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs(
+        test_config_with_reset_after_idle(Some(Duration::from_secs(5))),
+        backend,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(9))),
+            backend_input(RuntimeEvent::WallClockElapsed(Duration::from_secs(1))),
+            backend_input(RuntimeEvent::IdleTimeElapsed(Duration::from_secs(5))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(1))),
+        ],
+    )?;
+
+    assert!(received_commands(&commands).is_empty());
+    Ok(())
+}
+
+#[test]
 fn idle_reset_restarts_break_counter_after_completed_break()
 -> Result<(), Box<dyn std::error::Error>> {
     let sync_broadcaster = RecordingSyncBroadcaster::default();
@@ -1572,6 +1592,55 @@ fn idle_reset_restarts_break_counter_after_completed_break()
             SyncEvent::SchedulerReset,
             SyncEvent::ActiveTimeElapsed {
                 elapsed: Duration::from_secs(10),
+            },
+            broadcast_scheduled_break("short", 1),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn post_sleep_idle_gap_restarts_break_counter_after_completed_break()
+-> Result<(), Box<dyn std::error::Error>> {
+    let sync_broadcaster = RecordingSyncBroadcaster::default();
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs_and_sync_broadcaster(
+        test_config_with_reset_count_after_idle(Some(Duration::from_secs(5))),
+        backend,
+        &sync_broadcaster,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+            backend_input(RuntimeEvent::BreakFinished),
+            backend_input(RuntimeEvent::WallClockElapsed(Duration::from_secs(1))),
+            backend_input(RuntimeEvent::IdleTimeElapsed(Duration::from_secs(5))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(1))),
+            backend_input(RuntimeEvent::WallClockElapsed(Duration::from_secs(9))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(9))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::FinishBreak { lock_after: false },
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+        ]
+    );
+    assert_eq!(
+        sync_broadcaster.events(),
+        vec![
+            SyncEvent::ActiveTimeElapsed {
+                elapsed: Duration::from_secs(10),
+            },
+            broadcast_scheduled_break("short", 1),
+            SyncEvent::SchedulerReset,
+            SyncEvent::ActiveTimeElapsed {
+                elapsed: Duration::from_secs(1),
+            },
+            SyncEvent::ActiveTimeElapsed {
+                elapsed: Duration::from_secs(9),
             },
             broadcast_scheduled_break("short", 1),
         ]
@@ -1633,6 +1702,33 @@ fn disabled_idle_reset_preserves_current_active_time_behavior()
     assert_eq!(
         received_commands(&commands),
         vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+    );
+    Ok(())
+}
+
+#[test]
+fn disabled_break_count_idle_reset_preserves_completed_break_counter()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs(
+        test_config_with_reset_count_after_idle(None),
+        backend,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+            backend_input(RuntimeEvent::BreakFinished),
+            backend_input(RuntimeEvent::IdleTimeElapsed(Duration::from_secs(30))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands(&commands),
+        vec![
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+            BackendCommand::FinishBreak { lock_after: false },
+            BackendCommand::StartBreak(scheduled_break("long", 2, 300)),
+        ]
     );
     Ok(())
 }

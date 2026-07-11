@@ -20,12 +20,16 @@
 - Broadcast the reset only when the local scheduler position actually changed.
 - Do not add reset epochs; disconnected peers still use the existing
   higher-slot scheduler snapshot catch-up behavior after reconnect.
+- Follow-up fix: use wall-clock gaps between activity samples as idle time for
+  reset tracking, so sleep can trigger the break-count reset after wake.
 
 ## Behavior
 
 - Active-time idle reset still clears only accumulated active time.
 - Break-count idle reset clears both accumulated active time and the local
   completed scheduled slot counter.
+- Long unobserved gaps are treated as idle time before the first post-wake
+  active tick is counted; sleep still does not count as active time.
 - Inbound `SchedulerReset` applies the same scheduler-position reset without
   rebroadcasting.
 - Inbound resets mark both idle reset timers as already handled until the next
@@ -41,6 +45,8 @@
 - Runtime tests cover local reset broadcast, post-reset short-break scheduling,
   active-time reset preserving the completed slot counter, inbound reset without
   rebroadcast, and remote active time preventing idle reset.
+- Follow-up runtime tests cover sleep-gap resets before the first post-wake
+  active tick and disabled break-count reset behavior.
 - Config tests cover `reset_count_after_idle` defaults, overrides, `null`, and
   zero-duration validation.
 - Protocol tests cover the version 5 wire shape and `schedulerReset` event.
@@ -49,3 +55,4 @@
 
 - `make test`
 - `make check`
+- `make test` after making idle reset sleep-aware

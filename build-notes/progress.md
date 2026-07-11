@@ -620,6 +620,8 @@
   asset, and macOS app icon.
 - `make check` (328 tests) passes after moving break deadlines to the wall
   clock.
+- `make check` (335 tests) passes after making idle reset counters count
+  wall-clock gaps between activity samples.
 - On unsupported targets, `make run` prints
   `rusteyes: no backend is available for <platform> yet` and exits non-zero.
 - Manual X11 overlay, input-blocking, overlay UI, and trace-output verification

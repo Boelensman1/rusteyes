@@ -8,6 +8,7 @@ const NORMAL_ACTIVITY_IDLE_THRESHOLD: Duration = Duration::from_secs(10);
 #[derive(Debug)]
 pub(crate) struct ActivityPoller {
     poll_interval: Duration,
+    last_sampled_at: Option<SystemTime>,
     events: VecDeque<RuntimeEvent>,
 }
 
@@ -15,6 +16,7 @@ impl ActivityPoller {
     pub(crate) fn new(poll_interval: Duration) -> Self {
         Self {
             poll_interval,
+            last_sampled_at: None,
             events: VecDeque::new(),
         }
     }
@@ -24,6 +26,14 @@ impl ActivityPoller {
     }
 
     pub(crate) fn queue_sample(&mut self, sample: ActivitySample) -> ActivityState {
+        self.queue_sample_at(sample, SystemTime::now())
+    }
+
+    pub(crate) fn queue_sample_at(
+        &mut self,
+        sample: ActivitySample,
+        sampled_at: SystemTime,
+    ) -> ActivityState {
         let state = sample.state_for(NORMAL_ACTIVITY_IDLE_THRESHOLD);
         trace!(
             target: "rusteyes::activity",
@@ -34,7 +44,14 @@ impl ActivityPoller {
             "sampled activity"
         );
 
+        let unobserved_idle = self.unobserved_idle_since_last_sample(sampled_at);
+        self.last_sampled_at = Some(sampled_at);
+
         self.queue_event(RuntimeEvent::WallClockElapsed(self.poll_interval));
+
+        if let Some(unobserved_idle) = unobserved_idle {
+            self.queue_event(RuntimeEvent::IdleTimeElapsed(unobserved_idle));
+        }
 
         if state == ActivityState::Active {
             self.queue_event(RuntimeEvent::ActiveTimeElapsed(self.poll_interval));
@@ -43,6 +60,16 @@ impl ActivityPoller {
         }
 
         state
+    }
+
+    fn unobserved_idle_since_last_sample(&self, sampled_at: SystemTime) -> Option<Duration> {
+        let last_sampled_at = self.last_sampled_at?;
+        let elapsed = sampled_at.duration_since(last_sampled_at).ok()?;
+        if elapsed <= self.poll_interval {
+            return None;
+        }
+
+        Some(elapsed.saturating_sub(self.poll_interval))
     }
 
     pub(crate) fn queue_event(&mut self, event: RuntimeEvent) {
