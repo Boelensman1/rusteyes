@@ -416,16 +416,16 @@ fn upcoming_scheduled_break_reports_remaining_active_time() {
 }
 
 #[test]
-fn active_elapsed_reports_current_slot_accumulation() {
+fn scheduler_position_reports_current_slot_accumulation() {
     let mut scheduler = scheduler(custom_breaks(10, &[("short", 1, 20)]));
 
-    assert_eq!(scheduler.active_elapsed(), Duration::ZERO);
+    assert_eq!(scheduler.position().active_elapsed, Duration::ZERO);
     assert_eq!(scheduler.advance_active(Duration::from_secs(4)), None);
-    assert_eq!(scheduler.active_elapsed(), Duration::from_secs(4));
+    assert_eq!(scheduler.position().active_elapsed, Duration::from_secs(4));
 
     let scheduled_break = started_break(scheduler.advance_active(Duration::from_secs(6)));
     assert_eq!(scheduled_break.origin, BreakOrigin::Scheduled { slot: 1 });
-    assert_eq!(scheduler.active_elapsed(), Duration::ZERO);
+    assert_eq!(scheduler.position().active_elapsed, Duration::ZERO);
 }
 
 #[test]
@@ -585,7 +585,7 @@ fn synced_position_same_slot_keeps_greater_active_elapsed() {
         active_elapsed: Duration::from_secs(2),
         last_satisfied_slots: satisfied_slots(&[("short", 0)]),
     }));
-    assert_eq!(scheduler.active_elapsed(), Duration::from_secs(4));
+    assert_eq!(scheduler.position().active_elapsed, Duration::from_secs(4));
 }
 
 #[test]

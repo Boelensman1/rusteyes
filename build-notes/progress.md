@@ -219,8 +219,10 @@
   break, and UI-originated controls reuse the existing local runtime paths so
   manual breaks and disable actions can sync to authenticated peers. Follow-up
   fix configures macOS as an accessory app and hides Dock visibility so RustEyes
-  is menu-bar only. Later follow-up refinement shows accumulated scheduler
-  active time in the tray/menu-bar dropdown and resets it with scheduler state.
+  is menu-bar only. A later follow-up refinement replaced accumulated active
+  time in the tray/menu-bar dropdown with the configured next break type and
+  remaining active time, initialized at startup and kept aligned with scheduler
+  cadence, synced activity, and idle resets.
   Later follow-up refinement orders manual break controls by scheduled cadence
   from shortest to longest. Later follow-up refinement disables shorter manual
   break controls whenever a longer-interval scheduled break is next. Later
@@ -243,7 +245,7 @@
   `breaks.reset_after_idle`, defaulting to 5 minutes and disabled with `null`;
   normal activity polling emits idle-duration runtime events; runtime resets
   accumulated scheduler active time after enough combined idle time, clears
-  pre-break notification state, updates the active-time tray row, and treats
+  pre-break notification state, updates the upcoming-break tray row, and treats
   authenticated remote active-time events as combined activity without changing
   the sync protocol. Follow-up cleanup removed the now-unneeded
   platform-specific dead-code allowance from the shared break timer remaining
@@ -493,6 +495,8 @@
 - `make check` passes after the break/disable sync runtime cleanup.
 - `make check` passes after adding notification tray UI behavior.
 - `make check` passes after adding the tray/menu-bar active-time status row.
+- `make check` passes after replacing the active-time row with the upcoming
+  break type and remaining active-time countdown (336 tests).
 - `make -B macos-app-build` passes with approved SwiftPM cache and
   LaunchServices registration access after adding the macOS app bundle.
 - `plutil -lint target/macos/RustEyes.app/Contents/Info.plist` passes.

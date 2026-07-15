@@ -148,10 +148,6 @@ impl BreakScheduler {
         self.schedule.after_active()
     }
 
-    pub(crate) const fn active_elapsed(&self) -> Duration {
-        self.active_elapsed
-    }
-
     pub(crate) fn position(&self) -> SchedulerPosition {
         SchedulerPosition {
             slot: self.slot,

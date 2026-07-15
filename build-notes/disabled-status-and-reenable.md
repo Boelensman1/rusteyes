@@ -7,14 +7,15 @@
 
 ## Decisions
 
-- Generalize the single status row from an active-time-only line into a
-  `StatusDisplay` enum (`Active(Duration)` / `DisabledFor(Duration)` /
-  `DisabledUntilRestart`) defined in `ui.rs` and shared with the runtime.
+- Generalize the single status row into a `StatusDisplay` enum defined in
+  `ui.rs` and shared with the runtime. The enabled variant now carries the next
+  break name and remaining active time; the disabled variants carry a timed
+  countdown or the until-restart state.
 - Replace `UiCommand::UpdateActiveTime(Duration)` with
   `UiCommand::UpdateStatus(StatusDisplay)`; the runtime computes the status from
   its `DisableMode` so the UI stays a thin renderer.
-- Status text: `Active time: {d}` / `Disabled for {d}` (live countdown) /
-  `Permanently disabled`, all via `humantime::format_duration`.
+- Current status text: `{name} break in {d}` / `Disabled for {d}` (live
+  countdown) / `Permanently disabled`, using `humantime` duration formatting.
 - Add a single always-present "Enable" menu item rather than rebuilding the menu
   on state changes. It starts greyed out (app starts enabled) and is toggled via
   `MenuItem::set_enabled` from each `UpdateStatus`, clickable only while disabled.
@@ -23,7 +24,7 @@
   `SyncEvent::Enable` to peers, mirroring how disable controls broadcast.
 - Set `disable_mode` before calling `disable_scheduler` in `disable_for` /
   `disable_until_restart` so the status refresh that `disable_scheduler` emits
-  already reflects the disabled state (avoids a stale `Active` flash).
+  already reflects the disabled state (avoids a stale enabled-state flash).
 - Drive the countdown from the existing 1s `WallClockElapsed` tick by calling
   `update_status_display` at the end of `advance_wall_clock`; the
   `displayed_status` dedup keeps enabled ticks from spamming the channel.
@@ -34,12 +35,13 @@
 
 ## Behavior
 
-- While timed-disabled, the status row replaces "Active time" with a per-second
-  countdown (`Disabled for 29m 59s`) and the Enable item becomes clickable.
+- While timed-disabled, the status row replaces the upcoming-break countdown
+  with a per-second disable countdown (`Disabled for 29m 59s`) and the Enable
+  item becomes clickable.
 - While disabled until restart, the row reads `Permanently disabled` and Enable
   is clickable.
 - Clicking Enable (or a timed disable expiring, or a synced enable) returns the
-  row to `Active time: …` and greys out the Enable item.
+  row to the next scheduled break and greys out the Enable item.
 - If the machine sleeps past a finite disable deadline, the next wall-clock tick
   re-enables scheduling instead of leaving the original countdown frozen.
 
@@ -47,17 +49,18 @@
 
 - `ui.rs`: `status_menu_text_renders_each_state` covers all three rows;
   `menu_actions_map_to_runtime_events` covers `Enable -> RuntimeEvent::Enable`.
-- `runtime/tests.rs`: existing UI-command assertions updated to
-  `UpdateStatus(StatusDisplay::Active(..))`;
+- `runtime/tests.rs`: UI-command assertions cover the enabled upcoming-break
+  status;
   `disabled_and_pending_states_suppress_pre_break_notifications` now asserts the
   disable/enable status sequence (still no pre-break notification);
   new `timed_disable_shows_countdown_status_until_reenabled` asserts the
-  per-second `DisabledFor` countdown and the auto re-enable to `Active(0)`.
+  per-second `DisabledFor` countdown and restoration of the next-break status.
 - Follow-up runtime tests cover sleep-style clock jumps with only a small wake
   tick and verify automatic timed expiry is not rebroadcast to sync peers.
 
 ## Commands
 
+- Next-break status refinement: `make check` passes (336 tests).
 - Follow-up sleep-counting fix: `make test` passes (315 tests).
 - Follow-up sleep-counting fix: `make check` passes (fmt-check, clippy
   `-D warnings`, 315 tests).

@@ -44,7 +44,10 @@ pub(crate) enum UiCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum StatusDisplay {
-    Active(Duration),
+    UpcomingBreak {
+        break_name: String,
+        starts_after: Duration,
+    },
     DisabledFor(Duration),
     DisabledUntilRestart,
 }
@@ -405,7 +408,7 @@ mod app {
                         item.set_text(status_menu_text(&status));
                     }
                     if let Some(item) = &self.enable_item {
-                        item.set_enabled(!matches!(status, StatusDisplay::Active(_)));
+                        item.set_enabled(!matches!(status, StatusDisplay::UpcomingBreak { .. }));
                     }
                 }
                 UiCommand::UpdateManualBreakAvailability(availability) => {
@@ -452,7 +455,7 @@ mod app {
 
         let status_item = MenuItem::with_id(
             MenuId::new(STATUS_MENU_ID),
-            status_menu_text(&StatusDisplay::Active(Duration::ZERO)),
+            "Loading break schedule...",
             false,
             None,
         );
@@ -624,12 +627,13 @@ mod app {
 
     fn status_menu_text(status: &StatusDisplay) -> String {
         match status {
-            StatusDisplay::Active(active_time) => {
-                format!(
-                    "Active time: {}",
-                    humantime::format_duration(Duration::from_secs(active_time.as_secs()))
-                )
-            }
+            StatusDisplay::UpcomingBreak {
+                break_name,
+                starts_after,
+            } => format!(
+                "{break_name} break in {}",
+                countdown_duration_text(*starts_after)
+            ),
             StatusDisplay::DisabledFor(remaining) => {
                 format!("Disabled for {}", humantime::format_duration(*remaining))
             }
@@ -735,8 +739,11 @@ mod app {
         #[test]
         fn status_menu_text_renders_each_state() {
             assert_eq!(
-                status_menu_text(&StatusDisplay::Active(Duration::from_secs(65))),
-                "Active time: 1m 5s"
+                status_menu_text(&StatusDisplay::UpcomingBreak {
+                    break_name: String::from("short"),
+                    starts_after: Duration::from_secs(65),
+                }),
+                "short break in 1m 5s"
             );
             assert_eq!(
                 status_menu_text(&StatusDisplay::DisabledFor(Duration::from_secs(65))),
@@ -749,14 +756,20 @@ mod app {
         }
 
         #[test]
-        fn active_status_menu_text_floors_to_whole_seconds() {
+        fn upcoming_break_status_rounds_up_to_whole_seconds() {
             assert_eq!(
-                status_menu_text(&StatusDisplay::Active(Duration::from_nanos(999_999_999))),
-                "Active time: 0s"
+                status_menu_text(&StatusDisplay::UpcomingBreak {
+                    break_name: String::from("short"),
+                    starts_after: Duration::from_nanos(999_999_999),
+                }),
+                "short break in 1s"
             );
             assert_eq!(
-                status_menu_text(&StatusDisplay::Active(Duration::from_millis(8_391))),
-                "Active time: 8s"
+                status_menu_text(&StatusDisplay::UpcomingBreak {
+                    break_name: String::from("long"),
+                    starts_after: Duration::from_millis(8_391),
+                }),
+                "long break in 9s"
             );
         }
 

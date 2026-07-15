@@ -32,6 +32,27 @@ fn shutdown_exits_cleanly_after_scheduler_setup() {
 }
 
 #[test]
+fn startup_shows_the_first_upcoming_break() -> Result<(), ConfigError> {
+    let (backend, _commands) = ScriptedBackend::new([RuntimeEvent::Shutdown]).into_parts();
+    let (ui, ui_commands) = recording_ui();
+    let schedule = BreakSchedule::try_from(test_config().breaks)?;
+
+    run_with_event_sources(
+        schedule,
+        backend,
+        RuntimeSync::inactive(),
+        ui,
+        Clock::Fixed(TEST_NOW_MS),
+    );
+
+    assert_eq!(
+        received_ui_commands(&ui_commands),
+        vec![upcoming_break_status("short", Duration::from_secs(10))]
+    );
+    Ok(())
+}
+
+#[test]
 fn active_time_event_starts_expected_configured_break() {
     let (backend, commands) = ScriptedBackend::new([
         RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10)),
@@ -1846,13 +1867,13 @@ fn pre_break_notification_fires_once_when_notice_window_is_reached()
     assert_eq!(
         received_ui_commands(&ui_commands),
         vec![
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(4))),
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(5))),
+            upcoming_break_status("short", Duration::from_secs(6)),
+            upcoming_break_status("short", Duration::from_secs(5)),
             UiCommand::ShowPreBreakNotification(PreBreakNotification {
                 break_name: String::from("short"),
                 starts_after: Duration::from_secs(5),
             }),
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(6))),
+            upcoming_break_status("short", Duration::from_secs(4)),
         ]
     );
     Ok(())
@@ -1887,23 +1908,22 @@ fn pre_break_notification_updates_once_for_final_warning() -> Result<(), Box<dyn
     assert_eq!(
         received_ui_commands(&ui_commands),
         vec![
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(29))),
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(30))),
+            upcoming_break_status("short", Duration::from_secs(31)),
+            upcoming_break_status("short", Duration::from_secs(30)),
             UiCommand::ShowPreBreakNotification(PreBreakNotification {
                 break_name: String::from("short"),
                 starts_after: Duration::from_secs(30),
             }),
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(35))),
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(40))),
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(45))),
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(50))),
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(55))),
+            upcoming_break_status("short", Duration::from_secs(25)),
+            upcoming_break_status("short", Duration::from_secs(20)),
+            upcoming_break_status("short", Duration::from_secs(15)),
+            upcoming_break_status("short", Duration::from_secs(10)),
+            upcoming_break_status("short", Duration::from_secs(5)),
             UiCommand::ShowPreBreakNotification(PreBreakNotification {
                 break_name: String::from("short"),
                 starts_after: Duration::from_secs(5),
             }),
             UiCommand::ClearPreBreakNotification,
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::ZERO)),
         ]
     );
     Ok(())
@@ -1932,13 +1952,12 @@ fn pre_break_notification_uses_half_interval_lead_for_short_schedules()
     assert_eq!(
         received_ui_commands(&ui_commands),
         vec![
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(5))),
+            upcoming_break_status("short", Duration::from_secs(5)),
             UiCommand::ShowPreBreakNotification(PreBreakNotification {
                 break_name: String::from("short"),
                 starts_after: Duration::from_secs(5),
             }),
             UiCommand::ClearPreBreakNotification,
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::ZERO)),
         ]
     );
     Ok(())
@@ -1968,25 +1987,24 @@ fn pre_break_notification_uses_five_second_boundary_for_twenty_second_schedule()
     assert_eq!(
         received_ui_commands(&ui_commands),
         vec![
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(10))),
+            upcoming_break_status("short", Duration::from_secs(10)),
             UiCommand::ShowPreBreakNotification(PreBreakNotification {
                 break_name: String::from("short"),
                 starts_after: Duration::from_secs(10),
             }),
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(15))),
+            upcoming_break_status("short", Duration::from_secs(5)),
             UiCommand::ShowPreBreakNotification(PreBreakNotification {
                 break_name: String::from("short"),
                 starts_after: Duration::from_secs(5),
             }),
             UiCommand::ClearPreBreakNotification,
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::ZERO)),
         ]
     );
     Ok(())
 }
 
 #[test]
-fn idle_reset_clears_pre_break_notification_and_active_time_display()
+fn idle_reset_clears_pre_break_notification_and_resets_upcoming_break_display()
 -> Result<(), Box<dyn std::error::Error>> {
     let (backend, commands) = test_backend();
     let (ui, ui_commands) = recording_ui();
@@ -2006,14 +2024,14 @@ fn idle_reset_clears_pre_break_notification_and_active_time_display()
     assert_eq!(
         received_ui_commands(&ui_commands),
         vec![
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(5))),
+            upcoming_break_status("short", Duration::from_secs(5)),
             UiCommand::ShowPreBreakNotification(PreBreakNotification {
                 break_name: String::from("short"),
                 starts_after: Duration::from_secs(5),
             }),
             UiCommand::ClearPreBreakNotification,
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::ZERO)),
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(5))),
+            upcoming_break_status("short", Duration::from_secs(10)),
+            upcoming_break_status("short", Duration::from_secs(5)),
             UiCommand::ShowPreBreakNotification(PreBreakNotification {
                 break_name: String::from("short"),
                 starts_after: Duration::from_secs(5),
@@ -2073,18 +2091,18 @@ fn pre_break_notification_resets_after_break_finishes() -> Result<(), Box<dyn st
     assert_eq!(
         received_ui_commands(&ui_commands),
         vec![
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(5))),
+            upcoming_break_status("short", Duration::from_secs(5)),
             UiCommand::ShowPreBreakNotification(PreBreakNotification {
                 break_name: String::from("short"),
                 starts_after: Duration::from_secs(5),
             }),
             UiCommand::ClearPreBreakNotification,
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::ZERO)),
+            upcoming_break_status("long", Duration::from_secs(10)),
             UiCommand::UpdateManualBreakAvailability(manual_break_availability(&[
                 ("long", true),
                 ("short", false),
             ])),
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(5))),
+            upcoming_break_status("long", Duration::from_secs(5)),
             UiCommand::ShowPreBreakNotification(PreBreakNotification {
                 break_name: String::from("long"),
                 starts_after: Duration::from_secs(5),
@@ -2124,6 +2142,7 @@ fn manual_break_availability_updates_when_long_break_is_next()
     assert_eq!(
         received_ui_commands(&ui_commands),
         vec![
+            upcoming_break_status("long", Duration::from_secs(10)),
             UiCommand::UpdateManualBreakAvailability(manual_break_availability(&[
                 ("long", true),
                 ("short", false),
@@ -2132,6 +2151,7 @@ fn manual_break_availability_updates_when_long_break_is_next()
                 ("long", true),
                 ("short", true),
             ])),
+            upcoming_break_status("short", Duration::from_secs(10)),
         ]
     );
     Ok(())
@@ -2166,7 +2186,7 @@ fn disabled_and_pending_states_suppress_pre_break_notifications()
         received_ui_commands(&ui_commands),
         vec![
             UiCommand::UpdateStatus(StatusDisplay::DisabledUntilRestart),
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::ZERO)),
+            upcoming_break_status("short", Duration::from_secs(10)),
         ]
     );
     Ok(())
@@ -2201,7 +2221,7 @@ fn timed_disable_shows_countdown_status_until_reenabled() -> Result<(), Box<dyn 
             UiCommand::UpdateStatus(StatusDisplay::DisabledFor(Duration::from_secs(3))),
             UiCommand::UpdateStatus(StatusDisplay::DisabledFor(Duration::from_secs(2))),
             UiCommand::UpdateStatus(StatusDisplay::DisabledFor(Duration::from_secs(1))),
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::ZERO)),
+            upcoming_break_status("short", Duration::from_secs(10)),
         ]
     );
     Ok(())
@@ -2224,7 +2244,7 @@ fn synced_active_time_can_trigger_pre_break_notification() -> Result<(), Box<dyn
     assert_eq!(
         received_ui_commands(&ui_commands),
         vec![
-            UiCommand::UpdateStatus(StatusDisplay::Active(Duration::from_secs(5))),
+            upcoming_break_status("short", Duration::from_secs(5)),
             UiCommand::ShowPreBreakNotification(PreBreakNotification {
                 break_name: String::from("short"),
                 starts_after: Duration::from_secs(5),
@@ -2556,6 +2576,13 @@ fn recording_ui() -> (RuntimeUi, flume::Receiver<UiCommand>) {
 
 fn received_ui_commands(receiver: &flume::Receiver<UiCommand>) -> Vec<UiCommand> {
     receiver.try_iter().collect()
+}
+
+fn upcoming_break_status(break_name: &str, starts_after: Duration) -> UiCommand {
+    UiCommand::UpdateStatus(StatusDisplay::UpcomingBreak {
+        break_name: break_name.to_owned(),
+        starts_after,
+    })
 }
 
 fn peer_id() -> Result<PeerId, Box<dyn std::error::Error>> {

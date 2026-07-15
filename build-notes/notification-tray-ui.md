@@ -18,8 +18,10 @@
 - Use `notify-rust` for passive desktop notifications.
 - On macOS, configure the `tao` event loop as an accessory app and hide Dock
   visibility before the loop runs so RustEyes is menu-bar/tray only.
-- Follow-up refinement: show the scheduler's accumulated active time as a
-  disabled status row in the tray/menu-bar dropdown.
+- Follow-up refinement: the disabled status row originally showed accumulated
+  active time. It now shows the configured next break type and remaining active
+  time, such as `short break in 20m`, using the scheduler's upcoming-break
+  snapshot so longer-break cadence is reflected correctly.
 - Follow-up fix: local macOS runs now build and register
   `target/macos/RustEyes.app` with bundle id `dev.rusteyes.RustEyes`, and
   `make run` launches the bundled binary so notification permissions and
@@ -41,9 +43,9 @@
   app ICNS were regenerated from it. The tray assets remove the light source
   background so the menu-bar/tray icon remains transparent; the app icon keeps
   the opaque source-logo background.
-- Follow-up refinement: floor the active-time status row to whole seconds
-  before formatting it so fractional `Duration` values do not expose
-  millisecond, microsecond, or nanosecond units in the tray/menu-bar dropdown.
+- Follow-up refinement: round the next-break countdown up to whole seconds,
+  matching the pre-break notification countdown without exposing subsecond
+  units in the tray/menu-bar dropdown.
 - Follow-up refinement: runtime now sends manual-break availability updates so
   tray/menu-bar controls can disable shorter breaks while a longer scheduled
   break is next.
@@ -58,9 +60,12 @@
   a break is pending.
 - UI-originated manual breaks and disable controls use the same local runtime
   paths as backend-originated controls and can be synced to authenticated peers.
-- The active-time row starts at `0s`, updates when local or synced active-time
-  increments change scheduler accumulation, and resets when breaks or disable
-  controls reset scheduler active time.
+- The status row is initialized from the scheduler before the first runtime
+  event, counts down on local or synced active-time increments, and changes to
+  the correct configured break type as scheduled cadence advances.
+- Idle resets restore the full remaining active-time countdown. While a break
+  is pending, the last upcoming-break status remains visible until finishing
+  the break refreshes it to the following scheduled break.
 - Manual break controls are ordered by scheduled cadence from shortest to
   longest, using each break type's slot interval.
 - Manual break controls whose interval is shorter than the next scheduled break
@@ -75,11 +80,13 @@
 - The checked-in tray PNG is 64x64 RGBA, the embedded `.rgba` file is 16,384
   bytes, and the checked-in ICNS extracts to 16, 32, 48, 128, 256, 512, and
   1024 pixel PNG entries.
-- The active-time row is displayed at whole-second precision while the runtime
-  and scheduler keep their precise accumulated duration internally.
+- The next-break countdown is displayed at whole-second precision while the
+  runtime and scheduler keep their precise duration internally.
 
 ## Commands
 
+- Next-break status refinement: `make check` passes (format check, Clippy with
+  warnings denied, and 336 tests).
 - `make check`
 - `make -B macos-app-build`
 - `plutil -lint target/macos/RustEyes.app/Contents/Info.plist`

@@ -203,7 +203,7 @@ struct DaemonRuntime<'a> {
     current_break: Option<CurrentBreakState>,
     pre_break_notice: Option<PreBreakNoticeState>,
     notified_rejected_peers: BTreeSet<PeerId>,
-    displayed_status: StatusDisplay,
+    displayed_status: Option<StatusDisplay>,
     displayed_manual_break_availability: BTreeMap<String, bool>,
     local_peer_id: Option<PeerId>,
     clock: Clock,
@@ -237,7 +237,7 @@ impl<'a> DaemonRuntime<'a> {
             current_break: None,
             pre_break_notice: None,
             notified_rejected_peers: BTreeSet::new(),
-            displayed_status: StatusDisplay::Active(Duration::ZERO),
+            displayed_status: None,
             displayed_manual_break_availability,
             local_peer_id: sync_runtime.local_peer_id,
             clock,
@@ -245,6 +245,8 @@ impl<'a> DaemonRuntime<'a> {
     }
 
     fn run(&mut self) {
+        self.update_status_display();
+
         while let Some(input) = self.next_input() {
             if !self.handle_input(input) {
                 break;
@@ -1001,15 +1003,22 @@ impl<'a> DaemonRuntime<'a> {
 
     fn update_status_display(&mut self) {
         let status = match self.disable_mode {
-            DisableMode::Enabled => StatusDisplay::Active(self.scheduler.active_elapsed()),
-            DisableMode::Timed { ends_at_ms } => {
-                StatusDisplay::DisabledFor(self.timed_disable_remaining(ends_at_ms))
-            }
-            DisableMode::UntilRestart => StatusDisplay::DisabledUntilRestart,
+            DisableMode::Enabled => self.scheduler.upcoming_scheduled_break().map(|upcoming| {
+                StatusDisplay::UpcomingBreak {
+                    break_name: upcoming.scheduled_break.name,
+                    starts_after: upcoming.starts_after,
+                }
+            }),
+            DisableMode::Timed { ends_at_ms } => Some(StatusDisplay::DisabledFor(
+                self.timed_disable_remaining(ends_at_ms),
+            )),
+            DisableMode::UntilRestart => Some(StatusDisplay::DisabledUntilRestart),
         };
 
-        if self.displayed_status != status {
-            self.displayed_status = status.clone();
+        if let Some(status) = status
+            && self.displayed_status.as_ref() != Some(&status)
+        {
+            self.displayed_status = Some(status.clone());
             if let Err(error) = self.ui.send_command(UiCommand::UpdateStatus(status)) {
                 warn!(%error, "failed to send status UI update");
             }
