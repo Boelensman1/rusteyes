@@ -1,0 +1,141 @@
+{
+  "nodes": {
+    "claude-code": {
+      "inputs": {
+        "nixpkgs": [
+          "milly-base",
+          "nixpkgs"
+        ],
+        "systems": "systems"
+      },
+      "locked": {
+        "lastModified": 1794279708,
+        "narHash": "sha256-K+cKtfjmSKhoSfS5nXRR+i8Ija/0htXiLc3o25JXKTU=",
+        "owner": "sadjow",
+        "repo": "claude-code-nix",
+        "rev": "36dfedaa4451a8beb69fe651b1f25920a74c7e5a",
+        "type": "github"
+      },
+      "original": {
+        "owner": "sadjow",
+        "repo": "claude-code-nix",
+        "type": "github"
+      }
+    },
+    "codex": {
+      "inputs": {
+        "flake-utils": "flake-utils",
+        "nixpkgs": [
+          "milly-base",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1794348542,
+        "narHash": "sha256-fOS55Ti40BIaqhh+n56vOBslQUT8ymFM352ec9tza3s=",
+        "owner": "sadjow",
+        "repo": "codex-cli-nix",
+        "rev": "8a99245315baee447cd2833f5965222c50d74c9f",
+        "type": "github"
+      },
+      "original": {
+        "owner": "sadjow",
+        "repo": "codex-cli-nix",
+        "type": "github"
+      }
+    },
+    "flake-utils": {
+      "inputs": {
+        "systems": "systems_2"
+      },
+      "locked": {
+        "lastModified": 1791914995,
+        "narHash": "sha256-Zf/xfQEAasnwnmEfHqW/4hjDE/s44yn2hD4RuVIZRjA=",
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "rev": "b7a79d3fea1e214f6d668d521cecec0c01e26544",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "type": "github"
+      }
+    },
+    "milly-base": {
+      "inputs": {
+        "claude-code": "claude-code",
+        "codex": "codex",
+        "nixpkgs": "nixpkgs"
+      },
+      "locked": {
+        "dir": "nix",
+        "lastModified": 1795247009,
+        "narHash": "sha256-UBbwOxqRCW3sQ3vr/HhtZTnOnWE+U71K2FXoYyj+NS4=",
+        "ref": "refs/heads/main",
+        "rev": "305203fa7682680daf38d1ba60dee2b552feaf89",
+        "revCount": 666,
+        "type": "git",
+        "url": "https://github.com/wtflegal/milly2.git"
+      },
+      "original": {
+        "dir": "nix",
+        "type": "git",
+        "url": "https://github.com/wtflegal/milly2.git"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1794165970,
+        "narHash": "sha256-XuAV2cUwaod3Bt4XFVqiXz3v1w2ex16W6Sv4S7EWres=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "ac588ef1c914865dad517b337ea0eb9694a4021c",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-26.05",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "milly-base": "milly-base"
+      }
+    },
+    "systems": {
+      "locked": {
+        "lastModified": 1791244623,
+        "narHash": "sha256-uuanbkFk8a313Zfrxdcz8Us/yQtaxNnKJtX8v0ZPpd8=",
+        "owner": "nix-systems",
+        "repo": "default",
+        "rev": "d36eeed142f88b5a636f2e3856a53c61654cf29b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-systems",
+        "repo": "default",
+        "type": "github"
+      }
+    },
+    "systems_2": {
+      "locked": {
+        "lastModified": 1681028828,
+        "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",
+        "owner": "nix-systems",
+        "repo": "default",
+        "rev": "da67096a3b9bf56a91d16901293e51ba5b49a27e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-systems",
+        "repo": "default",
+        "type": "github"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

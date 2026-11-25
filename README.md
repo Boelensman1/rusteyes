@@ -162,3 +162,10 @@ falls back to `nix develop --command cargo ...`.
 The project includes a local Codex hook that runs `make fmt` after Codex edits
 files. Open `/hooks` in Codex once, review the hook, and trust it for this
 repository.
+
+## Milly IDE
+
+`nix/flake.nix` and `nix/milly.nix` build the Milly IDE container for this
+repository. They are a separate flake so that consumers of the root flake don't
+inherit the Milly base input. In the Milly IDE, set the repository's
+_Settings -> Repository -> Nix Flake Directory_ to `nix`.
