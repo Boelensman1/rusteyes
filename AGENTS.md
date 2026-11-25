@@ -6,7 +6,6 @@
   Safe Eyes replacement.
 - Keep Cargo as the source of truth for Rust builds. Use `make` only as a thin
   task runner around Cargo and Nix.
-- Claude-specific configuration is intentionally out of scope for now.
 
 ## Commands
 
