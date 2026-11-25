@@ -18,6 +18,16 @@
 - Follow-up fix made the 500 ms overlay poll a target UI/state cadence rather
   than the countdown source of truth, preventing early or delayed backend
   wakeups from changing visible break length.
+- Follow-up fix: overlays now cover every display, not only the primary one.
+  `NSWindow(contentRect:...screen:)` interprets `contentRect` relative to the
+  given screen's origin, so passing the global `screen.frame` offset each
+  non-primary window by its screen origin a second time, leaving it off-display.
+  Windows are now created at a zero origin and then pinned with
+  `setFrame(screen.frame, ...)` in global coordinates.
+- The same fix corrected the Quartz-to-AppKit point flip used for the
+  lock-after-break control: it now flips about the primary display's height
+  instead of the union of all screen frames, which was wrong when displays have
+  different heights or are stacked vertically.
 
 ## Decisions
 
@@ -41,6 +51,10 @@
   and no longer emitted helper stderr during startup.
 - The helper smoke test exercised overlay creation and cleanup on macOS; visual
   inspection is not available from the command output.
+- The multi-display fix was made from a Linux container: `make check` passed,
+  but the Swift helper was not built and the fix still needs checking on a Mac
+  with a secondary display (overlay coverage and the lock control on each
+  screen).
 
 ## Follow-up
 

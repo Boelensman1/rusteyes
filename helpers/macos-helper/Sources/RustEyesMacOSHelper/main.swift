@@ -268,13 +268,18 @@ private final class BreakOverlayController {
 
     private func overlayWindow(for screen: NSScreen, state: BreakOverlayState) -> NSWindow {
         let frame = screen.frame
+        // With a `screen:` argument, AppKit treats `contentRect` as relative to
+        // that screen's origin, so passing the global `screen.frame` pushed every
+        // non-primary overlay off its display. Create at the screen's local
+        // origin, then pin the window to the global frame explicitly.
         let window = NSWindow(
-            contentRect: frame,
+            contentRect: NSRect(origin: .zero, size: frame.size),
             styleMask: .borderless,
             backing: .buffered,
             defer: false,
             screen: screen
         )
+        window.setFrame(frame, display: false)
         window.backgroundColor = .black
         window.collectionBehavior = [
             .canJoinAllSpaces,
@@ -316,20 +321,15 @@ private final class BreakOverlayController {
     }
 
     private func flippedScreenPoint(_ point: CGPoint) -> CGPoint {
-        let frame = combinedScreenFrame()
-        return CGPoint(x: point.x, y: frame.maxY - (point.y - frame.minY))
-    }
-
-    private func combinedScreenFrame() -> NSRect {
-        guard var frame = NSScreen.screens.first?.frame else {
-            return .zero
+        // Quartz global coordinates put the origin at the top-left of the
+        // primary display with y growing down; AppKit puts it at the
+        // bottom-left of the primary display with y growing up. The flip is
+        // always about the primary display's height, not the union of all
+        // displays, or clicks on screens of different heights miss.
+        guard let primaryFrame = NSScreen.screens.first?.frame else {
+            return point
         }
-
-        for screen in NSScreen.screens.dropFirst() {
-            frame = frame.union(screen.frame)
-        }
-
-        return frame
+        return CGPoint(x: point.x, y: primaryFrame.maxY - point.y)
     }
 
     private func requestLockAfterBreak(atScreenPoint point: CGPoint) -> Bool {
