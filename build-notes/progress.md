@@ -420,6 +420,11 @@
   faster in the final 5 seconds and clears when the break starts or the
   notice is cleared, so the break is noticeable even when macOS mutes
   notifications during calls.
+- Completed `macos-helper-restart`: a failed macOS helper is killed (releasing
+  its input tap) and restarted, up to 3 times in 10 minutes, instead of
+  shutting RustEyes down. A break still running is shown again with its
+  remaining time. Manual verification of the process-level restart on a Mac
+  is pending.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.

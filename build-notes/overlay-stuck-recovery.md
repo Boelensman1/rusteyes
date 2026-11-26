@@ -170,15 +170,15 @@ input tap was ever released once a break started.
   overlay is a no-op, apart from the finish beep.
 - Rust now logs at INFO when a finish is deferred because the session is
   locked, and when the deferred finish completes after unlock.
-- Verification: `make check` passes (319 tests); `swiftc -parse` passes on
-  Linux. `make macos-helper-build` and the manual closed-lid test are still
+- Verification: `swiftc -parse` passes on Linux. `make check` passes but does
+  not compile the macOS-only Rust module; the INFO logs were compile-checked
+  later with a macOS-target clippy run (see `macos-helper-restart`). `make macos-helper-build` and the manual closed-lid test are still
   pending on a Mac.
 
 ## Follow-up
 
-- A helper timeout makes the whole RustEyes process exit (backend
-  `Shutdown` ends the runtime). Consider restarting the helper instead, or
-  confirm the LaunchAgent restarts RustEyes.
+- Done in `macos-helper-restart`: a helper timeout no longer makes RustEyes
+  exit.
 - Manual check for Watchdog C: start a long break with lock-after-break, close
   the lid past the break end for longer than the password delay, then open.
   Input should be released within ~15s, and the helper stderr should log

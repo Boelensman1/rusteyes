@@ -31,19 +31,34 @@ const OVERLAY_TICK_INTERVAL: Duration = Duration::from_millis(500);
 // would keep `MacOSHelperBackend::drop` from tearing the helper down and leave
 // the input-blocking event tap installed).
 const HELPER_READ_TIMEOUT: Duration = Duration::from_secs(5);
+// A failed helper is killed and restarted rather than taking RustEyes down.
+// The budget stops a helper that fails deterministically (for example missing
+// permissions) from restarting forever; past it the backend shuts down as
+// before.
+const HELPER_RESTART_LIMIT: usize = 3;
+const HELPER_RESTART_WINDOW: Duration = Duration::from_mins(10);
+const HELPER_RESTART_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 #[allow(clippy::module_name_repetitions)]
 pub(crate) struct MacOSHelperBackend {
+    path: PathBuf,
     child: Child,
     core: MacOSHelperCore<ChildStdin>,
     shutdown_sent: bool,
+    restarts: Vec<Instant>,
 }
 
 struct MacOSHelperCore<W> {
     session: HelperSession<W>,
     poller: ActivityPoller,
     active_break: Option<ActiveBreak>,
+    /// The break shown by the helper, kept so a restarted helper can show it
+    /// again with the remaining time.
+    active_break_spec: Option<ScheduledBreak>,
     lock: MacOSLock,
+    /// The first helper failure since the last restart. The backend restarts
+    /// the helper when this is set.
+    failure: Option<MacOSHelperError>,
 }
 
 impl MacOSHelperBackend {
@@ -59,35 +74,14 @@ impl MacOSHelperBackend {
 
     fn connect(lock_config: LockConfig) -> Result<Self, MacOSHelperError> {
         let path = helper_path();
-        let mut child = spawn_helper(&path)?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| MacOSHelperError::new("helper stdin was unavailable"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| MacOSHelperError::new("helper stdout was unavailable"))?;
-
-        if let Some(stderr) = child.stderr.take() {
-            spawn_stderr_mirror(&path, stderr);
-        }
-
-        let mut session = HelperSession::new(stdout, stdin);
-        if let Err(error) = session.handshake() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error);
-        }
-        if let Err(error) = session.preflight_permissions() {
-            shutdown_helper_after_startup_error(&mut child, &mut session);
-            return Err(error);
-        }
+        let (child, session) = start_helper(&path)?;
 
         Ok(Self {
+            path,
             child,
             core: MacOSHelperCore::new(session, MacOSLock::from(lock_config)),
             shutdown_sent: false,
+            restarts: Vec::new(),
         })
     }
 
@@ -107,12 +101,61 @@ impl MacOSHelperBackend {
                 BackendWait::Command(command) => self.core.handle_command(command),
                 BackendWait::Timeout => {
                     if let Err(error) = self.core.sample_once() {
-                        warn!(%error, "failed to poll macOS activity");
-                        _ = event_sender.send(RuntimeEvent::Shutdown);
-                        return;
+                        self.core.record_failure(error);
                     }
                 }
                 BackendWait::Disconnected => return,
+            }
+
+            if let Some(failure) = self.core.take_failure()
+                && let Err(error) = self.restart_helper(&failure)
+            {
+                warn!(%error, "giving up on macOS helper; shutting down");
+                while let Some(event) = self.core.next_event() {
+                    if event_sender.send(event).is_err() {
+                        return;
+                    }
+                }
+                _ = event_sender.send(RuntimeEvent::Shutdown);
+                return;
+            }
+        }
+    }
+
+    /// Replaces a failed helper with a fresh process. Killing the old helper
+    /// releases its input event tap immediately; a break that is still running
+    /// is shown again by the new helper.
+    fn restart_helper(&mut self, failure: &MacOSHelperError) -> Result<(), MacOSHelperError> {
+        warn!(error = %failure, "macOS helper failed; restarting it");
+        kill_helper(&mut self.child);
+        // The old protocol session is dead; never try to shut it down cleanly.
+        self.shutdown_sent = true;
+
+        loop {
+            let now = Instant::now();
+            self.restarts
+                .retain(|restarted_at| now.duration_since(*restarted_at) < HELPER_RESTART_WINDOW);
+            if self.restarts.len() >= HELPER_RESTART_LIMIT {
+                return Err(MacOSHelperError::new(format!(
+                    "helper failed {HELPER_RESTART_LIMIT} times within {} s",
+                    HELPER_RESTART_WINDOW.as_secs()
+                )));
+            }
+            self.restarts.push(now);
+
+            match start_helper(&self.path) {
+                Ok((child, session)) => {
+                    self.child = child;
+                    self.core.session = session;
+                    self.shutdown_sent = false;
+                    info!("restarted macOS helper");
+                    self.core.resume_after_restart();
+                    return Ok(());
+                }
+                Err(error) => {
+                    warn!(%error, "failed to restart macOS helper");
+                    thread::sleep(HELPER_RESTART_RETRY_DELAY);
+                }
             }
         }
     }
@@ -127,7 +170,61 @@ where
             session,
             poller: ActivityPoller::new(ACTIVITY_POLL_INTERVAL),
             active_break: None,
+            active_break_spec: None,
             lock,
+            failure: None,
+        }
+    }
+
+    fn record_failure(&mut self, error: MacOSHelperError) {
+        warn!(%error, "macOS backend error");
+        if self.failure.is_none() {
+            self.failure = Some(error);
+        }
+    }
+
+    fn take_failure(&mut self) -> Option<MacOSHelperError> {
+        self.failure.take()
+    }
+
+    fn resume_after_restart(&mut self) {
+        self.resume_after_restart_at(SystemTime::now());
+    }
+
+    /// Shows the active break on a freshly started helper. A break that already
+    /// ended (including one waiting for the session to unlock) is not shown
+    /// again; the next sample finishes it as usual.
+    fn resume_after_restart_at(&mut self, now: SystemTime) {
+        let Some(active_break) = self.active_break else {
+            return;
+        };
+        if active_break.has_deferred_finish() {
+            return;
+        }
+        let remaining = active_break.remaining_at(now);
+        if remaining.is_zero() {
+            return;
+        }
+
+        let mut scheduled_break =
+            self.active_break_spec
+                .clone()
+                .unwrap_or_else(|| ScheduledBreak {
+                    name: String::from("break"),
+                    origin: BreakOrigin::Manual,
+                    duration: remaining,
+                    message: String::new(),
+                    autolock: false,
+                });
+        scheduled_break.duration = remaining;
+        scheduled_break.autolock = active_break.lock_after_break();
+
+        info!(?remaining, "showing active break on restarted macOS helper");
+        if let Err(error) = self
+            .session
+            .send_command(BackendCommand::StartBreak(scheduled_break))
+        {
+            self.record_failure(error);
         }
     }
 
@@ -195,11 +292,13 @@ where
             }
 
             info!("macOS session unlocked; finishing deferred break");
-            self.finish_deferred_active_break()?;
+            // The break is over either way; tell the runtime even if the helper
+            // failed to clear, since a restarted helper has no overlay.
+            let result = self.finish_deferred_active_break();
             self.poller
                 .queue_event(RuntimeEvent::WallClockElapsed(elapsed));
             self.poller.queue_event(RuntimeEvent::BreakFinished);
-            return Ok(());
+            return result;
         }
 
         if let Some(update) = self
@@ -216,7 +315,7 @@ where
                 "sampled macOS break overlay tick"
             );
 
-            if update.finished {
+            let result = if update.finished {
                 if sample.session_locked {
                     info!(
                         "macOS break ended while the session was locked; deferring finish until unlock"
@@ -224,34 +323,42 @@ where
                     if let Some(active_break) = self.active_break.as_mut() {
                         active_break.defer_finish(update.lock_after_break);
                     }
+                    Ok(())
                 } else {
-                    self.finish_active_break(update.lock_after_break)?;
+                    self.finish_active_break(update.lock_after_break)
                 }
             } else {
                 self.session
-                    .update_break(update.remaining, update.lock_after_break)?;
-            }
+                    .update_break(update.remaining, update.lock_after_break)
+            };
+            // Queue runtime events even when the helper command failed: a
+            // finished break must still reach the runtime after a restart.
             queue_overlay_runtime_events(
                 &mut self.poller,
                 update,
                 update.finished && !sample.session_locked,
             );
+            return result;
         }
 
         Ok(())
     }
 
     fn start_break(&mut self, scheduled_break: ScheduledBreak) {
-        let duration = scheduled_break.duration;
-        let lock_after_break = scheduled_break.autolock;
-        if self.send_backend_command(BackendCommand::StartBreak(scheduled_break)) {
-            self.active_break = Some(ActiveBreak::new(duration, lock_after_break));
-        }
+        // Record the break before sending so a helper that fails to show it is
+        // restarted and shows it then, instead of the runtime waiting on a break
+        // the backend forgot.
+        self.active_break = Some(ActiveBreak::new(
+            scheduled_break.duration,
+            scheduled_break.autolock,
+        ));
+        self.active_break_spec = Some(scheduled_break.clone());
+        self.send_backend_command(BackendCommand::StartBreak(scheduled_break));
     }
 
     fn finish_break(&mut self, lock_after: bool) {
         if let Err(error) = self.finish_active_break(lock_after) {
-            self.queue_backend_error(&error);
+            self.record_failure(error);
         }
     }
 
@@ -295,9 +402,9 @@ where
     }
 
     fn clear_break(&mut self) {
-        if self.send_backend_command(BackendCommand::ClearBreak) {
-            self.active_break = None;
-        }
+        // A restarted helper must not show a break the runtime cleared.
+        self.active_break = None;
+        self.send_backend_command(BackendCommand::ClearBreak);
     }
 
     fn request_lock_after_current_break(&mut self) {
@@ -313,7 +420,7 @@ where
         };
 
         if let Err(error) = self.session.update_break(remaining, lock_after_break) {
-            self.queue_backend_error(&error);
+            self.record_failure(error);
         }
     }
 
@@ -325,19 +432,10 @@ where
         }
     }
 
-    fn send_backend_command(&mut self, command: BackendCommand) -> bool {
-        match self.session.send_command(command) {
-            Ok(()) => true,
-            Err(error) => {
-                self.queue_backend_error(&error);
-                false
-            }
+    fn send_backend_command(&mut self, command: BackendCommand) {
+        if let Err(error) = self.session.send_command(command) {
+            self.record_failure(error);
         }
-    }
-
-    fn queue_backend_error(&mut self, error: &MacOSHelperError) {
-        warn!(%error, "macOS backend error");
-        self.poller.queue_event(RuntimeEvent::Shutdown);
     }
 
     fn handle_command(&mut self, command: BackendCommand) {
@@ -365,12 +463,15 @@ where
         }) else {
             return;
         };
+        if let Some(spec) = self.active_break_spec.as_mut() {
+            spec.message.clone_from(&message);
+        }
 
         if let Err(error) = self
             .session
             .replace_break(message, remaining, lock_after_break)
         {
-            self.queue_backend_error(&error);
+            self.record_failure(error);
         }
     }
 }
@@ -1063,6 +1164,41 @@ where
                 break;
             }
         }
+    }
+}
+
+fn start_helper(path: &Path) -> Result<(Child, HelperSession<ChildStdin>), MacOSHelperError> {
+    let mut child = spawn_helper(path)?;
+    let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        kill_helper(&mut child);
+        return Err(MacOSHelperError::new(
+            "helper stdin or stdout was unavailable",
+        ));
+    };
+
+    if let Some(stderr) = child.stderr.take() {
+        spawn_stderr_mirror(path, stderr);
+    }
+
+    let mut session = HelperSession::new(stdout, stdin);
+    if let Err(error) = session.handshake() {
+        kill_helper(&mut child);
+        return Err(error);
+    }
+    if let Err(error) = session.preflight_permissions() {
+        shutdown_helper_after_startup_error(&mut child, &mut session);
+        return Err(error);
+    }
+
+    Ok((child, session))
+}
+
+fn kill_helper(child: &mut Child) {
+    if let Err(error) = child.kill() {
+        trace!(%error, "failed to kill macOS helper; it may have exited already");
+    }
+    if let Err(error) = child.wait() {
+        warn!(%error, "failed to reap macOS helper");
     }
 }
 
@@ -2137,6 +2273,182 @@ mod tests {
         );
         assert_eq!(poller.next_event(), Some(RuntimeEvent::BreakFinished));
         assert_eq!(poller.next_event(), None);
+    }
+
+    fn restart_test_break(duration: Duration) -> ScheduledBreak {
+        ScheduledBreak {
+            name: String::from("long"),
+            origin: BreakOrigin::Scheduled { slot: 4 },
+            duration,
+            message: String::from("Look away"),
+            autolock: false,
+        }
+    }
+
+    #[test]
+    fn failed_start_break_is_recorded_and_shown_again_after_restart()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut failed_output = Vec::new();
+        let mut restarted_output = Vec::new();
+        let mut core = MacOSHelperCore::new(
+            HelperSession::new(Cursor::new(Vec::new()), &mut failed_output),
+            MacOSLock::PlatformDefault,
+        );
+
+        core.handle_command(BackendCommand::StartBreak(restart_test_break(
+            Duration::from_mins(5),
+        )));
+
+        assert!(core.take_failure().is_some());
+        assert_eq!(
+            core.next_event(),
+            None,
+            "a helper failure must not shut down"
+        );
+        let Some(active_break) = core.active_break else {
+            panic!("the break must survive a helper failure");
+        };
+
+        core.session = HelperSession::new(
+            Cursor::new(br#"{"type":"commandComplete","command":"startBreak"}"#.to_vec()),
+            &mut restarted_output,
+        );
+        let started_at = ObservedTime::now();
+        core.active_break = Some(ActiveBreak::new_at(
+            Duration::from_mins(5),
+            active_break.lock_after_break(),
+            started_at,
+        ));
+        core.resume_after_restart_at(started_at.wall + Duration::from_mins(2));
+
+        assert!(core.take_failure().is_none());
+        drop(core);
+        assert_eq!(
+            daemon_messages(&restarted_output)?,
+            vec![DaemonMessage::StartBreak {
+                break_info: WireBreak {
+                    name: String::from("long"),
+                    origin: WireBreakOrigin::Scheduled { slot: 4 },
+                    duration_ms: 180_000,
+                    message: String::from("Look away"),
+                    autolock: false,
+                },
+            }]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn restart_resume_keeps_replaced_message_and_lock_request()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let input = Cursor::new(
+            br#"{"type":"commandComplete","command":"updateBreak"}
+{"type":"commandComplete","command":"updateBreak"}
+{"type":"commandComplete","command":"startBreak"}"#
+                .to_vec(),
+        );
+        let mut output = Vec::new();
+        let mut core = MacOSHelperCore::new(
+            HelperSession::new(input, &mut output),
+            MacOSLock::PlatformDefault,
+        );
+        let started_at = ObservedTime::now();
+        core.active_break = Some(ActiveBreak::new_at(
+            Duration::from_mins(5),
+            false,
+            started_at,
+        ));
+        core.active_break_spec = Some(restart_test_break(Duration::from_mins(5)));
+
+        core.handle_command(BackendCommand::ReplaceActiveBreak {
+            message: String::from("Stretch"),
+            remaining: Duration::from_mins(5),
+            lock_after: false,
+        });
+        core.handle_command(BackendCommand::RequestLockAfterCurrentBreak);
+        core.resume_after_restart();
+        drop(core);
+
+        let messages = daemon_messages(&output)?;
+        let Some(DaemonMessage::StartBreak { break_info }) = messages.last() else {
+            panic!("expected a resumed startBreak, got {messages:?}");
+        };
+        assert_eq!(break_info.message, "Stretch");
+        assert!(break_info.autolock);
+        assert!(break_info.duration_ms > 0 && break_info.duration_ms <= 300_000);
+        Ok(())
+    }
+
+    #[test]
+    fn restart_does_not_show_an_ended_or_deferred_break() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut output = Vec::new();
+        let mut core = MacOSHelperCore::new(
+            HelperSession::new(Cursor::new(Vec::new()), &mut output),
+            MacOSLock::PlatformDefault,
+        );
+        let started_at = ObservedTime::now();
+        core.active_break = Some(ActiveBreak::new_at(
+            Duration::from_mins(5),
+            false,
+            started_at,
+        ));
+
+        core.resume_after_restart_at(started_at.wall + Duration::from_mins(10));
+
+        if let Some(active_break) = core.active_break.as_mut() {
+            active_break.defer_finish(true);
+        }
+        core.resume_after_restart_at(started_at.wall + Duration::from_mins(1));
+
+        assert!(core.take_failure().is_none());
+        drop(core);
+        assert_eq!(daemon_messages(&output)?, Vec::new());
+        Ok(())
+    }
+
+    #[test]
+    fn failed_helper_finish_still_reports_break_finished() {
+        let input = Cursor::new(
+            br#"{"type":"activitySample","idleMs":0,"sessionLocked":false,"lockAfterBreakRequested":false}"#
+                .to_vec(),
+        );
+        let mut output = Vec::new();
+        let mut core = MacOSHelperCore::new(
+            HelperSession::new(input, &mut output),
+            MacOSLock::PlatformDefault,
+        );
+        let started_at = observed_start();
+        core.active_break = Some(ActiveBreak::new_at(
+            OVERLAY_TICK_INTERVAL,
+            false,
+            started_at,
+        ));
+
+        let result = core.sample_overlay_once_at(observed_after(started_at, OVERLAY_TICK_INTERVAL));
+
+        assert!(result.is_err(), "the helper never acknowledged finishBreak");
+        assert_eq!(core.active_break, None);
+        assert_eq!(
+            core.next_event(),
+            Some(RuntimeEvent::WallClockElapsed(OVERLAY_TICK_INTERVAL))
+        );
+        assert_eq!(core.next_event(), Some(RuntimeEvent::BreakFinished));
+    }
+
+    #[test]
+    fn failed_clear_break_still_forgets_the_break() {
+        let mut output = Vec::new();
+        let mut core = MacOSHelperCore::new(
+            HelperSession::new(Cursor::new(Vec::new()), &mut output),
+            MacOSLock::PlatformDefault,
+        );
+        core.active_break = Some(ActiveBreak::new(Duration::from_mins(5), false));
+
+        core.handle_command(BackendCommand::ClearBreak);
+
+        assert!(core.take_failure().is_some());
+        assert_eq!(core.active_break, None);
     }
 
     #[test]
