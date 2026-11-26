@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
-use tracing::{trace, warn};
+use tracing::{info, trace, warn};
 
 const PROTOCOL_VERSION: u16 = 10;
 const HELPER_PATH_ENV: &str = "RUSTEYES_MACOS_HELPER";
@@ -194,6 +194,7 @@ where
                 return Ok(());
             }
 
+            info!("macOS session unlocked; finishing deferred break");
             self.finish_deferred_active_break()?;
             self.poller
                 .queue_event(RuntimeEvent::WallClockElapsed(elapsed));
@@ -217,6 +218,9 @@ where
 
             if update.finished {
                 if sample.session_locked {
+                    info!(
+                        "macOS break ended while the session was locked; deferring finish until unlock"
+                    );
                     if let Some(active_break) = self.active_break.as_mut() {
                         active_break.defer_finish(update.lock_after_break);
                     }

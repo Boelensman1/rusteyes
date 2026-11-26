@@ -155,8 +155,15 @@ private final class BreakOverlayController {
     // thread so they can call `clear()` directly. See main.swift watchdog notes.
     private let zeroWatchdogTimeout = watchdogTimeout(defaultSeconds: 1)
     private let heartbeatWatchdogTimeout = watchdogTimeout(defaultSeconds: 10)
+    // Watchdog C: a wall-clock deadline at the break's expected end plus a
+    // grace period. Unlike A and B it does not depend on RustEyes behaving: a
+    // healthy RustEyes that keeps polling but never finishes (for example while
+    // it waits for a locked session to unlock) cannot hold input past it. Wall
+    // time keeps counting through system sleep.
+    private let breakDeadlineGrace = watchdogTimeout(defaultSeconds: 15)
     private var zeroWatchdog: DispatchSourceTimer?
     private var heartbeatWatchdog: DispatchSourceTimer?
+    private var breakDeadlineWatchdog: DispatchSourceTimer?
 
     func show(state: BreakOverlayState) throws {
         prepareApplication()
@@ -174,9 +181,10 @@ private final class BreakOverlayController {
             window.orderFrontRegardless()
         }
         NSCursor.arrow.set()
-        // The overlay is now blocking input; start the liveness watchdog so the
-        // tap is released even if RustEyes never asks us to clear it.
+        // The overlay is now blocking input; start the liveness and deadline
+        // watchdogs so the tap is released even if RustEyes never clears it.
         resetHeartbeatWatchdog()
+        resetBreakDeadlineWatchdog(remainingMs: state.remainingMs)
     }
 
     func update(remainingMs: UInt64, lockAfterBreak: Bool, message: String?) {
@@ -192,8 +200,10 @@ private final class BreakOverlayController {
         self.state = state
         updateWindows(with: state)
 
-        // An update is a sign of life from RustEyes.
+        // An update is a sign of life from RustEyes and carries the current
+        // remaining time, which moves the hard deadline.
         resetHeartbeatWatchdog()
+        resetBreakDeadlineWatchdog(remainingMs: remainingMs)
         if remainingMs == 0 {
             armZeroWatchdog()
         } else {
@@ -231,6 +241,7 @@ private final class BreakOverlayController {
         preBreakWarning.clear()
         disarmZeroWatchdog()
         disarmHeartbeatWatchdog()
+        disarmBreakDeadlineWatchdog()
         for window in windows {
             window.orderOut(nil)
             window.close()
@@ -276,20 +287,45 @@ private final class BreakOverlayController {
         heartbeatWatchdog = nil
     }
 
+    private func resetBreakDeadlineWatchdog(remainingMs: UInt64) {
+        guard state != nil else {
+            return
+        }
+        disarmBreakDeadlineWatchdog()
+        let remaining = DispatchTimeInterval.milliseconds(Int(min(remainingMs, UInt64(Int32.max))))
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(wallDeadline: .now() + remaining + breakDeadlineGrace)
+        installWatchdogHandler(
+            on: timer,
+            reason: "break overlay outlived its deadline"
+        )
+        timer.resume()
+        breakDeadlineWatchdog = timer
+    }
+
+    private func disarmBreakDeadlineWatchdog() {
+        breakDeadlineWatchdog?.cancel()
+        breakDeadlineWatchdog = nil
+    }
+
     private func scheduleWatchdog(
         after timeout: DispatchTimeInterval,
         reason: String
     ) -> DispatchSourceTimer {
         let timer = DispatchSource.makeTimerSource(queue: .main)
         timer.schedule(deadline: .now() + timeout)
+        installWatchdogHandler(on: timer, reason: reason)
+        timer.resume()
+        return timer
+    }
+
+    private func installWatchdogHandler(on timer: DispatchSourceTimer, reason: String) {
         timer.setEventHandler { [weak self] in
             writeStandardErrorLine(
                 "watchdog fired (\(reason)); force-clearing break overlay to release input"
             )
             self?.clear()
         }
-        timer.resume()
-        return timer
     }
 
     private func overlayWindow(for screen: NSScreen, state: BreakOverlayState) -> NSWindow {

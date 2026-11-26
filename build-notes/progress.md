@@ -341,7 +341,10 @@
   `RUSTEYES_HELPER_WATCHDOG_MS`) that self-clear the overlay if dismissal never
   arrives; and `HelperSession` reads are now bounded by a 5s `recv_timeout` via
   a reader thread so a wedged helper is killed (the OS then removes the tap)
-  instead of blocking the backend forever. Manual macOS verification of the
+  instead of blocking the backend forever. A later wall-clock deadline
+  watchdog (break end + 15s) releases the overlay even while RustEyes defers
+  the finish for a locked session, which was the likely cause of a
+  closed-lid lock-after-break hang. Manual macOS verification of the
   locked-lid zero-finish path, watchdogs, and wedge path is pending.
 - Completed `macos-locked-break-finish`: helper protocol version 9 activity
   samples now include `sessionLocked` from `CGSessionCopyCurrentDictionary`.

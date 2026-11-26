@@ -139,7 +139,51 @@ input tap was ever released once a break started.
     fires, the helper is killed, and input returns within the deadline + 2s.
   - Paused break: stay active during a break and confirm neither watchdog fires.
 
+## Deadline watchdog (closed-lid lock-after-break hang)
+
+- Report: during a 5-minute long break with locking enabled, the lid was
+  closed for ~10 minutes (Power Nap on, "require password after 5 minutes",
+  no external display). After opening, the black overlay showed `0:00`/`0:01`
+  and the Mac needed a reboot.
+- The user's `rusteyes.err.log` (WARN and up only; INFO goes to the out log)
+  has no entries for that incident. The only helper failures in it
+  (2026-09-16, 2026-10-01) are "helper did not respond within 5000 ms"
+  followed by a late `activitySample`. That path worked as designed: the helper
+  exited in under 0.2s, which released input. But `RuntimeEvent::Shutdown`
+  then quits RustEyes entirely.
+- Likely cause: the `macos-locked-break-finish` deferred finish has no time
+  bound. Once the deadline passes while `CGSSessionScreenIsLocked` is true,
+  Rust stops sending `updateBreak` (the display freezes at its last value) and
+  waits for an unlocked sample. Meanwhile it keeps polling every 500ms, so
+  Watchdog B never fires, and no zero update is sent, so Watchdog A never arms.
+  If the user cannot unlock (the overlay covers the lock screen, or the input
+  tap swallows its input), the overlay and tap stay up indefinitely. This
+  matches the report but was not reproduced; there is no Mac in the dev
+  container.
+- Fix: **Watchdog C** in the Swift helper, a `DispatchSourceTimer` scheduled
+  with `wallDeadline` at `remainingMs + 15s`. It is armed in `show`, re-armed
+  on every `updateBreak` (so replaced breaks move it), and disarmed in
+  `clear`. Wall time counts sleep, so a break that ends during closed-lid
+  sleep is released within 15s of wake whatever the lock state or Rust's
+  behavior. `RUSTEYES_HELPER_WATCHDOG_MS` overrides the grace period too.
+  Rust's later deferred `finishBreak` remains harmless: `clear` on an empty
+  overlay is a no-op, apart from the finish beep.
+- Rust now logs at INFO when a finish is deferred because the session is
+  locked, and when the deferred finish completes after unlock.
+- Verification: `make check` passes (319 tests); `swiftc -parse` passes on
+  Linux. `make macos-helper-build` and the manual closed-lid test are still
+  pending on a Mac.
+
 ## Follow-up
+
+- A helper timeout makes the whole RustEyes process exit (backend
+  `Shutdown` ends the runtime). Consider restarting the helper instead, or
+  confirm the LaunchAgent restarts RustEyes.
+- Manual check for Watchdog C: start a long break with lock-after-break, close
+  the lid past the break end for longer than the password delay, then open.
+  Input should be released within ~15s, and the helper stderr should log
+  `watchdog fired (break overlay outlived its deadline)` if the deferred path
+  was hit.
 
 - Consider surfacing watchdog firings as a user-visible notification so a
   recovered stuck overlay is diagnosable without reading stderr.
