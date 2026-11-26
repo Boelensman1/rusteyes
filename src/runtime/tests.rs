@@ -1902,8 +1902,13 @@ fn pre_break_notification_updates_once_for_final_warning() -> Result<(), Box<dyn
     )?;
 
     assert_eq!(
-        received_commands(&commands),
-        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+        received_commands_with_warnings(&commands),
+        vec![
+            show_pre_break_warning(Duration::from_secs(30)),
+            show_pre_break_warning(Duration::from_secs(5)),
+            BackendCommand::ClearPreBreakWarning,
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+        ]
     );
     assert_eq!(
         received_ui_commands(&ui_commands),
@@ -2020,7 +2025,14 @@ fn idle_reset_clears_pre_break_notification_and_resets_upcoming_break_display()
         ],
     )?;
 
-    assert!(received_commands(&commands).is_empty());
+    assert_eq!(
+        received_commands_with_warnings(&commands),
+        vec![
+            show_pre_break_warning(Duration::from_secs(5)),
+            BackendCommand::ClearPreBreakWarning,
+            show_pre_break_warning(Duration::from_secs(5)),
+        ]
+    );
     assert_eq!(
         received_ui_commands(&ui_commands),
         vec![
@@ -2082,10 +2094,13 @@ fn pre_break_notification_resets_after_break_finishes() -> Result<(), Box<dyn st
     )?;
 
     assert_eq!(
-        received_commands(&commands),
+        received_commands_with_warnings(&commands),
         vec![
+            show_pre_break_warning(Duration::from_secs(5)),
+            BackendCommand::ClearPreBreakWarning,
             BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
             BackendCommand::FinishBreak { lock_after: false },
+            show_pre_break_warning(Duration::from_secs(5)),
         ]
     );
     assert_eq!(
@@ -2152,6 +2167,30 @@ fn manual_break_availability_updates_when_long_break_is_next()
                 ("short", true),
             ])),
             upcoming_break_status("short", Duration::from_secs(10)),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn disabling_during_pre_break_warning_clears_it() -> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+
+    run_config_with_inputs_and_ui(
+        test_config(),
+        backend,
+        RuntimeUi::inactive(),
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
+            backend_input(RuntimeEvent::Disable(DisableRequest::UntilRestart)),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands_with_warnings(&commands),
+        vec![
+            show_pre_break_warning(Duration::from_secs(5)),
+            BackendCommand::ClearPreBreakWarning,
         ]
     );
     Ok(())
@@ -2564,8 +2603,28 @@ fn test_backend() -> (BackendActor, flume::Receiver<BackendCommand>) {
     )
 }
 
+/// Backend commands other than the cosmetic pre-break warning, which most tests
+/// do not care about. Use `received_commands_with_warnings` to assert on it.
 fn received_commands(receiver: &flume::Receiver<BackendCommand>) -> Vec<BackendCommand> {
+    received_commands_with_warnings(receiver)
+        .into_iter()
+        .filter(|command| {
+            !matches!(
+                command,
+                BackendCommand::ShowPreBreakWarning { .. } | BackendCommand::ClearPreBreakWarning
+            )
+        })
+        .collect()
+}
+
+fn received_commands_with_warnings(
+    receiver: &flume::Receiver<BackendCommand>,
+) -> Vec<BackendCommand> {
     receiver.try_iter().collect()
+}
+
+fn show_pre_break_warning(starts_after: Duration) -> BackendCommand {
+    BackendCommand::ShowPreBreakWarning { starts_after }
 }
 
 fn recording_ui() -> (RuntimeUi, flume::Receiver<UiCommand>) {

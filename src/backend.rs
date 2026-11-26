@@ -228,6 +228,12 @@ pub(crate) enum BackendCommand {
     },
     RequestLockAfterCurrentBreak,
     ClearBreak,
+    /// Shows (or refreshes) the non-blocking pre-break screen-edge warning for a
+    /// break due in `starts_after`. Backends pulse faster near the deadline.
+    ShowPreBreakWarning {
+        starts_after: Duration,
+    },
+    ClearPreBreakWarning,
 }
 
 #[cfg(test)]

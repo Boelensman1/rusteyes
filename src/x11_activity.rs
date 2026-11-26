@@ -6,11 +6,11 @@ use crate::backend::{
 use crate::config::LockConfig;
 use crate::lock_command::{LockCommand, LockCommandError, start_lock_command};
 use crate::scheduler::ScheduledBreak;
-use crate::x11_overlay::{X11Overlay, X11OverlayError, X11Screen};
+use crate::x11_overlay::{X11Overlay, X11OverlayError, X11PreBreakWarning, X11Screen};
 use std::fmt;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
-use tracing::{error, trace};
+use tracing::{error, trace, warn};
 use x11rb::connection::Connection;
 use x11rb::protocol::screensaver::ConnectionExt;
 use x11rb::rust_connection::RustConnection;
@@ -30,6 +30,8 @@ pub(crate) struct X11ActivityBackend {
     poller: ActivityPoller,
     active_break: Option<ActiveBreak>,
     pending_break: Option<PendingBreakStart>,
+    pre_break_warning: Option<X11PreBreakWarning>,
+    last_activity_sample_at: Option<Instant>,
     lock_command: LockCommand,
 }
 
@@ -50,6 +52,8 @@ impl X11ActivityBackend {
             poller: ActivityPoller::new(POLL_INTERVAL),
             active_break: None,
             pending_break: None,
+            pre_break_warning: None,
+            last_activity_sample_at: None,
             lock_command: LockCommand::from(lock_config),
         })
     }
@@ -85,9 +89,24 @@ impl X11ActivityBackend {
             active_break.next_sample_delay_at(SystemTime::now())
         } else if self.pending_break.is_some() {
             OVERLAY_TICK_INTERVAL
+        } else if let Some(warning) = &self.pre_break_warning {
+            let now = Instant::now();
+            std::cmp::min(
+                warning.next_pulse_delay_at(now),
+                self.activity_sample_delay_at(now),
+            )
         } else {
             self.poller.poll_interval()
         }
+    }
+
+    /// Time until the next activity sample is due. Each sample reports a full
+    /// poll interval of activity, so warning pulses must not add extra samples.
+    fn activity_sample_delay_at(&self, now: Instant) -> Duration {
+        self.last_activity_sample_at
+            .map_or(Duration::ZERO, |sampled_at| {
+                (sampled_at + self.poller.poll_interval()).saturating_duration_since(now)
+            })
     }
 
     fn sample_once(&mut self) -> Result<(), X11ActivityError> {
@@ -95,6 +114,14 @@ impl X11ActivityBackend {
             self.sample_overlay_once()
         } else if self.pending_break.is_some() {
             self.sample_pending_break_once()
+        } else if self.pre_break_warning.is_some() {
+            let now = Instant::now();
+            self.advance_pre_break_warning(now);
+            if self.activity_sample_delay_at(now).is_zero() {
+                self.sample_activity_once()
+            } else {
+                Ok(())
+            }
         } else {
             self.sample_activity_once()
         }
@@ -102,6 +129,7 @@ impl X11ActivityBackend {
 
     fn sample_activity_once(&mut self) -> Result<(), X11ActivityError> {
         let sample = self.activity.sample()?;
+        self.last_activity_sample_at = Some(Instant::now());
         self.poller.queue_sample(sample);
 
         Ok(())
@@ -208,7 +236,54 @@ impl X11ActivityBackend {
         )
     }
 
+    fn show_pre_break_warning(&mut self, starts_after: Duration) {
+        // The warning only leads up to a break; never draw it over one.
+        if self.active_break.is_some() || self.pending_break.is_some() {
+            return;
+        }
+
+        let now = Instant::now();
+        if let Some(warning) = &mut self.pre_break_warning {
+            warning.refresh(starts_after, now);
+            return;
+        }
+
+        match X11PreBreakWarning::show(
+            &self.activity.connection,
+            self.activity.screen,
+            starts_after,
+            now,
+        ) {
+            Ok(warning) => self.pre_break_warning = Some(warning),
+            Err(error) => warn!(%error, "failed to show X11 pre-break warning"),
+        }
+    }
+
+    fn advance_pre_break_warning(&mut self, now: Instant) {
+        let Some(warning) = &mut self.pre_break_warning else {
+            return;
+        };
+
+        if warning.is_expired_at(now) {
+            self.clear_pre_break_warning();
+        } else if let Err(error) = warning.pulse_if_due(&self.activity.connection, now) {
+            warn!(%error, "failed to pulse X11 pre-break warning");
+            self.clear_pre_break_warning();
+        }
+    }
+
+    /// The warning is cosmetic, so failures are logged rather than shutting the
+    /// backend down.
+    fn clear_pre_break_warning(&mut self) {
+        if let Some(warning) = self.pre_break_warning.take()
+            && let Err(error) = warning.destroy(&self.activity.connection)
+        {
+            warn!(%error, "failed to clear X11 pre-break warning");
+        }
+    }
+
     fn clear_break(&mut self) -> Result<(), X11ActivityError> {
+        self.clear_pre_break_warning();
         self.pending_break = None;
 
         match self.active_break.take() {
@@ -337,12 +412,17 @@ impl X11ActivityBackend {
                     self.queue_backend_error(&error);
                 }
             }
+            BackendCommand::ShowPreBreakWarning { starts_after } => {
+                self.show_pre_break_warning(starts_after);
+            }
+            BackendCommand::ClearPreBreakWarning => self.clear_pre_break_warning(),
         }
     }
 }
 
 impl Drop for X11ActivityBackend {
     fn drop(&mut self) {
+        self.clear_pre_break_warning();
         if let Some(active_break) = self.active_break.take() {
             let _ = active_break.destroy(&self.activity.connection);
         }

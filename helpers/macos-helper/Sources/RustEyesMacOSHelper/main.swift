@@ -3,8 +3,19 @@ import ApplicationServices
 import CoreGraphics
 import Darwin
 import Foundation
+import QuartzCore
 
-private let protocolVersion = 9
+private let protocolVersion = 10
+// Pre-break warning: a pulsing amber glow around every display's edges. RustEyes
+// re-sends `showPreBreakWarning` at its final 5-second notice, which switches the
+// glow to the fast pulse.
+private let preBreakWarningFastPulseLeadMs: UInt64 = 5_000
+private let preBreakWarningSlowPulseSeconds: CFTimeInterval = 1.6
+private let preBreakWarningFastPulseSeconds: CFTimeInterval = 0.5
+private let preBreakWarningGraceMs: UInt64 = 5_000
+private let preBreakWarningBorderWidth: CGFloat = 10
+private let preBreakWarningGlowRadius: CGFloat = 24
+private let preBreakWarningPulseAnimationKey = "preBreakWarningPulse"
 private let directInvocationExitCode: Int32 = 2
 private let directInvocationMessage =
     "rusteyes-macos-helper is an internal RustEyes helper. Start RustEyes with the main rusteyes binary; do not run this helper directly."
@@ -132,6 +143,7 @@ private final class InputBlocker {
 
 private final class BreakOverlayController {
     private var windows: [NSWindow] = []
+    private let preBreakWarning = PreBreakWarningController()
     private let inputBlocker = InputBlocker()
     private var applicationPrepared = false
     private var state: BreakOverlayState?
@@ -196,6 +208,19 @@ private final class BreakOverlayController {
         resetHeartbeatWatchdog()
     }
 
+    func showPreBreakWarning(startsAfterMs: UInt64) {
+        // The warning only leads up to a break; never draw it over one.
+        guard state == nil else {
+            return
+        }
+        prepareApplication()
+        preBreakWarning.show(startsAfterMs: startsAfterMs)
+    }
+
+    func clearPreBreakWarning() {
+        preBreakWarning.clear()
+    }
+
     func takeLockAfterBreakRequest() -> Bool {
         let requested = lockAfterBreakRequested
         lockAfterBreakRequested = false
@@ -203,6 +228,7 @@ private final class BreakOverlayController {
     }
 
     func clear() {
+        preBreakWarning.clear()
         disarmZeroWatchdog()
         disarmHeartbeatWatchdog()
         for window in windows {
@@ -379,6 +405,134 @@ private final class BreakOverlayController {
         application.setActivationPolicy(.accessory)
         application.finishLaunching()
         applicationPrepared = true
+    }
+}
+
+/// Click-through, non-activating glow around every display, shown shortly
+/// before a break. It is excluded from screen capture so call participants do
+/// not see it while the screen is shared.
+private final class PreBreakWarningController {
+    private var windows: [NSWindow] = []
+    private var pulseSeconds: CFTimeInterval?
+    private var expiryTimer: DispatchSourceTimer?
+
+    func show(startsAfterMs: UInt64) {
+        let period = startsAfterMs > preBreakWarningFastPulseLeadMs
+            ? preBreakWarningSlowPulseSeconds
+            : preBreakWarningFastPulseSeconds
+
+        if windows.isEmpty {
+            for screen in NSScreen.screens {
+                let window = warningWindow(for: screen)
+                windows.append(window)
+                window.orderFrontRegardless()
+            }
+        }
+
+        if pulseSeconds != period {
+            pulseSeconds = period
+            for window in windows {
+                (window.contentView as? PreBreakWarningView)?.pulse(periodSeconds: period)
+            }
+        }
+
+        scheduleExpiry(afterMs: min(startsAfterMs, UInt64(UInt32.max)) + preBreakWarningGraceMs)
+    }
+
+    func clear() {
+        expiryTimer?.cancel()
+        expiryTimer = nil
+        for window in windows {
+            window.orderOut(nil)
+            window.close()
+        }
+        windows.removeAll()
+        pulseSeconds = nil
+    }
+
+    private func scheduleExpiry(afterMs milliseconds: UInt64) {
+        expiryTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + .milliseconds(Int(milliseconds)))
+        timer.setEventHandler { [weak self] in
+            self?.clear()
+        }
+        timer.resume()
+        expiryTimer = timer
+    }
+
+    private func warningWindow(for screen: NSScreen) -> NSWindow {
+        let frame = screen.frame
+        // Same zero-origin + setFrame dance as the break overlay; see
+        // `BreakOverlayController.overlayWindow(for:state:)`.
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: frame.size),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false,
+            screen: screen
+        )
+        window.setFrame(frame, display: false)
+        window.backgroundColor = .clear
+        window.collectionBehavior = [
+            .canJoinAllSpaces,
+            .fullScreenAuxiliary,
+            .ignoresCycle,
+            .stationary,
+        ]
+        window.contentView = PreBreakWarningView(frame: NSRect(origin: .zero, size: frame.size))
+        window.hasShadow = false
+        window.ignoresMouseEvents = true
+        window.isOpaque = false
+        window.isReleasedWhenClosed = false
+        window.level = .screenSaver
+        window.sharingType = .none
+        return window
+    }
+}
+
+private final class PreBreakWarningView: NSView {
+    private let glowLayer = CALayer()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+
+        let color = NSColor.systemOrange.cgColor
+        glowLayer.frame = bounds
+        glowLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        glowLayer.borderColor = color
+        glowLayer.borderWidth = preBreakWarningBorderWidth
+        // The shadow follows the border's alpha, so it spreads a soft glow
+        // inward from the screen edge.
+        glowLayer.shadowColor = color
+        glowLayer.shadowOffset = .zero
+        glowLayer.shadowOpacity = 1
+        glowLayer.shadowRadius = preBreakWarningGlowRadius
+        glowLayer.opacity = 1
+        layer?.addSublayer(glowLayer)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("PreBreakWarningView does not support coder initialization")
+    }
+
+    override var isOpaque: Bool {
+        false
+    }
+
+    func pulse(periodSeconds: CFTimeInterval) {
+        let animation = CABasicAnimation(keyPath: "opacity")
+        animation.fromValue = 0.2
+        animation.toValue = 1.0
+        animation.duration = periodSeconds / 2
+        animation.autoreverses = true
+        animation.repeatCount = .infinity
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        glowLayer.removeAnimation(forKey: preBreakWarningPulseAnimationKey)
+        glowLayer.add(animation, forKey: preBreakWarningPulseAnimationKey)
     }
 }
 
@@ -670,6 +824,8 @@ private enum DaemonMessage {
     case updateBreak(UpdateBreakCommand)
     case finishBreak(FinishBreakCommand)
     case clearBreak
+    case showPreBreakWarning(ShowPreBreakWarningCommand)
+    case clearPreBreakWarning
     case pollActivity
     case shutdown
 }
@@ -679,6 +835,8 @@ private enum HelperCommand: String, Encodable {
     case updateBreak
     case finishBreak
     case clearBreak
+    case showPreBreakWarning
+    case clearPreBreakWarning
 }
 
 private struct MessageEnvelope: Decodable {
@@ -724,6 +882,10 @@ private struct UpdateBreakCommand: Decodable {
 
 private struct FinishBreakCommand: Decodable {
     let lockAfter: Bool
+}
+
+private struct ShowPreBreakWarningCommand: Decodable {
+    let startsAfterMs: UInt64
 }
 
 private struct ReadyMessage: Encodable {
@@ -783,6 +945,10 @@ private func parseMessage(_ line: String) throws -> DaemonMessage {
         return .finishBreak(try decodeMessage(FinishBreakCommand.self, from: data))
     case "clearBreak":
         return .clearBreak
+    case "showPreBreakWarning":
+        return .showPreBreakWarning(try decodeMessage(ShowPreBreakWarningCommand.self, from: data))
+    case "clearPreBreakWarning":
+        return .clearPreBreakWarning
     case "pollActivity":
         return .pollActivity
     case "shutdown":
@@ -1069,6 +1235,16 @@ private func runProtocolLoop(overlay: BreakOverlayController) {
             case .clearBreak:
                 clearBreakOverlay(overlay)
                 try writeCommandComplete(.clearBreak)
+            case .showPreBreakWarning(let command):
+                runOnMain {
+                    overlay.showPreBreakWarning(startsAfterMs: command.startsAfterMs)
+                }
+                try writeCommandComplete(.showPreBreakWarning)
+            case .clearPreBreakWarning:
+                runOnMain {
+                    overlay.clearPreBreakWarning()
+                }
+                try writeCommandComplete(.clearPreBreakWarning)
             case .pollActivity:
                 try handlePollActivity(overlay: overlay)
             case .shutdown:

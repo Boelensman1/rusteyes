@@ -17,7 +17,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 use tracing::{trace, warn};
 
-const PROTOCOL_VERSION: u16 = 9;
+const PROTOCOL_VERSION: u16 = 10;
 const HELPER_PATH_ENV: &str = "RUSTEYES_MACOS_HELPER";
 const DEVELOPMENT_HELPER_PATH: &str = "helpers/macos-helper/.build/debug/rusteyes-macos-helper";
 const BUNDLED_HELPER_PATH_FROM_EXE: &str = "../Resources/rusteyes-macos-helper";
@@ -313,6 +313,14 @@ where
         }
     }
 
+    fn send_pre_break_warning(&mut self, command: BackendCommand) {
+        // The warning is cosmetic: log failures instead of shutting down. A dead
+        // helper is still caught by the next activity poll.
+        if let Err(error) = self.session.send_command(command) {
+            warn!(%error, "failed to update macOS pre-break warning");
+        }
+    }
+
     fn send_backend_command(&mut self, command: BackendCommand) -> bool {
         match self.session.send_command(command) {
             Ok(()) => true,
@@ -341,6 +349,8 @@ where
             BackendCommand::FinishBreak { lock_after } => self.finish_break(lock_after),
             BackendCommand::RequestLockAfterCurrentBreak => self.request_lock_after_current_break(),
             BackendCommand::ClearBreak => self.clear_break(),
+            command @ (BackendCommand::ShowPreBreakWarning { .. }
+            | BackendCommand::ClearPreBreakWarning) => self.send_pre_break_warning(command),
         }
     }
 
@@ -820,6 +830,11 @@ enum DaemonMessage {
         message: Option<String>,
     },
     ClearBreak,
+    ShowPreBreakWarning {
+        #[serde(rename = "startsAfterMs")]
+        starts_after_ms: u64,
+    },
+    ClearPreBreakWarning,
     PollActivity,
     Shutdown,
 }
@@ -840,6 +855,10 @@ impl From<BackendCommand> for DaemonMessage {
                 unreachable!("active-break replacement is framed with HelperSession::replace_break")
             }
             BackendCommand::ClearBreak => Self::ClearBreak,
+            BackendCommand::ShowPreBreakWarning { starts_after } => Self::ShowPreBreakWarning {
+                starts_after_ms: duration_millis(starts_after),
+            },
+            BackendCommand::ClearPreBreakWarning => Self::ClearPreBreakWarning,
         }
     }
 }
@@ -893,6 +912,10 @@ enum HelperCommand {
     Update,
     #[serde(rename = "clearBreak")]
     Clear,
+    #[serde(rename = "showPreBreakWarning")]
+    ShowPreBreakWarning,
+    #[serde(rename = "clearPreBreakWarning")]
+    ClearPreBreakWarning,
 }
 
 impl HelperCommand {
@@ -909,6 +932,8 @@ impl HelperCommand {
                 unreachable!("active-break replacement is framed with HelperSession::replace_break")
             }
             BackendCommand::ClearBreak => Self::Clear,
+            BackendCommand::ShowPreBreakWarning { .. } => Self::ShowPreBreakWarning,
+            BackendCommand::ClearPreBreakWarning => Self::ClearPreBreakWarning,
         }
     }
 
@@ -918,6 +943,8 @@ impl HelperCommand {
             Self::Finish => "finishBreak",
             Self::Update => "updateBreak",
             Self::Clear => "clearBreak",
+            Self::ShowPreBreakWarning => "showPreBreakWarning",
+            Self::ClearPreBreakWarning => "clearPreBreakWarning",
         }
     }
 }
@@ -1508,6 +1535,37 @@ mod tests {
         session.send_command(BackendCommand::ClearBreak)?;
 
         assert_eq!(daemon_messages(&output)?, vec![DaemonMessage::ClearBreak]);
+        Ok(())
+    }
+
+    #[test]
+    fn pre_break_warning_commands_are_framed() -> Result<(), Box<dyn std::error::Error>> {
+        let input = Cursor::new(
+            br#"{"type":"commandComplete","command":"showPreBreakWarning"}
+{"type":"commandComplete","command":"clearPreBreakWarning"}"#
+                .to_vec(),
+        );
+        let mut output = Vec::new();
+        let mut session = HelperSession::new(input, &mut output);
+
+        session.send_command(BackendCommand::ShowPreBreakWarning {
+            starts_after: Duration::from_millis(29_500),
+        })?;
+        session.send_command(BackendCommand::ClearPreBreakWarning)?;
+
+        assert_eq!(
+            daemon_messages(&output)?,
+            vec![
+                DaemonMessage::ShowPreBreakWarning {
+                    starts_after_ms: 29_500
+                },
+                DaemonMessage::ClearPreBreakWarning,
+            ]
+        );
+        assert!(
+            String::from_utf8(output)?
+                .contains(r#"{"type":"showPreBreakWarning","startsAfterMs":29500}"#)
+        );
         Ok(())
     }
 

@@ -17,6 +17,9 @@ use x11rb::{COPY_FROM_PARENT, NONE};
 
 use layout::{TextLine, lock_control_contains_root_position, overlay_layout, x11_text_bytes};
 
+mod pre_break_warning;
+pub(crate) use pre_break_warning::X11PreBreakWarning;
+
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct X11Screen {

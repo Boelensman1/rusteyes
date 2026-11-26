@@ -410,6 +410,13 @@
   resuming the frozen countdown. Backwards system-clock jumps are clamped so
   remaining time never exceeds the break duration; per-tick elapsed reporting
   stays monotonic.
+- Completed `pre-break-edge-glow`: alongside the pre-break notification,
+  backends now show a click-through, non-focusing pulsing amber glow around
+  every display's edges (macOS helper windows excluded from screen sharing;
+  X11 override-redirect edge strips with an empty input shape). It pulses
+  faster in the final 5 seconds and clears when the break starts or the
+  notice is cleared, so the break is noticeable even when macOS mutes
+  notifications during calls.
 - Cargo is the Rust build system; `make` is the project task runner.
 - Nix provides the reproducible development shell and package build.
 - Codex project hooks are configured to run Rust formatting after Codex edits.
@@ -640,6 +647,10 @@
   permissions granted is still pending.
 - Manual launch verification from a Nix-installed or Home Manager-copied
   `RustEyes.app` is pending after granting the required macOS permissions.
+- `make check` (323 tests) passes after adding the pre-break edge glow.
+- Manual verification of the pre-break edge glow is pending on macOS (Swift
+  helper build, multi-display coverage, click-through, focus, screen-share
+  exclusion) and on X11 (pulse, click-through, clearing on break start).
 
 ## Notes
 

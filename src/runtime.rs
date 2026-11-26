@@ -956,6 +956,7 @@ impl<'a> DaemonRuntime<'a> {
         if let Err(error) = self.ui.send_command(command) {
             warn!(%error, "failed to send pre-break notification command");
         }
+        self.handle_command(BackendCommand::ShowPreBreakWarning { starts_after });
         self.pre_break_notice = Some(PreBreakNoticeState {
             notified_break,
             starts_after,
@@ -999,6 +1000,7 @@ impl<'a> DaemonRuntime<'a> {
         if let Err(error) = self.ui.send_command(UiCommand::ClearPreBreakNotification) {
             warn!(%error, "failed to send pre-break notification clear command");
         }
+        self.handle_command(BackendCommand::ClearPreBreakWarning);
     }
 
     fn update_status_display(&mut self) {

@@ -25,7 +25,7 @@ tao = "0.35.3"
 [target.'cfg(target_os = "linux")'.dependencies]
 notify-rust = "4.18.0"
 tray-icon = { version = "0.24.1", default-features = false, features = ["gtk"] }
-x11rb = { version = "0.13.2", default-features = false, features = ["randr", "screensaver"] }
+x11rb = { version = "0.13.2", default-features = false, features = ["randr", "screensaver", "shape"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 notify-rust = { version = "4.18.0", features = ["preview-macos-un"] }
