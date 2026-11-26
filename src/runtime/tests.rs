@@ -1935,6 +1935,104 @@ fn pre_break_notification_updates_once_for_final_warning() -> Result<(), Box<dyn
 }
 
 #[test]
+fn pre_break_notification_uses_configured_leads() -> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+    let (ui, _ui_commands) = recording_ui();
+    let mut config = test_config_with_after_active(Duration::from_mins(2));
+    // Unsorted on purpose: the schedule orders leads longest first.
+    config.breaks.pre_break_notice = vec![Duration::from_secs(10), Duration::from_secs(45)];
+
+    run_config_with_inputs_and_ui(
+        config,
+        backend,
+        ui,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(70))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(20))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(15))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(10))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands_with_warnings(&commands),
+        vec![
+            show_pre_break_warning(Duration::from_secs(45)),
+            show_pre_break_warning(Duration::from_secs(10)),
+            BackendCommand::ClearPreBreakWarning,
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn pre_break_notification_jumps_to_remaining_time_when_leads_are_skipped()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+    let (ui, _ui_commands) = recording_ui();
+    let mut config = test_config_with_after_active(Duration::from_mins(2));
+    config.breaks.pre_break_notice = vec![
+        Duration::from_mins(1),
+        Duration::from_secs(30),
+        Duration::from_secs(5),
+    ];
+
+    run_config_with_inputs_and_ui(
+        config,
+        backend,
+        ui,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_mins(1))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(57))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(3))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands_with_warnings(&commands),
+        vec![
+            show_pre_break_warning(Duration::from_mins(1)),
+            show_pre_break_warning(Duration::from_secs(3)),
+            BackendCommand::ClearPreBreakWarning,
+            BackendCommand::StartBreak(scheduled_break("short", 1, 20)),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn empty_pre_break_notice_list_disables_notifications() -> Result<(), Box<dyn std::error::Error>> {
+    let (backend, commands) = test_backend();
+    let (ui, ui_commands) = recording_ui();
+    let mut config = test_config_with_after_active(Duration::from_mins(1));
+    config.breaks.pre_break_notice = Vec::new();
+
+    run_config_with_inputs_and_ui(
+        config,
+        backend,
+        ui,
+        [
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(30))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(25))),
+            backend_input(RuntimeEvent::ActiveTimeElapsed(Duration::from_secs(5))),
+        ],
+    )?;
+
+    assert_eq!(
+        received_commands_with_warnings(&commands),
+        vec![BackendCommand::StartBreak(scheduled_break("short", 1, 20))]
+    );
+    assert!(
+        !received_ui_commands(&ui_commands)
+            .iter()
+            .any(|command| matches!(command, UiCommand::ShowPreBreakNotification(_)))
+    );
+    Ok(())
+}
+
+#[test]
 fn pre_break_notification_uses_half_interval_lead_for_short_schedules()
 -> Result<(), Box<dyn std::error::Error>> {
     let (backend, commands) = test_backend();
@@ -2746,6 +2844,7 @@ fn test_config() -> Config {
             after_active: Duration::from_secs(10),
             reset_after_idle: Some(Duration::from_mins(5)),
             reset_count_after_idle: Some(Duration::from_hours(1)),
+            pre_break_notice: crate::config::DEFAULT_PRE_BREAK_NOTICE.to_vec(),
             types: [
                 (
                     String::from("short"),

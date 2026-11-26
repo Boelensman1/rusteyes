@@ -21,6 +21,8 @@ pub(crate) const DEFAULT_LONG_BREAK_INTERVAL: usize = 2;
 pub(crate) const DEFAULT_LONG_BREAK_DURATION: Duration = Duration::from_mins(5);
 pub(crate) const DEFAULT_BREAK_RESET_AFTER_IDLE: Duration = Duration::from_mins(5);
 pub(crate) const DEFAULT_BREAK_COUNT_RESET_AFTER_IDLE: Duration = Duration::from_hours(1);
+pub(crate) const DEFAULT_PRE_BREAK_NOTICE: [Duration; 2] =
+    [Duration::from_secs(30), Duration::from_secs(5)];
 pub(crate) const DEFAULT_DISABLE_PRESETS: [Duration; 4] = [
     Duration::from_mins(30),
     Duration::from_hours(1),
@@ -279,6 +281,9 @@ pub(crate) struct Breaks {
     pub(crate) after_active: Duration,
     pub(crate) reset_after_idle: Option<Duration>,
     pub(crate) reset_count_after_idle: Option<Duration>,
+    /// Lead times before a scheduled break at which the pre-break notice is
+    /// shown or updated. An empty list disables pre-break notices.
+    pub(crate) pre_break_notice: Vec<Duration>,
     pub(crate) types: BTreeMap<String, BreakTypeConfig>,
 }
 
@@ -301,6 +306,8 @@ impl Breaks {
         {
             return Err(ConfigError::ZeroBreakResetCountAfterIdleDuration);
         }
+
+        validate_pre_break_notice(&self.pre_break_notice)?;
 
         if self.types.is_empty() {
             return Err(ConfigError::EmptyBreakTypes);
@@ -355,6 +362,7 @@ impl Default for Breaks {
             after_active: DEFAULT_BREAK_AFTER_ACTIVE,
             reset_after_idle: Some(DEFAULT_BREAK_RESET_AFTER_IDLE),
             reset_count_after_idle: Some(DEFAULT_BREAK_COUNT_RESET_AFTER_IDLE),
+            pre_break_notice: DEFAULT_PRE_BREAK_NOTICE.to_vec(),
             types,
         }
     }
@@ -479,6 +487,12 @@ pub(crate) enum ConfigError {
     ZeroBreakAfterActiveDuration,
     ZeroBreakResetAfterIdleDuration,
     ZeroBreakResetCountAfterIdleDuration,
+    ZeroPreBreakNotice {
+        index: usize,
+    },
+    DuplicatePreBreakNotice {
+        duration: Duration,
+    },
     EmptyBreakTypes,
     InvalidBreakTypeName {
         name: String,
@@ -530,6 +544,15 @@ impl fmt::Display for ConfigError {
             }
             Self::ZeroBreakResetCountAfterIdleDuration => {
                 formatter.write_str("break count idle reset duration must be greater than zero")
+            }
+            Self::ZeroPreBreakNotice { index } => {
+                write!(
+                    formatter,
+                    "pre-break notice {index} must be greater than zero"
+                )
+            }
+            Self::DuplicatePreBreakNotice { duration } => {
+                write!(formatter, "pre-break notice {duration:?} is duplicated")
             }
             Self::EmptyBreakTypes => formatter.write_str("at least one break type must be defined"),
             Self::InvalidBreakTypeName { name } => {
@@ -650,6 +673,7 @@ struct PartialBreaks {
     reset_after_idle: NullableConfigDuration,
     #[serde(default)]
     reset_count_after_idle: NullableConfigDuration,
+    pre_break_notice: Option<Vec<ConfigDuration>>,
     types: Option<BTreeMap<String, YamlBreakTypeConfig>>,
 }
 
@@ -673,6 +697,13 @@ impl PartialBreaks {
             NullableConfigDuration::Value(reset_count_after_idle) => {
                 breaks.reset_count_after_idle = Some(reset_count_after_idle.into_duration());
             }
+        }
+
+        if let Some(pre_break_notice) = self.pre_break_notice {
+            breaks.pre_break_notice = pre_break_notice
+                .into_iter()
+                .map(ConfigDuration::into_duration)
+                .collect();
         }
 
         if let Some(types) = self.types {
@@ -823,6 +854,20 @@ fn validate_break_type_name(name: &str) -> Result<(), ConfigError> {
         return Err(ConfigError::InvalidBreakTypeName {
             name: name.to_owned(),
         });
+    }
+
+    Ok(())
+}
+
+fn validate_pre_break_notice(pre_break_notice: &[Duration]) -> Result<(), ConfigError> {
+    for (index, lead) in pre_break_notice.iter().enumerate() {
+        if lead.is_zero() {
+            return Err(ConfigError::ZeroPreBreakNotice { index });
+        }
+
+        if pre_break_notice[..index].contains(lead) {
+            return Err(ConfigError::DuplicatePreBreakNotice { duration: *lead });
+        }
     }
 
     Ok(())
@@ -992,6 +1037,7 @@ struct SerializableBreaks<'a> {
     after_active: SerializableDuration,
     reset_after_idle: Option<SerializableDuration>,
     reset_count_after_idle: Option<SerializableDuration>,
+    pre_break_notice: Vec<SerializableDuration>,
     types: BTreeMap<&'a str, SerializableBreakType<'a>>,
 }
 
@@ -1001,6 +1047,12 @@ impl<'a> SerializableBreaks<'a> {
             after_active: SerializableDuration(breaks.after_active),
             reset_after_idle: breaks.reset_after_idle.map(SerializableDuration),
             reset_count_after_idle: breaks.reset_count_after_idle.map(SerializableDuration),
+            pre_break_notice: breaks
+                .pre_break_notice
+                .iter()
+                .copied()
+                .map(SerializableDuration)
+                .collect(),
             types: breaks
                 .types
                 .iter()

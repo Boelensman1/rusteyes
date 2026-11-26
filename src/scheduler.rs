@@ -10,6 +10,8 @@ pub(crate) struct BreakSchedule {
     after_active: Duration,
     reset_after_idle: Option<Duration>,
     reset_count_after_idle: Option<Duration>,
+    /// Pre-break notice lead times, sorted longest first.
+    pre_break_notice: Vec<Duration>,
     rules: Vec<BreakRule>,
 }
 
@@ -25,6 +27,10 @@ impl BreakSchedule {
 
     pub(crate) const fn reset_count_after_idle(&self) -> Option<Duration> {
         self.reset_count_after_idle
+    }
+
+    fn pre_break_notice(&self) -> &[Duration] {
+        &self.pre_break_notice
     }
 
     fn rule(&self, name: &str) -> Option<&BreakRule> {
@@ -49,8 +55,10 @@ impl TryFrom<Breaks> for BreakSchedule {
             after_active,
             reset_after_idle,
             reset_count_after_idle,
+            mut pre_break_notice,
             types,
         } = breaks;
+        pre_break_notice.sort_unstable_by(|left, right| right.cmp(left));
         let mut rules = types
             .into_iter()
             .map(|(name, break_type)| BreakRule::from_config(name, break_type))
@@ -62,6 +70,7 @@ impl TryFrom<Breaks> for BreakSchedule {
             after_active,
             reset_after_idle,
             reset_count_after_idle,
+            pre_break_notice,
             rules,
         })
     }
@@ -146,6 +155,11 @@ impl BreakScheduler {
 
     pub(crate) const fn after_active(&self) -> Duration {
         self.schedule.after_active()
+    }
+
+    /// Pre-break notice lead times, sorted longest first.
+    pub(crate) fn pre_break_notice(&self) -> &[Duration] {
+        self.schedule.pre_break_notice()
     }
 
     pub(crate) fn position(&self) -> SchedulerPosition {

@@ -270,7 +270,9 @@
   warning, preserve the half-interval notice lead for short schedules, and are
   explicitly cleared when the break starts. The first appearance also plays a
   sound via `notify-rust`'s `sound_name` (platform-conditional: `message` on
-  Linux/XDG, `Glass` on macOS); countdown updates stay silent.
+  Linux/XDG, `Glass` on macOS); countdown updates stay silent. The notice
+  lead times are configurable through `breaks.pre_break_notice` (default
+  `['30s', '5s']`; an empty list disables pre-break notices).
 - Completed `idle-activity-grace`: normal activity samples now use an internal
   10 second idle threshold so slow ongoing input still counts as active, while
   local and synced active-time signals share one wall-clock budget so synced
@@ -569,6 +571,8 @@
 - `make check` passes after limiting pre-break countdown notifications to the
   initial and final warnings and changing the macOS notification sound to
   `Glass`.
+- `make check` (331 tests) passes after making pre-break notice lead times
+  configurable through `breaks.pre_break_notice`.
 - `make check` passes after adding idle activity grace and capped synced
   active-time accumulation.
 - `make check` passes after removing stale dead-code allowances.

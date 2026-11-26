@@ -856,6 +856,7 @@ mod tests {
                 after_active: Duration::from_mins(20),
                 reset_after_idle: None,
                 reset_count_after_idle: None,
+                pre_break_notice: crate::config::DEFAULT_PRE_BREAK_NOTICE.to_vec(),
                 types,
             },
             &[],

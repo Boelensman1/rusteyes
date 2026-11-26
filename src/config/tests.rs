@@ -1,9 +1,10 @@
 use super::{
     BreakTypeConfig, Config, ConfigError, ConfigLoadError, DEFAULT_BREAK_AFTER_ACTIVE,
     DEFAULT_BREAK_COUNT_RESET_AFTER_IDLE, DEFAULT_BREAK_RESET_AFTER_IDLE, DEFAULT_DISABLE_PRESETS,
-    DEFAULT_LONG_BREAK_DURATION, DEFAULT_LONG_BREAK_INTERVAL, DEFAULT_SHORT_BREAK_DURATION,
-    DEFAULT_SHORT_BREAK_INTERVAL, LockConfig, MIN_SYNC_SHARED_SECRET_LENGTH, SharedSecret,
-    StartupConfig, SyncConfig, default_config_yaml, write_default_config,
+    DEFAULT_LONG_BREAK_DURATION, DEFAULT_LONG_BREAK_INTERVAL, DEFAULT_PRE_BREAK_NOTICE,
+    DEFAULT_SHORT_BREAK_DURATION, DEFAULT_SHORT_BREAK_INTERVAL, LockConfig,
+    MIN_SYNC_SHARED_SECRET_LENGTH, SharedSecret, StartupConfig, SyncConfig, default_config_yaml,
+    write_default_config,
 };
 use std::error::Error;
 use std::fs;
@@ -35,6 +36,7 @@ fn default_config_uses_expected_break_settings() {
         config.breaks.reset_count_after_idle,
         Some(DEFAULT_BREAK_COUNT_RESET_AFTER_IDLE)
     );
+    assert_eq!(config.breaks.pre_break_notice, DEFAULT_PRE_BREAK_NOTICE);
     assert_eq!(config.breaks.types.len(), 2);
 
     let short = &config.breaks.types["short"];
@@ -682,6 +684,72 @@ breaks:
 
     assert_eq!(config.breaks.reset_count_after_idle, None);
     Ok(())
+}
+
+#[test]
+fn yaml_accepts_pre_break_notice_override() -> Result<(), Box<dyn Error>> {
+    let config = Config::from_yaml_str(
+        r"
+breaks:
+  pre_break_notice: ['45s', '10s']
+",
+    )?;
+
+    assert_eq!(
+        config.breaks.pre_break_notice,
+        vec![Duration::from_secs(45), Duration::from_secs(10)]
+    );
+    Ok(())
+}
+
+#[test]
+fn yaml_without_pre_break_notice_uses_default() -> Result<(), Box<dyn Error>> {
+    let config = Config::from_yaml_str(
+        r"
+breaks:
+  after_active: '20m'
+",
+    )?;
+
+    assert_eq!(config.breaks.pre_break_notice, DEFAULT_PRE_BREAK_NOTICE);
+    Ok(())
+}
+
+#[test]
+fn yaml_accepts_empty_pre_break_notice_as_disabled() -> Result<(), Box<dyn Error>> {
+    let config = Config::from_yaml_str(
+        r"
+breaks:
+  pre_break_notice: []
+",
+    )?;
+
+    assert!(config.breaks.pre_break_notice.is_empty());
+    Ok(())
+}
+
+#[test]
+fn rejects_zero_pre_break_notice() {
+    let mut config = Config::default();
+    config.breaks.pre_break_notice = vec![Duration::from_secs(30), Duration::ZERO];
+
+    assert_eq!(
+        config.validate(),
+        Err(ConfigError::ZeroPreBreakNotice { index: 1 })
+    );
+}
+
+#[test]
+fn rejects_duplicate_pre_break_notice() {
+    let mut config = Config::default();
+    config.breaks.pre_break_notice = vec![Duration::from_secs(30), Duration::from_secs(30)];
+
+    assert_eq!(
+        config.validate(),
+        Err(ConfigError::DuplicatePreBreakNotice {
+            duration: Duration::from_secs(30)
+        })
+    );
 }
 
 #[test]

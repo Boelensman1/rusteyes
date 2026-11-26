@@ -704,6 +704,7 @@ fn compatibility_config() -> Config {
             after_active: Duration::from_secs(10),
             reset_after_idle: Some(Duration::from_mins(5)),
             reset_count_after_idle: Some(Duration::from_hours(1)),
+            pre_break_notice: crate::config::DEFAULT_PRE_BREAK_NOTICE.to_vec(),
             types: [(
                 String::from("short"),
                 BreakTypeConfig {

@@ -8,7 +8,8 @@
 ## Decisions
 
 - Preserve the existing pre-break notice lead of
-  `min(30s, breaks.after_active / 2)`.
+  `min(30s, breaks.after_active / 2)` as the default (see "Configurable lead
+  times" below).
 - Use the actual remaining time for the first notification in the notice
   window, then update at most once more when the countdown reaches or crosses
   the final 5-second warning.
@@ -19,6 +20,24 @@
 - Follow-up fix: render countdown notification durations at whole-second
   precision in the UI, rounding fractional values up so desktop notifications
   do not expose millisecond, microsecond, or nanosecond units.
+
+## Configurable lead times
+
+- `breaks.pre_break_notice` is a list of humantime durations, for example
+  `pre_break_notice: ['45s', '10s']`. When unset it falls back to
+  `DEFAULT_PRE_BREAK_NOTICE` (`['30s', '5s']`), which is also written to the
+  generated default config file.
+- Order does not matter: `BreakSchedule` sorts the leads longest first.
+- The notice window opens at `min(longest lead, breaks.after_active / 2)`, so
+  the half-interval cap for short schedules still applies to the first lead.
+- After a notice is shown, the next update happens at the longest configured
+  lead shorter than the remaining time last shown. If active time skips past
+  several leads at once, a single update shows the actual remaining time.
+- An empty list disables pre-break notifications and the edge glow.
+- Validation rejects zero and duplicate leads (`ZeroPreBreakNotice`,
+  `DuplicatePreBreakNotice`).
+- The setting is local presentation only, so it is not part of the sync
+  compatibility fingerprint; peers may use different lead times.
 
 ## Behavior
 
@@ -65,3 +84,5 @@
   changing the macOS sound to `Glass`.
 - `make check` passes after limiting countdown notifications to the initial and
   final warnings and changing the macOS sound to `Glass`.
+- `make check` (331 tests) passes after making the lead times configurable
+  through `breaks.pre_break_notice`.

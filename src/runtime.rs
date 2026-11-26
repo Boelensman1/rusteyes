@@ -28,9 +28,6 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{trace, warn};
 
-const DEFAULT_PRE_BREAK_NOTICE_LEAD: Duration = Duration::from_secs(30);
-const FINAL_PRE_BREAK_NOTICE_LEAD: Duration = Duration::from_secs(5);
-
 #[cfg(target_os = "linux")]
 pub(crate) fn run() -> Result<(), crate::Error> {
     let config = Config::load()?;
@@ -932,7 +929,11 @@ impl<'a> DaemonRuntime<'a> {
             return;
         };
 
-        if upcoming_break.starts_after > self.pre_break_notice_lead() {
+        let Some(notice_lead) = self.pre_break_notice_lead() else {
+            return;
+        };
+
+        if upcoming_break.starts_after > notice_lead {
             return;
         }
 
@@ -976,7 +977,10 @@ impl<'a> DaemonRuntime<'a> {
             return Some(starts_after);
         }
 
-        let next_update = next_pre_break_notice_update(pre_break_notice.starts_after)?;
+        let next_update = next_pre_break_notice_update(
+            self.scheduler.pre_break_notice(),
+            pre_break_notice.starts_after,
+        )?;
 
         if starts_after > next_update {
             return None;
@@ -985,11 +989,11 @@ impl<'a> DaemonRuntime<'a> {
         Some(std::cmp::min(starts_after, next_update))
     }
 
-    fn pre_break_notice_lead(&self) -> Duration {
-        std::cmp::min(
-            DEFAULT_PRE_BREAK_NOTICE_LEAD,
-            self.scheduler.after_active() / 2,
-        )
+    /// The notice window opens at the longest configured lead, capped at half
+    /// the active interval so short schedules are not permanently in notice.
+    fn pre_break_notice_lead(&self) -> Option<Duration> {
+        let longest = self.scheduler.pre_break_notice().first().copied()?;
+        Some(std::cmp::min(longest, self.scheduler.after_active() / 2))
     }
 
     fn clear_pre_break_notice(&mut self) {
@@ -1336,8 +1340,10 @@ impl NotifiedBreak {
     }
 }
 
-fn next_pre_break_notice_update(starts_after: Duration) -> Option<Duration> {
-    (starts_after > FINAL_PRE_BREAK_NOTICE_LEAD).then_some(FINAL_PRE_BREAK_NOTICE_LEAD)
+/// The next configured lead the countdown should update at: the longest lead
+/// shorter than the remaining time last shown. `leads` is sorted longest first.
+fn next_pre_break_notice_update(leads: &[Duration], starts_after: Duration) -> Option<Duration> {
+    leads.iter().copied().find(|lead| *lead < starts_after)
 }
 
 #[cfg(test)]
