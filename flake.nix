@@ -23,7 +23,7 @@
       ];
 
       rustVersion = "1.96.0";
-      packageVersion = "0.1.1";
+      packageVersion = "0.1.2";
       macosBundleIdentifier = "dev.rusteyes.RustEyes";
       overlays = [
         rust-overlay.overlays.default
