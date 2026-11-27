@@ -1,8 +1,10 @@
 //! Non-blocking pre-break warning: thin pulsing strips along every monitor's
-//! edges, shown shortly before a break. The strips are override-redirect so the
-//! window manager leaves them alone, and their input shape is empty so pointer
-//! clicks fall through to whatever is underneath.
+//! edges plus a countdown card in each monitor's center, shown shortly before a
+//! break in place of a desktop notification. The windows are override-redirect
+//! so the window manager leaves them alone, and their input shape is empty so
+//! pointer clicks fall through to whatever is underneath.
 
+use super::pre_break_card::PreBreakCard;
 use super::{MonitorGeometry, X11OverlayError, X11Screen, generate_id, query_monitors, x11};
 use std::time::{Duration, Instant};
 use x11rb::COPY_FROM_PARENT;
@@ -27,10 +29,13 @@ const FAST_PULSE_LEAD: Duration = Duration::from_secs(5);
 /// How long the warning stays up past its deadline when no clear or break start
 /// arrives, so a lost command cannot leave it on screen.
 const EXPIRY_GRACE: Duration = Duration::from_secs(5);
+/// Bell volume for the warning's first appearance; 0 is the server default.
+const WARNING_BELL_PERCENT: i8 = 0;
 
 #[allow(clippy::module_name_repetitions)]
 pub(crate) struct X11PreBreakWarning {
     windows: Vec<Window>,
+    card: Option<PreBreakCard>,
     deadline: Instant,
     next_pulse_at: Instant,
     bright: bool,
@@ -40,22 +45,36 @@ impl X11PreBreakWarning {
     pub(crate) fn show(
         connection: &RustConnection,
         screen: X11Screen,
+        break_name: &str,
         starts_after: Duration,
         now: Instant,
     ) -> Result<Self, X11OverlayError> {
         let mut warning = Self {
             windows: Vec::new(),
+            card: None,
             deadline: now + starts_after,
             next_pulse_at: now,
             bright: false,
         };
 
         let result = (|| {
-            for monitor in query_monitors(connection, screen) {
-                for strip in edge_strips(&monitor, STRIP_THICKNESS) {
+            let monitors = query_monitors(connection, screen);
+            for monitor in &monitors {
+                for strip in edge_strips(monitor, STRIP_THICKNESS) {
                     warning.create_strip(connection, screen, &strip)?;
                 }
             }
+            let card = warning
+                .card
+                .insert(PreBreakCard::new(connection, screen, break_name)?);
+            for monitor in &monitors {
+                card.add_window(connection, screen, monitor)?;
+            }
+            // Audible cue for the first appearance only; refreshes stay silent.
+            x11(
+                "ring pre-break warning bell",
+                connection.bell(WARNING_BELL_PERCENT),
+            )?;
             warning.pulse(connection, now)
         })();
 
@@ -119,6 +138,9 @@ impl X11PreBreakWarning {
                 ),
             )?;
         }
+        if let Some(card) = &self.card {
+            card.draw(connection, self.deadline.saturating_duration_since(now))?;
+        }
         x11("flush pre-break warning", connection.flush())?;
 
         self.next_pulse_at = now + pulse_interval(self.deadline.saturating_duration_since(now));
@@ -174,7 +196,7 @@ impl X11PreBreakWarning {
     }
 
     pub(crate) fn destroy(self, connection: &RustConnection) -> Result<(), X11OverlayError> {
-        let mut first_error = None;
+        let mut first_error = self.card.and_then(|card| card.destroy(connection));
         for window in self.windows {
             super::remember_first_error(
                 &mut first_error,

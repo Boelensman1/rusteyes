@@ -12,9 +12,7 @@ use crate::sync_protocol::{
 use crate::sync_transport::{
     PeerRejectionReason, SyncTransport, SyncTransportError, SyncTransportEvent,
 };
-use crate::ui::{
-    PreBreakNotification, RuntimeUi, StatusDisplay, UiCommand, UiConfig, UiNotification,
-};
+use crate::ui::{RuntimeUi, StatusDisplay, UiCommand, UiConfig, UiNotification};
 #[cfg(target_os = "linux")]
 use crate::x11_activity::X11ActivityBackend;
 use std::cmp::Ordering;
@@ -949,15 +947,10 @@ impl<'a> DaemonRuntime<'a> {
             return;
         };
 
-        let command = UiCommand::ShowPreBreakNotification(PreBreakNotification {
+        self.handle_command(BackendCommand::ShowPreBreakWarning {
             break_name: upcoming_break.scheduled_break.name,
             starts_after,
         });
-
-        if let Err(error) = self.ui.send_command(command) {
-            warn!(%error, "failed to send pre-break notification command");
-        }
-        self.handle_command(BackendCommand::ShowPreBreakWarning { starts_after });
         self.pre_break_notice = Some(PreBreakNoticeState {
             notified_break,
             starts_after,
@@ -1001,9 +994,6 @@ impl<'a> DaemonRuntime<'a> {
             return;
         }
 
-        if let Err(error) = self.ui.send_command(UiCommand::ClearPreBreakNotification) {
-            warn!(%error, "failed to send pre-break notification clear command");
-        }
         self.handle_command(BackendCommand::ClearPreBreakWarning);
     }
 

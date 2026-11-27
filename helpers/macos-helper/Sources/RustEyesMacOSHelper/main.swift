@@ -5,10 +5,12 @@ import Darwin
 import Foundation
 import QuartzCore
 
-private let protocolVersion = 10
-// Pre-break warning: a pulsing amber glow around every display's edges. RustEyes
-// re-sends `showPreBreakWarning` at its final 5-second notice, which switches the
-// glow to the fast pulse.
+private let protocolVersion = 11
+// Pre-break warning: a pulsing amber glow around every display's edges plus a
+// large countdown card in the center of each display. It replaces the native
+// notification, which macOS mutes during calls. RustEyes re-sends
+// `showPreBreakWarning` at its final 5-second notice, which switches the glow to
+// the fast pulse.
 private let preBreakWarningFastPulseLeadMs: UInt64 = 5_000
 private let preBreakWarningSlowPulseSeconds: CFTimeInterval = 1.6
 private let preBreakWarningFastPulseSeconds: CFTimeInterval = 0.5
@@ -16,6 +18,12 @@ private let preBreakWarningGraceMs: UInt64 = 5_000
 private let preBreakWarningBorderWidth: CGFloat = 10
 private let preBreakWarningGlowRadius: CGFloat = 24
 private let preBreakWarningPulseAnimationKey = "preBreakWarningPulse"
+private let preBreakCardSize = NSSize(width: 520, height: 220)
+private let preBreakCardCornerRadius: CGFloat = 28
+private let preBreakCardTickSeconds: TimeInterval = 0.25
+// Played once when the warning first appears; a system sound from
+// /System/Library/Sounds.
+private let preBreakWarningSoundName = "Glass"
 private let directInvocationExitCode: Int32 = 2
 private let directInvocationMessage =
     "rusteyes-macos-helper is an internal RustEyes helper. Start RustEyes with the main rusteyes binary; do not run this helper directly."
@@ -218,13 +226,13 @@ private final class BreakOverlayController {
         resetHeartbeatWatchdog()
     }
 
-    func showPreBreakWarning(startsAfterMs: UInt64) {
+    func showPreBreakWarning(breakName: String, startsAfterMs: UInt64) {
         // The warning only leads up to a break; never draw it over one.
         guard state == nil else {
             return
         }
         prepareApplication()
-        preBreakWarning.show(startsAfterMs: startsAfterMs)
+        preBreakWarning.show(breakName: breakName, startsAfterMs: startsAfterMs)
     }
 
     func clearPreBreakWarning() {
@@ -444,25 +452,42 @@ private final class BreakOverlayController {
     }
 }
 
-/// Click-through, non-activating glow around every display, shown shortly
-/// before a break. It is excluded from screen capture so call participants do
-/// not see it while the screen is shared.
+/// Click-through, non-activating glow around every display plus a countdown
+/// card in its center, shown shortly before a break. Both are excluded from
+/// screen capture so call participants do not see them while the screen is
+/// shared.
 private final class PreBreakWarningController {
     private var windows: [NSWindow] = []
+    private var cards: [PreBreakCardView] = []
     private var pulseSeconds: CFTimeInterval?
     private var expiryTimer: DispatchSourceTimer?
+    private var countdownTimer: Timer?
+    private var deadline = Date()
 
-    func show(startsAfterMs: UInt64) {
+    func show(breakName: String, startsAfterMs: UInt64) {
         let period = startsAfterMs > preBreakWarningFastPulseLeadMs
             ? preBreakWarningSlowPulseSeconds
             : preBreakWarningFastPulseSeconds
+        deadline = Date().addingTimeInterval(TimeInterval(startsAfterMs) / 1_000)
 
         if windows.isEmpty {
             for screen in NSScreen.screens {
                 let window = warningWindow(for: screen)
                 windows.append(window)
                 window.orderFrontRegardless()
+
+                let card = PreBreakCardView(frame: NSRect(origin: .zero, size: preBreakCardSize))
+                let cardWindow = cardWindow(for: screen, card: card)
+                cards.append(card)
+                windows.append(cardWindow)
+                cardWindow.orderFrontRegardless()
             }
+            NSSound(named: NSSound.Name(preBreakWarningSoundName))?.play()
+            startCountdown()
+        }
+
+        for card in cards {
+            card.update(breakName: breakName, remainingMs: remainingMs())
         }
 
         if pulseSeconds != period {
@@ -478,12 +503,69 @@ private final class PreBreakWarningController {
     func clear() {
         expiryTimer?.cancel()
         expiryTimer = nil
+        countdownTimer?.invalidate()
+        countdownTimer = nil
         for window in windows {
             window.orderOut(nil)
             window.close()
         }
         windows.removeAll()
+        cards.removeAll()
         pulseSeconds = nil
+    }
+
+    private func remainingMs() -> UInt64 {
+        let remaining = deadline.timeIntervalSinceNow
+        return remaining > 0 ? UInt64((remaining * 1_000).rounded(.up)) : 0
+    }
+
+    /// Counts the card down locally so it needs no ticks from RustEyes; each
+    /// `show` re-anchors the deadline.
+    private func startCountdown() {
+        let timer = Timer(timeInterval: preBreakCardTickSeconds, repeats: true) { [weak self] _ in
+            guard let self else {
+                return
+            }
+            let remaining = self.remainingMs()
+            for card in self.cards {
+                card.update(remainingMs: remaining)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        countdownTimer = timer
+    }
+
+    private func cardWindow(for screen: NSScreen, card: PreBreakCardView) -> NSWindow {
+        let frame = screen.frame
+        let cardFrame = NSRect(
+            x: frame.midX - preBreakCardSize.width / 2,
+            y: frame.midY - preBreakCardSize.height / 2,
+            width: preBreakCardSize.width,
+            height: preBreakCardSize.height
+        )
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: preBreakCardSize),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false,
+            screen: screen
+        )
+        window.setFrame(cardFrame, display: false)
+        window.backgroundColor = .clear
+        window.collectionBehavior = [
+            .canJoinAllSpaces,
+            .fullScreenAuxiliary,
+            .ignoresCycle,
+            .stationary,
+        ]
+        window.contentView = card
+        window.hasShadow = true
+        window.ignoresMouseEvents = true
+        window.isOpaque = false
+        window.isReleasedWhenClosed = false
+        window.level = .screenSaver
+        window.sharingType = .none
+        return window
     }
 
     private func scheduleExpiry(afterMs milliseconds: UInt64) {
@@ -569,6 +651,63 @@ private final class PreBreakWarningView: NSView {
         animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
         glowLayer.removeAnimation(forKey: preBreakWarningPulseAnimationKey)
         glowLayer.add(animation, forKey: preBreakWarningPulseAnimationKey)
+    }
+}
+
+/// The center-of-screen pre-break countdown: "<name> break in" over a large
+/// m:ss countdown.
+private final class PreBreakCardView: NSView {
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let countdownLabel = NSTextField(labelWithString: "")
+    private let hintLabel = NSTextField(labelWithString: "Wrap up what you are doing")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.85).cgColor
+        layer?.cornerRadius = preBreakCardCornerRadius
+        layer?.borderColor = NSColor.systemOrange.cgColor
+        layer?.borderWidth = 3
+
+        titleLabel.font = NSFont.systemFont(ofSize: 30, weight: .semibold)
+        titleLabel.textColor = .white
+        countdownLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 92, weight: .bold)
+        countdownLabel.textColor = .systemOrange
+        hintLabel.font = NSFont.systemFont(ofSize: 18, weight: .regular)
+        hintLabel.textColor = NSColor.white.withAlphaComponent(0.7)
+
+        let stack = NSStackView(views: [titleLabel, countdownLabel, hintLabel])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 4
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        for label in [titleLabel, countdownLabel, hintLabel] {
+            label.alignment = .center
+            label.lineBreakMode = .byTruncatingTail
+        }
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            stack.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -40),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("PreBreakCardView does not support coder initialization")
+    }
+
+    func update(breakName: String, remainingMs: UInt64) {
+        titleLabel.stringValue = "\(breakName.prefix(1).uppercased())\(breakName.dropFirst()) break in"
+        update(remainingMs: remainingMs)
+    }
+
+    func update(remainingMs: UInt64) {
+        let text = remainingTimeText(remainingMs)
+        if countdownLabel.stringValue != text {
+            countdownLabel.stringValue = text
+        }
     }
 }
 
@@ -921,6 +1060,7 @@ private struct FinishBreakCommand: Decodable {
 }
 
 private struct ShowPreBreakWarningCommand: Decodable {
+    let breakName: String
     let startsAfterMs: UInt64
 }
 
@@ -1273,7 +1413,10 @@ private func runProtocolLoop(overlay: BreakOverlayController) {
                 try writeCommandComplete(.clearBreak)
             case .showPreBreakWarning(let command):
                 runOnMain {
-                    overlay.showPreBreakWarning(startsAfterMs: command.startsAfterMs)
+                    overlay.showPreBreakWarning(
+                        breakName: command.breakName,
+                        startsAfterMs: command.startsAfterMs
+                    )
                 }
                 try writeCommandComplete(.showPreBreakWarning)
             case .clearPreBreakWarning:

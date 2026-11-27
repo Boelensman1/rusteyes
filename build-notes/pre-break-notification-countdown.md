@@ -2,6 +2,10 @@
 
 ## Goal
 
+- Superseded by `pre-break-center-card`: the native notification described
+  here was replaced by a center-of-screen countdown card. The cadence and
+  `breaks.pre_break_notice` lead times below still apply.
+
 - Replace the one-shot pre-break desktop notification with an updating
   countdown notification that is removed when the break starts.
 

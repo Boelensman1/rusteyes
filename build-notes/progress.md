@@ -422,6 +422,11 @@
   faster in the final 5 seconds and clears when the break starts or the
   notice is cleared, so the break is noticeable even when macOS mutes
   notifications during calls.
+- Completed `pre-break-center-card`: the native pre-break notification is
+  replaced by a large click-through countdown card in the center of every
+  display, shown with the edge glow (macOS helper protocol v11 adds
+  `breakName`; X11 draws seven-segment digits). The first-show sound moved to
+  the backends. Other desktop notifications are unchanged.
 - Completed `macos-helper-restart`: a failed macOS helper is killed (releasing
   its input tap) and restarted, up to 3 times in 10 minutes, instead of
   shutting RustEyes down. A break still running is shown again with its
@@ -663,6 +668,11 @@
 - Manual verification of the pre-break edge glow is pending on macOS (Swift
   helper build, multi-display coverage, click-through, focus, screen-share
   exclusion) and on X11 (pulse, click-through, clearing on break start).
+- `make check` (334 tests) passes after replacing the pre-break notification
+  with the center card.
+- Manual verification of the pre-break center card is pending on macOS and
+  X11 (placement on every display, countdown, sound, click-through, focus,
+  screen-share exclusion, clearing on break start).
 
 ## Notes
 

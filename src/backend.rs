@@ -228,9 +228,13 @@ pub(crate) enum BackendCommand {
     },
     RequestLockAfterCurrentBreak,
     ClearBreak,
-    /// Shows (or refreshes) the non-blocking pre-break screen-edge warning for a
-    /// break due in `starts_after`. Backends pulse faster near the deadline.
+    /// Shows (or refreshes) the non-blocking pre-break warning for a break due
+    /// in `starts_after`: a pulsing screen-edge glow plus a large click-through
+    /// countdown card in the center of every display. It replaces the native
+    /// desktop notification, which macOS mutes during calls. Backends pulse
+    /// faster near the deadline.
     ShowPreBreakWarning {
+        break_name: String,
         starts_after: Duration,
     },
     ClearPreBreakWarning,

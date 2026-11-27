@@ -236,7 +236,7 @@ impl X11ActivityBackend {
         )
     }
 
-    fn show_pre_break_warning(&mut self, starts_after: Duration) {
+    fn show_pre_break_warning(&mut self, break_name: &str, starts_after: Duration) {
         // The warning only leads up to a break; never draw it over one.
         if self.active_break.is_some() || self.pending_break.is_some() {
             return;
@@ -251,6 +251,7 @@ impl X11ActivityBackend {
         match X11PreBreakWarning::show(
             &self.activity.connection,
             self.activity.screen,
+            break_name,
             starts_after,
             now,
         ) {
@@ -412,8 +413,11 @@ impl X11ActivityBackend {
                     self.queue_backend_error(&error);
                 }
             }
-            BackendCommand::ShowPreBreakWarning { starts_after } => {
-                self.show_pre_break_warning(starts_after);
+            BackendCommand::ShowPreBreakWarning {
+                break_name,
+                starts_after,
+            } => {
+                self.show_pre_break_warning(&break_name, starts_after);
             }
             BackendCommand::ClearPreBreakWarning => self.clear_pre_break_warning(),
         }

@@ -17,7 +17,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 use tracing::{info, trace, warn};
 
-const PROTOCOL_VERSION: u16 = 10;
+const PROTOCOL_VERSION: u16 = 11;
 const HELPER_PATH_ENV: &str = "RUSTEYES_MACOS_HELPER";
 const DEVELOPMENT_HELPER_PATH: &str = "helpers/macos-helper/.build/debug/rusteyes-macos-helper";
 const BUNDLED_HELPER_PATH_FROM_EXE: &str = "../Resources/rusteyes-macos-helper";
@@ -936,6 +936,8 @@ enum DaemonMessage {
     },
     ClearBreak,
     ShowPreBreakWarning {
+        #[serde(rename = "breakName")]
+        break_name: String,
         #[serde(rename = "startsAfterMs")]
         starts_after_ms: u64,
     },
@@ -960,7 +962,11 @@ impl From<BackendCommand> for DaemonMessage {
                 unreachable!("active-break replacement is framed with HelperSession::replace_break")
             }
             BackendCommand::ClearBreak => Self::ClearBreak,
-            BackendCommand::ShowPreBreakWarning { starts_after } => Self::ShowPreBreakWarning {
+            BackendCommand::ShowPreBreakWarning {
+                break_name,
+                starts_after,
+            } => Self::ShowPreBreakWarning {
+                break_name,
                 starts_after_ms: duration_millis(starts_after),
             },
             BackendCommand::ClearPreBreakWarning => Self::ClearPreBreakWarning,
@@ -1689,6 +1695,7 @@ mod tests {
         let mut session = HelperSession::new(input, &mut output);
 
         session.send_command(BackendCommand::ShowPreBreakWarning {
+            break_name: String::from("short"),
             starts_after: Duration::from_millis(29_500),
         })?;
         session.send_command(BackendCommand::ClearPreBreakWarning)?;
@@ -1697,15 +1704,15 @@ mod tests {
             daemon_messages(&output)?,
             vec![
                 DaemonMessage::ShowPreBreakWarning {
+                    break_name: String::from("short"),
                     starts_after_ms: 29_500
                 },
                 DaemonMessage::ClearPreBreakWarning,
             ]
         );
-        assert!(
-            String::from_utf8(output)?
-                .contains(r#"{"type":"showPreBreakWarning","startsAfterMs":29500}"#)
-        );
+        assert!(String::from_utf8(output)?.contains(
+            r#"{"type":"showPreBreakWarning","breakName":"short","startsAfterMs":29500}"#
+        ));
         Ok(())
     }
 

@@ -35,8 +35,6 @@ impl UiConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum UiCommand {
-    ShowPreBreakNotification(PreBreakNotification),
-    ClearPreBreakNotification,
     ShowNotification(UiNotification),
     UpdateStatus(StatusDisplay),
     UpdateManualBreakAvailability(BTreeMap<String, bool>),
@@ -50,12 +48,6 @@ pub(crate) enum StatusDisplay {
     },
     DisabledFor(Duration),
     DisabledUntilRestart,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PreBreakNotification {
-    pub(crate) break_name: String,
-    pub(crate) starts_after: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,10 +172,10 @@ impl UiMenuAction {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod app {
     use super::{
-        PreBreakNotification, RuntimeEvent, RuntimeUi, StatusDisplay, UiAppChannels, UiCommand,
-        UiConfig, UiHandle, UiMenuAction, UiNotification, ui_channels,
+        RuntimeEvent, RuntimeUi, StatusDisplay, UiAppChannels, UiCommand, UiConfig, UiHandle,
+        UiMenuAction, UiNotification, ui_channels,
     };
-    use notify_rust::{Notification, NotificationHandle, Timeout};
+    use notify_rust::{Notification, Timeout};
     use std::collections::BTreeMap;
     use std::fmt;
     use std::io;
@@ -201,13 +193,6 @@ mod app {
         include_bytes!("../package/icons/rusteyes-tray.rgba");
     const APP_NAME: &str = "RustEyes";
     const TOOLTIP: &str = "RustEyes";
-    // Sound played the first time the pre-break notification appears. The name
-    // vocabularies differ per platform: Linux uses the freedesktop XDG sound
-    // naming spec, macOS expects a system sound from /System/Library/Sounds.
-    #[cfg(not(target_os = "macos"))]
-    const PRE_BREAK_NOTIFICATION_SOUND: &str = "message";
-    #[cfg(target_os = "macos")]
-    const PRE_BREAK_NOTIFICATION_SOUND: &str = "Glass";
     const STATUS_MENU_ID: &str = "status";
     pub(crate) fn run<F>(config: UiConfig, start_runtime: F) -> Result<(), UiError>
     where
@@ -243,7 +228,6 @@ mod app {
                     app.handle_command(command);
                 }
                 Event::UserEvent(UiLoopEvent::RuntimeStopped) => {
-                    app.clear_pre_break_notification();
                     app.join_runtime();
                     *control_flow = ControlFlow::Exit;
                 }
@@ -331,7 +315,6 @@ mod app {
         status_item: Option<MenuItem>,
         enable_item: Option<MenuItem>,
         start_break_items: BTreeMap<String, MenuItem>,
-        pre_break_notification: Option<NotificationHandle>,
         menu_actions: BTreeMap<String, UiMenuAction>,
         initialized: bool,
     }
@@ -350,7 +333,6 @@ mod app {
                 status_item: None,
                 enable_item: None,
                 start_break_items: BTreeMap::new(),
-                pre_break_notification: None,
                 menu_actions: BTreeMap::new(),
                 initialized: false,
             }
@@ -388,16 +370,6 @@ mod app {
 
         fn handle_command(&mut self, command: UiCommand) {
             match command {
-                UiCommand::ShowPreBreakNotification(notification) => {
-                    if let Err(error) =
-                        show_pre_break_notification(&mut self.pre_break_notification, &notification)
-                    {
-                        warn!(%error, ?notification, "failed to show pre-break notification");
-                    }
-                }
-                UiCommand::ClearPreBreakNotification => {
-                    self.clear_pre_break_notification();
-                }
                 UiCommand::ShowNotification(notification) => {
                     if let Err(error) = show_notification(&notification) {
                         warn!(%error, ?notification, "failed to show notification");
@@ -425,10 +397,6 @@ mod app {
 
         fn request_shutdown(&self) {
             _ = self.event_sender.send(RuntimeEvent::Shutdown);
-        }
-
-        fn clear_pre_break_notification(&mut self) {
-            clear_pre_break_notification(&mut self.pre_break_notification);
         }
 
         fn join_runtime(&mut self) {
@@ -554,48 +522,6 @@ mod app {
     fn rusteyes_icon() -> Result<Icon, UiError> {
         Icon::from_rgba(TRAY_ICON_RGBA.to_vec(), ICON_SIZE, ICON_SIZE)
             .map_err(|error| UiError::tray_icon(error.to_string()))
-    }
-
-    fn show_pre_break_notification(
-        handle: &mut Option<NotificationHandle>,
-        notification: &PreBreakNotification,
-    ) -> Result<(), UiError> {
-        let notification = pre_break_ui_notification(notification);
-
-        if let Some(handle) = handle {
-            handle
-                .summary(&notification.summary)
-                .body(&notification.body)
-                .timeout(Timeout::Never);
-            return handle
-                .update()
-                .map_err(|error| UiError::notification(error.to_string()));
-        }
-
-        *handle = Some(
-            build_notification(&notification, Timeout::Never)
-                .sound_name(PRE_BREAK_NOTIFICATION_SOUND)
-                .show()
-                .map_err(|error| UiError::notification(error.to_string()))?,
-        );
-        Ok(())
-    }
-
-    fn clear_pre_break_notification(handle: &mut Option<NotificationHandle>) {
-        if let Some(handle) = handle.take() {
-            handle.close();
-        }
-    }
-
-    fn pre_break_ui_notification(notification: &PreBreakNotification) -> UiNotification {
-        UiNotification {
-            summary: String::from("RustEyes break soon"),
-            body: format!(
-                "{} break starts in {}.",
-                notification.break_name,
-                countdown_duration_text(notification.starts_after)
-            ),
-        }
     }
 
     fn countdown_duration_text(duration: Duration) -> String {
@@ -774,7 +700,7 @@ mod app {
         }
 
         #[test]
-        fn pre_break_notification_text_renders_whole_second_countdown() {
+        fn countdown_text_renders_whole_seconds() {
             assert_eq!(countdown_duration_text(Duration::ZERO), "0s");
             assert_eq!(countdown_duration_text(Duration::from_secs(25)), "25s");
             assert_eq!(countdown_duration_text(Duration::from_millis(1)), "1s");
@@ -782,17 +708,6 @@ mod app {
                 countdown_duration_text(Duration::from_nanos(24_633_210_875)),
                 "25s"
             );
-        }
-
-        #[test]
-        fn pre_break_notification_body_uses_whole_second_countdown() {
-            let notification = pre_break_ui_notification(&PreBreakNotification {
-                break_name: String::from("short"),
-                starts_after: Duration::from_nanos(24_633_210_875),
-            });
-
-            assert_eq!(notification.summary, "RustEyes break soon");
-            assert_eq!(notification.body, "short break starts in 25s.");
         }
 
         #[test]
